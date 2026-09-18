@@ -1,8 +1,13 @@
 # app/mcp/server.py
+import os
+import secrets
 from functools import lru_cache
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from app.config.settings import get_settings
 from app.database.mongodb import get_client, initialize_database
@@ -11,6 +16,11 @@ from app.interfaces.calendar_provider import CalendarProvider
 from app.interfaces.llm_provider import LLMProvider
 from app.mcp import tools
 from app.providers.factory import ProviderFactory
+
+# Render (and any other HTTP host) assigns the port to listen on via $PORT at runtime --
+# irrelevant for the default stdio transport (a local subprocess Claude Desktop spawns
+# has no port), so defaulting to 8000 when unset is harmless for local/stdio use.
+_HTTP_PORT = int(os.environ.get("PORT", "8000"))
 
 
 @lru_cache
@@ -29,7 +39,7 @@ def _get_calendar_provider() -> CalendarProvider:
     return ProviderFactory.create_calendar_provider(get_settings())
 
 
-mcp = FastMCP("cos-sales-agent")
+mcp = FastMCP("cos-sales-agent", host="0.0.0.0", port=_HTTP_PORT)
 
 
 @mcp.tool()
@@ -72,8 +82,53 @@ def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
     return tools.list_processed_emails(_get_db(), limit)
 
 
+class _BearerAuthMiddleware(BaseHTTPMiddleware):
+    """Rejects any request without a valid bearer token.
+
+    Only used for the streamable-http transport. Unlike stdio (a local subprocess only
+    Claude Desktop itself can spawn and talk to), an HTTP deployment is reachable by
+    anyone who has the URL -- without this, they could call process_email using your
+    MongoDB credentials and burn your LLM API key with no credentials of their own.
+    """
+
+    def __init__(self, app, expected_token: str) -> None:
+        super().__init__(app)
+        self._expected_token = expected_token
+
+    async def dispatch(self, request: Request, call_next):
+        header = request.headers.get("authorization", "")
+        provided = header[len("Bearer "):].strip() if header.startswith("Bearer ") else ""
+        if not provided or not secrets.compare_digest(provided, self._expected_token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+def _run_http() -> None:
+    auth_token = os.environ.get("MCP_AUTH_TOKEN", "")
+    if not auth_token:
+        raise RuntimeError(
+            "MCP_AUTH_TOKEN must be set when MCP_TRANSPORT=streamable-http -- running this "
+            "server on the public internet without it would let anyone call its tools using "
+            "your MongoDB credentials and LLM API key, with no authentication at all."
+        )
+
+    import uvicorn
+
+    starlette_app = mcp.streamable_http_app()
+    starlette_app.add_middleware(_BearerAuthMiddleware, expected_token=auth_token)
+    uvicorn.run(
+        starlette_app,
+        host=mcp.settings.host,
+        port=mcp.settings.port,
+        log_level=mcp.settings.log_level.lower(),
+    )
+
+
 def main() -> None:
-    mcp.run()
+    if os.environ.get("MCP_TRANSPORT", "stdio") == "streamable-http":
+        _run_http()
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":
