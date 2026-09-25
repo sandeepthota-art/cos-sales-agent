@@ -53,5 +53,9 @@ class ProviderFactory:
         if provider == "openai":
             from app.providers.llm.openai import OpenAIProvider
 
-            return OpenAIProvider(api_key=settings.llm_api_key, model=settings.llm_model or "gpt-4o")
+            return OpenAIProvider(
+                api_key=settings.llm_api_key,
+                model=settings.llm_model or "gpt-4o",
+                base_url=settings.llm_base_url,
+            )
         raise ValueError(f"Unknown LLM_PROVIDER: {settings.llm_provider!r}")

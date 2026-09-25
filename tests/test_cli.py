@@ -80,3 +80,18 @@ def test_reset_demo_requires_simulation_mode(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     exit_code = main_module.main(["--reset-demo"])
     assert exit_code == 1
+
+
+def test_reset_demo_clears_ingested_files(monkeypatch, _patch_mongo_client):
+    # ingested_files must be wiped alongside every other collection -- otherwise a
+    # stale fingerprint record would wrongly make FolderSource skip re-ingesting a
+    # file whose actual emails were just deleted by this same reset.
+    monkeypatch.setenv("SIMULATION_MODE", "true")
+    settings = Settings()
+    db = _patch_mongo_client[settings.mongodb_database]
+    db.ingested_files.insert_one({"filename": "a.json", "all_completed": True})
+
+    exit_code = main_module.main(["--reset-demo"])
+
+    assert exit_code == 0
+    assert db.ingested_files.count_documents({}) == 0

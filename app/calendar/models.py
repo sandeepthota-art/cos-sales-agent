@@ -29,3 +29,11 @@ class CalendarAction(BaseModel):
     event: CalendarEvent
     actor_type: Literal["authenticated_user"] = "authenticated_user"
     reason: str | None = None
+    # Canonical references -- METADATA about who/what this action concerns, entirely
+    # separate from event.attendees (which must, and still does, always stay empty:
+    # CalendarEvent's own validator is untouched by this addition). Lets "the calendar
+    # action about Ashok" stay connected to PER-391 without ever adding him as an
+    # external attendee on the real calendar event.
+    person_id: str | None = None
+    org_id: str | None = None
+    meeting_id: str | None = None

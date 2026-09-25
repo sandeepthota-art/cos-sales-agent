@@ -89,11 +89,14 @@ class _CompanyRevealingLLM(LLMProvider):
         return self._base.analyze_email(email)
 
     def update_context(self, previous_context, new_analysis):
-        context = self._base.update_context(previous_context, new_analysis)
+        # update_context returns a bounded ContextDelta now (see app.context.models) --
+        # "company" itself isn't a delta field (it's a ThreadContext field), the patch
+        # for it is "company_updates".
+        delta = self._base.update_context(previous_context, new_analysis)
         self._call_count += 1
         if self._call_count >= 2:
-            context["company"] = {"name": "Acme Corp"}
-        return context
+            delta["company_updates"] = {"name": "Acme Corp"}
+        return delta
 
     def verify_same_fact(self, existing_value, new_value, subject, predicate):
         return self._base.verify_same_fact(existing_value, new_value, subject, predicate)
@@ -234,6 +237,7 @@ def test_pipeline_does_not_overwrite_already_sent_reply_draft(db, settings):
             source_email_id="msg_001",
             status="simulated_sent",
             draft=ReplyDraftContent(subject="Re: Enterprise CRM Proposal", body="Already sent to the customer."),
+            created_at=datetime.now(timezone.utc),
         ).model_dump(mode="json"),
     )
 

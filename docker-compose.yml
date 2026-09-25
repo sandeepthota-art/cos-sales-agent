@@ -1,19 +1,14 @@
+# This project uses MongoDB Atlas (a hosted cluster), not a local MongoDB instance --
+# there is no MongoDB service here. Point MONGODB_URI (in .env) at your Atlas
+# connection string; the application creates its own collections/indexes on first use.
 services:
-  mongodb:
-    image: mongo:7
+  app:
+    build: .
+    env_file:
+      - .env
     ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-
-  mongo-express:
-    image: mongo-express:1
-    depends_on:
-      - mongodb
-    ports:
-      - "8081:8081"
-    environment:
-      ME_CONFIG_MONGODB_SERVER: mongodb
-
-volumes:
-  mongodb_data:
+      - "8000:8000"
+    # Runs the MCP server over HTTP -- set MCP_TRANSPORT=streamable-http and
+    # MCP_AUTH_TOKEN in .env for this to actually serve requests (see README.md).
+    # For a one-shot pipeline run instead, use:
+    #   docker compose run --rm app python main.py --mode=demo

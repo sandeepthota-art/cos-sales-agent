@@ -6,3 +6,14 @@ __pycache__/
 venv/
 *.egg-info/
 .mypy_cache/
+
+# Folder-watching scheduler's watched inbox -- dropped export files are local
+# runtime input, not source.
+data/inbox/*.json
+
+# Log output -- may contain processed email content, never source.
+*.log
+
+# Private email export datasets -- never commit real email data. Add any other
+# local dataset filenames here as needed.
+bd_active_follow_up_emails.json

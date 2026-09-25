@@ -59,6 +59,7 @@ class EmailRepository(_BaseRepository):
         goal_pillar: str,
         label_applied: str,
         confidence: float,
+        priority: str,
     ) -> None:
         self._collection.update_one(
             {"message_id": message_id},
@@ -72,6 +73,7 @@ class EmailRepository(_BaseRepository):
                     "goal_pillar": goal_pillar,
                     "label_applied": label_applied,
                     "confidence": confidence,
+                    "priority": priority,
                 }
             },
         )
@@ -143,6 +145,10 @@ class PersonRepository(_BaseRepository):
     collection_name = "people"
 
 
+class OrganizationRepository(_BaseRepository):
+    collection_name = "organizations"
+
+
 class ProjectRepository(_BaseRepository):
     collection_name = "projects"
 
@@ -167,3 +173,11 @@ class MeetingRepository(_BaseRepository):
 
 class PersonalItemRepository(_BaseRepository):
     collection_name = "personal_items"
+
+
+class IngestedFileRepository(_BaseRepository):
+    collection_name = "ingested_files"
+
+
+class MigrationRunRepository(_BaseRepository):
+    collection_name = "migration_runs"

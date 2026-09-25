@@ -5,12 +5,16 @@ from openai import OpenAI
 
 from app.email.models import Email
 from app.interfaces.llm_provider import LLMProvider
-from app.providers.llm.claude import _ANALYSIS_INSTRUCTIONS
+from app.providers.llm.claude import _ANALYSIS_INSTRUCTIONS, _UPDATE_CONTEXT_INSTRUCTIONS
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str):
-        self._client = OpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str, base_url: str | None = None):
+        # base_url=None is the OpenAI SDK's own default (api.openai.com) -- passing it
+        # explicitly here is identical to omitting it, so existing behavior is preserved
+        # exactly when no custom endpoint is configured. A non-None value lets this same
+        # provider target any OpenAI-compatible API (e.g. Groq) with no other change.
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._model = model
 
     def _complete_json(self, system: str, user: str) -> dict[str, Any]:
@@ -29,14 +33,8 @@ class OpenAIProvider(LLMProvider):
         return result
 
     def update_context(self, previous_context: dict[str, Any], new_analysis: dict[str, Any]) -> dict[str, Any]:
-        instructions = (
-            "Merge the new email analysis into the previous structured sales context. Return ONLY the "
-            "updated context JSON with the same shape as the previous context. Every list item must be an "
-            "object with value/basis/source_email_ids; basis is 'stated' for customer-stated facts and "
-            "'inferred' for your own inferences. Never remove prior information unless clearly superseded."
-        )
         user = json.dumps({"previous_context": previous_context, "new_analysis": new_analysis})
-        return self._complete_json(instructions, user)
+        return self._complete_json(_UPDATE_CONTEXT_INSTRUCTIONS, user)
 
     def verify_same_fact(self, existing_value: str, new_value: str, subject: str, predicate: str) -> bool:
         instructions = "Answer ONLY with JSON: {\"same_fact\": true} or {\"same_fact\": false}."

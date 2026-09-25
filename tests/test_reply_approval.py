@@ -13,6 +13,7 @@ def _draft(status="awaiting_approval"):
         source_email_id="msg_004",
         status=status,
         draft=ReplyDraftContent(subject="Re: Enterprise pricing", body="Hi John..."),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -38,6 +39,22 @@ def test_reject_transitions_to_rejected():
 def test_simulate_send_requires_approved_status():
     with pytest.raises(ValueError):
         simulate_send(_draft(status="awaiting_approval"), now=datetime.now(timezone.utc))
+
+
+def test_reply_draft_validates_a_legacy_document_with_no_created_at():
+    # Regression: app.ui.dashboard._render_reply_approval_tab re-validates every stored
+    # reply_drafts document through ReplyDraft.model_validate() on every read. A draft
+    # persisted before created_at existed has no such key in MongoDB at all -- this
+    # must not raise, and must not fabricate a value.
+    legacy_doc = {
+        "reply_id": "reply_001",
+        "thread_id": "thread_001",
+        "source_email_id": "msg_004",
+        "status": "awaiting_approval",
+        "draft": {"subject": "Re: Enterprise pricing", "body": "Hi John..."},
+    }
+    draft = ReplyDraft.model_validate(legacy_doc)
+    assert draft.created_at is None
 
 
 def test_simulate_send_from_approved_sets_simulated_sent(capsys):

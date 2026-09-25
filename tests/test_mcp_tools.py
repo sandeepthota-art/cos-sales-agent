@@ -3,6 +3,7 @@ import pytest
 
 from app.config.settings import Settings
 from app.database.indexes import initialize_indexes
+from app.database.repositories import EmailRepository
 from app.email.models import parse_email
 from app.interfaces.llm_provider import LLMProvider
 from app.mcp.tools import list_processed_emails, process_email
@@ -47,7 +48,10 @@ def db():
 
 @pytest.fixture
 def settings():
-    return Settings(calendar_provider="mock", llm_provider="mock")
+    # agent_email matches _raw_email's default "to" address -- envelope-based Person
+    # resolution (app.pipeline._process_entities) must never create a Person for our
+    # own mailbox, so this has to line up with the fixture data, not the class default.
+    return Settings(calendar_provider="mock", llm_provider="mock", agent_email="ashok@example.com")
 
 
 def test_process_email_returns_draft_and_knowledge_for_buying_signal(db, settings):
@@ -238,3 +242,75 @@ def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_t
         "meetings": [],
         "personal": [],
     }
+
+
+# --- Regression tests: list_processed_emails must not crash on emails inserted by
+# --- --mode=raw-file, which never write a processing_status field at all.
+
+
+def _raw_only_email(message_id, **overrides):
+    # Shape mirrors what app.raw_ingestion.run_raw_file_ingestion actually stores:
+    # a plain Email.model_dump() with no processing_status, no entities_referenced,
+    # no record_id/source_type/etc.
+    doc = {
+        "message_id": message_id,
+        "thread_id": message_id,
+        "from": {"name": "Jane", "email": "jane@example.com"},
+        "to": [{"name": "Ashok", "email": "ashok@example.com"}],
+        "cc": [],
+        "subject": "Raw-only email",
+        "body": "This email was only raw-ingested, never processed.",
+        "timestamp": "2026-09-10T09:00:00Z",
+        "labels": [],
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_list_processed_emails_does_not_crash_on_processed_email_with_processing_status(db, settings):
+    process_email(
+        db,
+        parse_email(_raw_email("msg_processed", "Body.")),
+        MockLLMProvider(),
+        MockCalendarProvider(),
+        settings,
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    assert len(results) == 1
+    assert results[0]["processing_status"]["stage"] == "COMPLETED"
+    assert results[0]["processing_status"]["error"] is None
+
+
+def test_list_processed_emails_does_not_crash_on_raw_email_without_processing_status(db):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "msg_raw"}, _raw_only_email("msg_raw")
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    assert len(results) == 1
+    assert results[0]["message_id"] == "msg_raw"
+    assert results[0]["processing_status"] == {"stage": None, "error": None}
+
+
+def test_list_processed_emails_handles_mixed_raw_and_processed_emails_without_crashing(db, settings):
+    process_email(
+        db,
+        parse_email(_raw_email("msg_processed", "Body.", timestamp="2026-09-15T10:00:00Z")),
+        MockLLMProvider(),
+        MockCalendarProvider(),
+        settings,
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "msg_raw"},
+        _raw_only_email("msg_raw", timestamp="2026-09-10T09:00:00Z"),
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    assert len(results) == 2
+    by_id = {r["message_id"]: r for r in results}
+    assert by_id["msg_processed"]["processing_status"]["stage"] == "COMPLETED"
+    assert by_id["msg_raw"]["processing_status"] == {"stage": None, "error": None}

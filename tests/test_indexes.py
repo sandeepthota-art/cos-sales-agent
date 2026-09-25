@@ -29,3 +29,17 @@ def test_initialize_indexes_creates_expected_unique_indexes():
     assert index_keys("calendar_actions") == {
         (("thread_id", 1), ("meeting_fingerprint", 1)): True
     }
+    assert index_keys("ingested_files") == {(("filename", 1),): True}
+
+
+def test_initialize_indexes_creates_people_open_threads_index():
+    # Supports resolve_person's no-email thread-scoped lookup
+    # (db.people.find({"open_threads": thread_id})) -- non-unique, since many People can
+    # share a thread.
+    client = mongomock.MongoClient()
+    db = client["cos_sales_test"]
+
+    initialize_indexes(db)
+
+    all_keys = {tuple(spec["key"]) for spec in db["people"].index_information().values()}
+    assert (("open_threads", 1),) in all_keys

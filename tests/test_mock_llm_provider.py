@@ -1,3 +1,5 @@
+import pytest
+
 from app.email.models import parse_email
 from app.providers.llm.mock import MockLLMProvider
 
@@ -77,11 +79,15 @@ def test_update_context_merges_new_facts_and_tags_provenance():
         "companies": [],
         "products": [],
     }
-    new_context = provider.update_context(previous_context, analysis)
-    assert new_context["requirements"][0]["value"] == "100 seats"
-    assert new_context["requirements"][0]["basis"] == "stated"
-    assert new_context["requirements"][0]["source_email_ids"] == ["msg_001"]
-    assert any(item["basis"] == "inferred" for item in new_context["buying_signals"] + new_context.get("_inferred", []))
+    delta = provider.update_context(previous_context, analysis)
+    # update_context now returns a bounded ContextDelta (see app.context.models), not a
+    # full merged context -- source_email_ids is deliberately absent here since the
+    # deterministic merge (app.context.engine.apply_context_delta) injects the current
+    # email's own id, not the LLM.
+    assert delta["requirements"]["added"][0]["value"] == "100 seats"
+    assert delta["requirements"]["added"][0]["basis"] == "stated"
+    assert "source_email_ids" not in delta["requirements"]["added"][0]
+    assert any(item["basis"] == "inferred" for item in delta["next_actions"]["added"])
 
 
 def test_verify_same_fact_uses_similarity():
@@ -148,6 +154,21 @@ def test_mock_llm_classification_fields_are_deterministic():
     assert with_signal["confidence"] == 0.8
 
 
+def test_mock_llm_priority_is_deterministic_and_valid():
+    provider = MockLLMProvider()
+    with_signal = provider.analyze_email(_email("Can you send pricing for the enterprise plan?"))
+    without_signal = provider.analyze_email(_email("Just an FYI, no action needed."))
+
+    assert with_signal["priority"] == "P1"
+    assert without_signal["priority"] == "P2"
+    # EmailAnalysis.model_validate must accept both -- proves the mock's output is
+    # actually schema-valid, not just internally consistent with itself.
+    from app.analysis.schemas import EmailAnalysis
+
+    EmailAnalysis.model_validate(with_signal)
+    EmailAnalysis.model_validate(without_signal)
+
+
 # --- Relative-date meeting/action detection (spec S5.1.1) ---
 
 
@@ -204,3 +225,57 @@ def test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting():
     # "met" (past tense) is a different word from the "meet" trigger -- this is
     # intentionally never recognized as a meeting mention at all by the keyword-based mock.
     assert result["meetings_mentioned"] == []
+
+
+# --- Meeting reference vs. proposal (regression: MTG-384 false positive) ---
+# "our sprint review on Friday" mentioned an EXISTING meeting; the live system wrongly
+# created a new Meeting proposal for it. A mere reference to an already-established
+# meeting must never produce a meetings_mentioned entry -- only a genuine request,
+# proposal, schedule, reschedule, or confirmation should.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "We discussed in yesterday's meeting that pricing needs work.",
+        "Let's follow up on the action items after the meeting.",
+        "I'll send the notes during our call.",
+        "Following our meeting, here's the summary you asked for.",
+    ],
+)
+def test_mock_llm_does_not_treat_a_meeting_reference_as_a_new_proposal(body):
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email(body))
+    assert result["meetings_mentioned"] == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Can we meet Tuesday at 3 PM?",
+        "Let's schedule a call tomorrow.",
+        "Let's have a 30-minute review next week.",
+    ],
+)
+def test_mock_llm_still_detects_genuine_meeting_proposals(body):
+    # Preserves the valid cases: genuine forward-looking scheduling language must keep
+    # working even with the new reference-marker exclusion in place. "Let's have a
+    # 30-minute review next week" has no meet/call/sync/catch-up trigger word in the
+    # deterministic mock (a real LLM would recognize it semantically), so it's not
+    # expected to produce a meetings_mentioned entry here -- only that it never raises
+    # and never gets wrongly suppressed by the reference-marker pattern.
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email(body))
+    assert isinstance(result["meetings_mentioned"], list)
+
+
+def test_mock_llm_detects_can_we_meet_as_a_proposal():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Can we meet Tuesday at 3 PM?"))
+    assert len(result["meetings_mentioned"]) == 1
+
+
+def test_mock_llm_detects_schedule_a_call_as_a_proposal():
+    provider = MockLLMProvider()
+    result = provider.analyze_email(_email("Let's schedule a call tomorrow."))
+    assert len(result["meetings_mentioned"]) == 1

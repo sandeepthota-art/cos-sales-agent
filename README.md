@@ -1,40 +1,79 @@
 # CoS Sales Agent
 
-A local, modular Chief-of-Staff Sales Sub-Agent prototype. It processes sales emails,
-threads conversations, builds cumulative per-thread context with an LLM, extracts and
-deduplicates sales knowledge, drafts replies, detects meetings, and prepares
-approval-gated calendar actions — backed by MongoDB with a Streamlit dashboard.
+An AI-powered Chief of Staff / Sales Agent that ingests email, reconstructs threads
+and context, resolves canonical people/organizations/projects, extracts
+commitments and follow-ups, detects meetings, and drafts replies for human
+approval. Reading, analysis, entity resolution, and drafting run automatically;
+sending an email or creating a real calendar event always requires explicit
+human approval.
 
-External actions (sending an email, creating a calendar event) always require explicit
-human approval; everything else runs automatically.
+## What it does
+
+- Ingests email (a Gmail-export JSON file, a synthetic demo generator, or one
+  message at a time via MCP)
+- Validates and normalizes each message; a malformed record fails only that
+  one email
+- Resolves conversation threads and canonical people/organizations
+- Applies one of six labels to every message (`Needs reply: ASAP`,
+  `Needs reply`, `Needs reply: mention`, `Read only`, `Delete`, `Undecided`)
+  and a `P1`/`P2` business priority
+- Extracts commitments (`mine` / `owed_to_me` / `theirs` / `recap`) with
+  resolved due dates (`stated` / `inferred` / `window`)
+- Creates follow-ups for chased commitments, classified by audience
+  (`internal` / `client_fixed_date` / `client_open_window`) with a computed
+  timing window, and tracks a four-level escalation state
+- Detects meetings from email text and proposes a calendar action (never
+  creates a real calendar event)
+- Builds cumulative per-thread context and deduplicated knowledge facts
+- Drafts replies for messages that need one, held for human approval
+- Exposes all of the above through MCP query tools for an external client
+
+Only functionality that actually exists in the code is listed above.
 
 ## Architecture
 
-See `docs/superpowers/specs/2026-09-13-cos-sales-agent-design.md` for the full data model
-and design rationale. In short:
-
+```mermaid
+graph TD
+    A["Email Source (Gmail-export JSON, or an MCP client's Gmail connector)"] --> B["Ingestion (message_id + COMPLETED dedup)"]
+    B --> C["Validation / Normalization"]
+    C --> D["Thread Resolution"]
+    D --> E["LLM Email Analysis"]
+    E --> F["Context Snapshot"]
+    F --> G["Knowledge Extraction / Deduplication"]
+    G --> H["Canonical Entity Resolution (People / Organizations / Projects)"]
+    H --> I["Commitments / Follow-ups / Meetings"]
+    I --> J["Reply Draft Generation"]
+    J --> K["Calendar Action Proposal"]
+    K --> L[(MongoDB)]
+    L --> M["MCP Query Tools"]
 ```
-Email Provider -> validate -> normalize -> thread -> LLM analysis -> cumulative context
-   -> knowledge extraction/deduplication -> reply draft / meeting detection
-   -> (human approval) -> send email / create calendar event
-```
 
-## Prerequisites
+This mirrors the actual stage sequence in `app/pipeline.py::run_pipeline()`
+(`THREADED -> ANALYZED -> CONTEXT_BUILT -> KNOWLEDGE_PROCESSED ->
+ENTITIES_PROCESSED -> REPLY_PROCESSED -> MEETING_PROCESSED -> COMPLETED`).
 
-- Python 3.11+
-- Docker (for MongoDB) — or a MongoDB instance you already run locally
-- No API keys are required for demo mode
+## Requirements
 
-## Installation
+- **Python** 3.11+
+- **MongoDB Atlas** (or any reachable MongoDB instance) — collections and
+  indexes are created automatically on first use
+- **An Anthropic API key** if using `LLM_PROVIDER=claude`, or an
+  OpenAI-compatible API key if using `LLM_PROVIDER=openai` (works with OpenAI
+  itself or any compatible endpoint, e.g. Groq, via `LLM_BASE_URL`) — neither
+  is required for `LLM_PROVIDER=mock`, the default
+- **An MCP client** (e.g. Claude Desktop) only if you want to use the MCP
+  tools interactively; the pipeline itself runs standalone via `main.py`
 
-```bash
+## Installation — Python
+
+Python installation is the simplest option; Docker (below) is an optional
+alternative.
+
+**Windows:**
+```powershell
 git clone <this-repository>
 cd cos-sales-agent
 python -m venv .venv
-```
-
-**Windows (PowerShell):**
-```powershell
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
@@ -42,232 +81,269 @@ copy .env.example .env
 
 **macOS/Linux:**
 ```bash
+git clone <this-repository>
+cd cos-sales-agent
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## MongoDB
+Then edit `.env` — see Configuration below.
 
-```bash
-docker compose up -d
-```
+## Configuration
 
-This starts MongoDB on `localhost:27017` and Mongo Express (a MongoDB inspection UI) on
-`http://localhost:8081`. Collections and indexes are created automatically by the
-application on startup — no manual MongoDB setup is required.
+Copy `.env.example` to `.env` and edit it. Every variable is documented in
+that file; the ones that matter for a first run:
 
-### Running Without Docker (Windows, no admin rights)
+| Variable | Required? | Notes |
+|---|---|---|
+| `MONGODB_URI` | Required | Your MongoDB Atlas connection string |
+| `MONGODB_DATABASE` | Required | Database name — created automatically |
+| `EMAIL_PROVIDER` | Safe default (`demo`) | `demo` needs no external service |
+| `LLM_PROVIDER` | Safe default (`mock`) | `mock` needs no API key; set to `claude` or `openai` for real analysis |
+| `LLM_API_KEY` | Only if `LLM_PROVIDER` is `claude`/`openai` | **Secret** — never commit |
+| `AGENT_EMAIL` | Required | Your own mailbox address |
+| Everything else | Optional | Scheduler/reminder/knowledge-projector settings — safe defaults already set |
 
-Docker is used for exactly one thing in this project: giving you a MongoDB instance at
-`localhost:27017` (Mongo Express is an optional inspection UI — the Streamlit dashboard
-already covers that). If Docker/WSL/Hyper-V aren't available (e.g. a locked-down office
-laptop), run MongoDB directly instead — no installer, no Windows service, no admin rights:
-
-```powershell
-.\run-mongodb-local.ps1
-```
-
-This downloads the official MongoDB Community Server **ZIP** build (not the MSI
-installer — the MSI is the one that needs admin rights to register a service) into
-`%USERPROFILE%\mongodb`, and starts `mongod.exe` as a normal foreground process bound to
-`127.0.0.1:27017`. Leave that terminal window open while you use the app. Everything else
-— `.env`, `python main.py --healthcheck`, `--mode=demo`, the Streamlit dashboard — works
-completely unchanged, since the app only ever talks to `MONGODB_URI` and doesn't know or
-care whether MongoDB came from Docker or a local `mongod.exe`.
-
-## Environment Configuration
-
-Edit `.env` (copied from `.env.example`). Defaults already run the full demo with zero
-credentials:
+Minimal example (fake values):
 
 ```env
+MONGODB_URI=mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/?appName=Cluster0
+MONGODB_DATABASE=cos_sales
+
 EMAIL_PROVIDER=demo
 CALENDAR_PROVIDER=mock
 LLM_PROVIDER=mock
+
+AGENT_EMAIL=you@yourdomain.example
+
 SIMULATION_MODE=true
-DEMO_SEED=42
+EMAIL_LIMIT=50
 ```
 
-## Health Check
+**Never commit your real `.env`.** `.gitignore` already excludes it.
 
-```bash
+## MongoDB
+
+1. Create a free MongoDB Atlas cluster at [mongodb.com/atlas](https://www.mongodb.com/atlas).
+2. Create a database user (username + password).
+3. Add your current IP (or `0.0.0.0/0` for quick testing) to the cluster's
+   network access list.
+4. Put the connection string in `MONGODB_URI` in `.env`.
+5. That's it — the application creates every required collection and index
+   itself on first write (`app/database/indexes.py`). You do not need to
+   manually create any collection.
+
+## Running
+
+```powershell
 python main.py --healthcheck
-```
-
-Verifies configuration, MongoDB connectivity/indexes, and provider selection.
-
-## Demo Mode
-
-```bash
 python main.py --mode=demo
-```
-
-Processes a deterministic 9-email synthetic sales thread end to end: threading, LLM-style
-analysis, cumulative context, context diffs, knowledge extraction/deduplication,
-contradiction/history tracking, reply drafting, meeting detection, and prepared (but
-unapproved) calendar actions.
-
-## Streamlit Dashboard
-
-```bash
-streamlit run app/ui/dashboard.py
-```
-
-Inspect processed emails, thread context evolution, deduplicated knowledge (with history),
-and approve/edit/reject reply drafts and calendar actions from the UI.
-
-## Running Tests
-
-```bash
-pytest
-```
-
-All tests run against `mongomock` and mock LLM/email/calendar providers — no real
-credentials or external services are required.
-
-## Database Reset
-
-```bash
+python main.py --mode=file --input "C:\path\to\your-emails.json"
+python main.py --mode=raw-file --input "C:\path\to\your-emails.json"
 python main.py --reset-demo
 ```
 
-Only permitted when `APP_ENV=development` or `SIMULATION_MODE=true`; clears demo data
-from every collection so a fresh `--mode=demo` run starts clean.
+- `--mode=demo` runs a small synthetic dataset end-to-end (no external data
+  needed).
+- `--mode=file` ingests a Gmail-label-export-shaped JSON file (see
+  `app/providers/email/file.py::FileEmailProvider` for the exact schema) through
+  the full LLM + entity pipeline.
+- `--mode=raw-file` ingests the same file shape without any LLM call
+  (deterministic, no API cost) — see `app/raw_ingestion.py`.
+- `--reset-demo` wipes the demo/reset-eligible collections (requires
+  `SIMULATION_MODE=true` or `APP_ENV=development`).
 
-## MCP Configuration (extension point, not ready-to-use)
+Optional standing processes, each its own entry point:
 
-`EMAIL_PROVIDER=mcp` / `CALENDAR_PROVIDER=mcp` are an **extension point**, not a
-pre-wired, zero-config integration: this codebase ships the `MCPEmailProvider` /
-`MCPCalendarProvider` adapter shape, but no connection to any specific mail or calendar
-server. Selecting `mcp` requires:
-
-1. Setting `MCP_EMAIL_ENABLED=true` / `MCP_CALENDAR_ENABLED=true` — `ProviderFactory`
-   raises a clear `ValueError` at startup if the corresponding provider is set to `mcp`
-   without its `*_ENABLED` flag, rather than constructing a provider that only fails
-   later on first use.
-2. Supplying your own MCP client instance to the adapter (e.g. by extending
-   `ProviderFactory` to construct `MCPEmailProvider(client=...)` /
-   `MCPCalendarProvider(client=...)`) — the adapters are constructed with `client=None` by
-   default and raise `RuntimeError` on first use until a real client is wired in.
-
-The core pipeline has no dependency on MCP being available — `ProviderFactory` only
-imports the MCP adapter module when explicitly selected, so an unconfigured MCP server
-never breaks demo/mock runs.
-
-## LLM Configuration
-
-Set `LLM_PROVIDER=claude` or `LLM_PROVIDER=openai` plus `LLM_API_KEY` and `LLM_MODEL` to
-use a real model instead of the deterministic mock.
-
-## Safety / Approval Model
-
-- Reading, analyzing, threading, context-building, knowledge extraction/deduplication,
-  reply drafting, and meeting detection are fully automatic.
-- Sending an email and creating a calendar event always require explicit approval through
-  the Streamlit UI.
-- In this version, an approved reply is always **simulated** — printed to the console and
-  marked `simulated_sent` — regardless of the `SIMULATION_MODE` setting; there is no
-  real-send code path wired into the approval flow yet (see `app/replies/approval.py`'s
-  `simulate_send`). `SIMULATION_MODE` currently only gates `--reset-demo` (it must be
-  `true`, or `APP_ENV=development`, for that command to run). A calendar event created via
-  an enabled MCP calendar provider is a real external action once approved.
-- Calendar events are created for the authenticated user only — external attendees
-  (sender, customer, CC) can never be added; this is enforced by a Pydantic validator and
-  a second check immediately before the calendar provider is called.
-
-## Portability
-
-No hardcoded paths, usernames, personal emails, API keys, or MongoDB credentials appear
-anywhere in the source — everything environment-specific comes from `.env`. This project
-should run unmodified after cloning to another Windows, macOS, or Linux machine, provided
-Docker and Python 3.11+ are available.
-
-## Claude Desktop MCP Integration
-
-This project can run as a local MCP server that Claude Desktop calls directly. Claude
-Desktop's built-in Gmail connector handles all Gmail reading and sending; this server only
-ever runs the existing pipeline (analysis, context, knowledge extraction/deduplication,
-meeting detection, reply drafting) against whatever email Claude hands it, and persists the
-result to your local MongoDB. It never talks to Gmail, the Gmail API, or any OAuth flow, and
-it never creates a real calendar event.
-
-### Prerequisites
-
-- MongoDB running locally (see the MongoDB section above)
-- `.env` configured with a real LLM provider, since the MCP tool uses `ClaudeProvider`:
-
-```env
-LLM_PROVIDER=claude
-LLM_API_KEY=<your Anthropic API key>
-LLM_MODEL=claude-sonnet-5
-TIMEZONE=America/New_York       # meeting proposals are resolved as wall-clock times in this zone
-AGENT_EMAIL=you@yourdomain.com  # your own mailbox; no reply draft is generated for mail sent from this address
+```bash
+python -m app.scheduler         # polls data/inbox/ for new JSON exports
+python -m app.reminders         # polls personal_items for due reminders
+python -m app.knowledge_projector  # writes a Markdown projection of MongoDB knowledge
+streamlit run app/ui/dashboard.py  # local dashboard UI
 ```
 
-### Install
+## Testing
 
-```powershell
-pip install -r requirements.txt
+```bash
+pytest -q
 ```
 
-### Register the server with Claude Desktop
+Focused subsets, for example:
 
-Add this to Claude Desktop's `claude_desktop_config.json` (Windows:
-`%APPDATA%\Claude\claude_desktop_config.json`):
+```bash
+pytest tests/test_pipeline_entities.py -q
+pytest tests/test_mcp_server.py tests/test_mcp_tools.py -q
+```
+
+All tests run against `mongomock` and mock LLM/email/calendar providers — no
+real MongoDB instance or API credentials are required to run the suite.
+
+## Email ingestion
+
+Three distinct paths exist today — do not confuse them:
+
+- **Demo data** (`--mode=demo`): a small synthetic dataset generated in-process
+  (`demo_data/generator.py`), useful for a zero-configuration smoke test.
+- **Source email ingestion** (`--mode=file` / `--mode=raw-file`): a real
+  Gmail-export-shaped JSON file you supply yourself. No sample real-email
+  dataset ships in this repository.
+- **Normal runtime processing**: one email at a time via the MCP server's
+  `process_email` / `ingest_email` tools, driven by an external MCP client
+  (e.g. a Gmail connector in Claude Desktop). There is no batch Gmail-API
+  polling implemented in this codebase — `python -m app.scheduler` only polls
+  a **local folder** for JSON export files; a live-Gmail source
+  (`app/providers/source/live_gmail.py`) exists in the code but is not wired
+  to a real Gmail client and will raise clearly if selected.
+
+## MCP
+
+The MCP server (`app/mcp/server.py`) exposes every read tool (people,
+organizations via `get_company_summary`, projects, commitments, follow-ups,
+meetings, reply drafts, knowledge lookup) plus the write tools
+(`process_email` and the deterministic `ingest_email` /
+`persist_email_analysis` / `persist_context_delta` / `create_reply_draft` /
+`mark_email_completed` path).
+
+**Local (stdio) — the default**, for a client like Claude Desktop:
 
 ```json
 {
   "mcpServers": {
     "cos-sales-agent": {
-      "command": "C:\\path\\to\\cos-sales-agent\\.venv\\Scripts\\python.exe",
+      "command": "<path to .venv>/Scripts/python.exe",
       "args": ["-m", "app.mcp.server"],
-      "cwd": "C:\\path\\to\\cos-sales-agent"
+      "cwd": "<path to this repository>"
     }
   }
 }
 ```
 
-Replace both paths with your actual project location, then restart Claude Desktop. The
-server starts automatically as a subprocess Claude Desktop manages — there is no separate
-"run the server" step.
+**HTTP (streamable-http)** — set in `.env`:
 
-### What the `process_email` tool does
-
-Given one email's fields (sender, recipients, subject, body, timestamp, message id), it
-runs the full pipeline and returns:
-- a running summary of what's known about the thread so far
-- deduplicated sales knowledge extracted from the thread
-- a proposed reply draft (if one is warranted) — for Claude to send via its own Gmail
-  connector, under Claude's normal approval prompt
-- a proposed meeting time (if detected) — informational only; no calendar event is ever
-  created by this tool
-
-### Manual verification
-
-```powershell
-$env:PYTHONPATH = (Get-Location).Path
-mcp dev app/mcp/server.py
+```env
+MCP_TRANSPORT=streamable-http
+MCP_AUTH_TOKEN=<a long random secret>
+PORT=8000
 ```
 
-Opens the MCP Inspector in your browser. Under the "Tools" tab you should see
-`process_email` with its full input schema; you can invoke it there with a sample email
-payload and confirm new documents appear in your local `cos_sales` MongoDB database.
+then run `python -m app.mcp.server`. The server binds `0.0.0.0:$PORT`
+(default `8000`) and serves the MCP endpoint at `POST /mcp`, requiring
+`Authorization: Bearer <MCP_AUTH_TOKEN>` on every request except `GET /health`
+(unauthenticated, for platform liveness checks).
 
-## Troubleshooting
+## Docker
 
-- **MongoDB connection refused**: confirm `docker compose up -d` succeeded and
-  `MONGODB_URI` in `.env` matches the exposed port.
-- **`--healthcheck` reports MongoDB failure**: check Docker is running and port 27017 is
-  free.
-- **Demo run produces 0 completed emails**: check `LOG_LEVEL=DEBUG` in `.env` and inspect
-  console output for the failing stage.
-- **Streamlit shows a blank dashboard**: run `python main.py --mode=demo` first to
-  populate MongoDB.
+Optional — Python installation above is the simplest option.
 
-## Adding a New Provider
+```bash
+docker build -t cos-sales-agent .
+docker run --env-file .env -p 8000:8000 cos-sales-agent
+```
 
-Implement the relevant interface (`EmailProvider`, `CalendarProvider`, or `LLMProvider`
-from `app/interfaces/`), add it under `app/providers/<kind>/`, and add a branch for it in
-`app/providers/factory.py`'s `ProviderFactory`. Business logic never imports a concrete
-provider directly, so no other file needs to change.
+Or with Compose (same image, reads `.env`):
+
+```bash
+docker compose up --build
+```
+
+There is no MongoDB container here — this project uses MongoDB Atlas. Set
+`MONGODB_URI` in `.env` to your Atlas connection string; nothing else needs to
+run alongside the app.
+
+To run a one-shot pipeline command instead of the MCP server:
+
+```bash
+docker compose run --rm app python main.py --mode=demo
+```
+
+## Render deployment
+
+The MCP server already supports HTTP (`streamable-http`), binds `0.0.0.0`, and
+reads its port from the `PORT` environment variable — no code changes are
+needed to deploy it as a Render Web Service:
+
+1. Connect this GitHub repository to a new Render Web Service.
+2. Choose the Docker environment (uses the `Dockerfile` in this repo), or a
+   native Python environment with build command `pip install -r
+   requirements.txt` and start command `python -m app.mcp.server`.
+3. Set environment variables in Render's dashboard (never in the repo):
+   `MONGODB_URI`, `MONGODB_DATABASE`, `MCP_TRANSPORT=streamable-http`,
+   `MCP_AUTH_TOKEN`, `LLM_PROVIDER`/`LLM_API_KEY` if using a real LLM, plus
+   any other values from `.env.example` you need.
+4. Deploy.
+5. The MCP endpoint is `https://<your-render-service>.onrender.com/mcp`
+   (`POST`, `Authorization: Bearer <MCP_AUTH_TOKEN>`); a liveness probe is
+   available, unauthenticated, at `GET /health`.
+
+## Security
+
+- Never commit `.env` (already excluded by `.gitignore`).
+- Never commit API keys, MongoDB connection strings with credentials, OAuth
+  credentials, tokens, or private certificates.
+- Never commit real email data (a sample dataset filename is explicitly
+  excluded in `.gitignore`; keep any real export outside the repository).
+- For production, set secrets via Render's (or your platform's) environment
+  variable store, never in the repository.
+- Use a MongoDB Atlas database user scoped to only this application's
+  database, not a cluster-wide admin user.
+
+## Project structure
+
+```text
+app/
+  analysis/         # LLM analysis schema + validated extraction call
+  calendar/         # Deterministic meeting detection, calendar action model
+  config/           # Settings (pydantic-settings) and logging setup
+  context/          # Cumulative per-thread context, diffing
+  database/         # Mongo client/index setup, one repository class per collection
+  email/            # Email/EmailAddress models, normalization, thread resolution
+  entities/         # Canonical entity resolution, date/timing rules, ID generation
+  interfaces/       # Abstract EmailProvider/CalendarProvider/LLMProvider/Source
+  knowledge/        # Fact extraction, similarity-based deduplication
+  mcp/              # MCP server + tools exposed to an external MCP client
+  processing/       # Pipeline stage enum, per-run summary models
+  providers/        # Concrete provider implementations, selected via factory.py
+  query/            # Read-only query layer behind the MCP tools
+  replies/          # Reply-needed gate, drafting, approval/simulated-send
+  ui/               # Streamlit dashboard
+  pipeline.py       # run_pipeline() -- the core per-batch orchestration
+main.py             # CLI entry point (--healthcheck, --mode, --reset-demo)
+requirements.txt
+.env.example
+docs/               # Design specs and implementation plans (historical + current)
+tests/              # pytest suite (mongomock + mock providers throughout)
+```
+
+## Canonical entities and IDs
+
+| Entity | ID prefix |
+|---|---|
+| Person | `PER-` |
+| Organization | `ORG-` |
+| Project | `PRJ-` |
+| Commitment | `CMT-` |
+| FollowUp | `FUP-` |
+| Meeting | `MTG-` |
+| PersonalItem | `PSN-` |
+
+(`PersonalItem` currently uses `PSN-`; a BRD reference elsewhere uses `PRS-`
+— this is a known, deliberately unresolved naming question, not a bug.)
+
+## Development
+
+```bash
+pytest -q                          # full suite
+pytest tests/<file>.py -q          # focused
+```
+
+Follow the existing patterns in `tests/` (`mongomock` fixtures, mock
+providers) for any new test. No linter/type-checker is currently configured
+in this repository.
+
+## License
+
+No license file currently exists in this repository. Add one (e.g. MIT,
+Apache-2.0) before treating this as open source — this README does not
+assume a license on your behalf.

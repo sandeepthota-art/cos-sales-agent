@@ -27,6 +27,14 @@ def initialize_indexes(db: Database) -> None:
 
     db.people.create_index("id", unique=True)
     db.people.create_index("email", unique=True, sparse=True)
+    # Non-unique, on the array field itself (a "multikey" index -- MongoDB indexes each
+    # array element individually) -- supports resolve_person's no-email thread-scoped
+    # lookup (app/entities/resolution.py: db.people.find({"open_threads": thread_id})),
+    # which every no-email person mention now runs. Not a compound (name, open_threads)
+    # index: the name comparison happens in Python via normalize_text (names aren't
+    # stored pre-normalized), so a compound index wouldn't be usable by that query --
+    # only open_threads is ever an actual Mongo-side filter.
+    db.people.create_index("open_threads")
 
     db.projects.create_index("id", unique=True)
 
@@ -41,3 +49,5 @@ def initialize_indexes(db: Database) -> None:
     db.meetings.create_index("thread_id")
 
     db.personal_items.create_index("id", unique=True)
+
+    db.ingested_files.create_index("filename", unique=True)
