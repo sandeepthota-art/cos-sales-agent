@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +36,13 @@ class Person(BaseModel):
     note_link: str | None = None
     review_flag: bool = False
     source: str = "gmail"
+    # Free-form, per-person drafting preferences (e.g. voice_signature,
+    # remove_long_dash) -- set manually today (no extraction path writes this yet).
+    # Read by app.replies.drafter.draft_reply and injected into the reply-drafting
+    # system prompt (app.providers.llm.claude.ClaudeProvider.draft_reply) whenever
+    # non-empty. Never populated from knowledge_items -- system/process instructions
+    # like these belong here, not floating in the knowledge graph as extracted facts.
+    preferences: dict[str, Any] = Field(default_factory=dict)
     # Phase 18 (app.duplicate_consolidation): a person retired via approved duplicate
     # consolidation is never physically deleted -- it's marked "merged" and points at
     # its canonical replacement, preserving historical identity. "active" (the

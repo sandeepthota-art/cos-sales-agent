@@ -153,6 +153,16 @@ class ClaudeProvider(LLMProvider):
 
     def draft_reply(self, context: dict[str, Any], latest_email: Email) -> dict[str, Any]:
         instructions = "Draft a professional sales reply. Return ONLY JSON: {\"subject\": ..., \"body\": ...}."
+        # The recipient's own Person.preferences (app.entities.models.Person), folded
+        # into `context` by app.replies.drafter.draft_reply -- a standing drafting
+        # rule (e.g. voice_signature, remove_long_dash), not contextual data, so it
+        # belongs in the system instructions, not just the user-turn payload below.
+        preferences = context.get("recipient_preferences") or {}
+        if preferences:
+            instructions += (
+                " The recipient has these standing drafting preferences -- apply them "
+                "exactly: " + json.dumps(preferences) + "."
+            )
         user = json.dumps(
             {
                 "context": context,

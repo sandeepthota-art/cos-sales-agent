@@ -213,12 +213,19 @@ class MockLLMProvider(LLMProvider):
     def draft_reply(self, context: dict[str, Any], latest_email: Email) -> dict[str, Any]:
         company = context.get("company", {}).get("name", "there")
         greeting_name = latest_email.from_.name or latest_email.from_.email
+        # recipient_preferences (app.entities.models.Person.preferences, folded in by
+        # app.replies.drafter.draft_reply) -- absent/empty leaves this byte-identical
+        # to the prior hardcoded signature, so every pre-existing test is unaffected.
+        preferences = context.get("recipient_preferences") or {}
+        signature = preferences.get("voice_signature") or "Best regards,\nSales Team"
         body = (
             f"Hi {greeting_name},\n\n"
             f"Thank you for your note regarding {company or 'your evaluation'}. "
             "We appreciate the additional detail and will follow up shortly with the "
-            "information you requested.\n\nBest regards,\nSales Team"
+            f"information you requested.\n\n{signature}"
         )
+        if preferences.get("remove_long_dash"):
+            body = body.replace("—", "-").replace("–", "-")
         return {
             "subject": f"Re: {latest_email.subject}",
             "body": body,

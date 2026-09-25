@@ -677,7 +677,14 @@ def run_pipeline(
                 # already approved/edited/sent it after an earlier partial run).
                 # Never blind-overwrite it -- only create it the first time.
                 if reply_repo.find_one(reply_key) is None:
-                    draft_content = draft_reply(llm_provider, next_context, email)
+                    # The reply's recipient IS this email's sender -- sender_person,
+                    # already resolved above, is the exact same Person whose
+                    # preferences (voice_signature, remove_long_dash, ...) should
+                    # shape how we write back to them.
+                    recipient_preferences = sender_person.get("preferences") if sender_person else None
+                    draft_content = draft_reply(
+                        llm_provider, next_context, email, recipient_preferences=recipient_preferences
+                    )
                     draft = ReplyDraft(
                         reply_id=f"reply_{email.message_id}",
                         thread_id=thread_id,

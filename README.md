@@ -271,7 +271,15 @@ needed to deploy it as a Render Web Service:
 3. Set environment variables in Render's dashboard (never in the repo):
    `MONGODB_URI`, `MONGODB_DATABASE`, `MCP_TRANSPORT=streamable-http`,
    `MCP_AUTH_TOKEN`, `LLM_PROVIDER`/`LLM_API_KEY` if using a real LLM, plus
-   any other values from `.env.example` you need.
+   any other values from `.env.example` you need. **Do not skip
+   `MCP_TRANSPORT`/`MCP_AUTH_TOKEN`** — without them the server starts in
+   stdio mode (there's no client attached to read it), which Render reports
+   as a deploy failure with no other diagnostic: `Application exited early`.
+   As a safety net, `main()` now infers `streamable-http` automatically
+   whenever `$PORT` is set and `MCP_TRANSPORT` is left completely unset
+   (every PaaS host injects `$PORT`; a stdio launcher like Claude Desktop
+   never does) — so a missing `MCP_AUTH_TOKEN` now fails loudly instead of
+   silently exiting, but you should still set both explicitly.
 4. Deploy.
 5. The MCP endpoint is `https://<your-render-service>.onrender.com/mcp`
    (`POST`, `Authorization: Bearer <MCP_AUTH_TOKEN>`); a liveness probe is

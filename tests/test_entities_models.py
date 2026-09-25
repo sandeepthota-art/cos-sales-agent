@@ -11,6 +11,17 @@ def test_person_defaults():
     assert person.aliases == []
     assert person.review_flag is False
     assert person.source == "gmail"
+    assert person.preferences == {}
+
+
+def test_person_preferences_round_trips_through_the_model():
+    person = Person(
+        id="PER-001", name="Ashok Ganapam", email="ashok@databeat.io",
+        preferences={"voice_signature": "short and concise", "remove_long_dash": True},
+    )
+    assert person.preferences == {"voice_signature": "short and concise", "remove_long_dash": True}
+    dumped = person.model_dump(mode="json")
+    assert dumped["preferences"] == {"voice_signature": "short and concise", "remove_long_dash": True}
 
 
 def test_project_has_no_review_flag_field():

@@ -125,3 +125,60 @@ def test_draft_reply_validation_error_retry_exhaustion_raises_the_validation_err
 
     with pytest.raises(ValidationError):
         draft_reply(llm, context, _email())
+
+
+# --- recipient_preferences propagation (Person.preferences -> system prompt) ----------
+
+
+class _RecordingLLM(LLMProvider):
+    """Captures exactly the context dict draft_reply hands to the provider, so a test
+    can assert what recipient_preferences ends up looking like without needing a real
+    Claude call."""
+
+    def __init__(self):
+        self.received_context = None
+
+    def analyze_email(self, email):
+        raise NotImplementedError
+
+    def update_context(self, previous_context, new_analysis):
+        raise NotImplementedError
+
+    def verify_same_fact(self, existing_value, new_value, subject, predicate):
+        raise NotImplementedError
+
+    def draft_reply(self, context, latest_email):
+        self.received_context = context
+        return {"subject": "Re: Enterprise pricing", "body": "ok"}
+
+
+def test_draft_reply_folds_recipient_preferences_into_the_context_dict():
+    llm = _RecordingLLM()
+    context = ThreadContext(summary="s")
+
+    draft_reply(
+        llm, context, _email(),
+        recipient_preferences={"voice_signature": "short and concise", "remove_long_dash": True},
+    )
+
+    assert llm.received_context["recipient_preferences"] == {
+        "voice_signature": "short and concise", "remove_long_dash": True,
+    }
+
+
+def test_draft_reply_omits_recipient_preferences_key_entirely_when_none():
+    llm = _RecordingLLM()
+    context = ThreadContext(summary="s")
+
+    draft_reply(llm, context, _email())
+
+    assert "recipient_preferences" not in llm.received_context
+
+
+def test_draft_reply_omits_recipient_preferences_key_when_empty_dict():
+    llm = _RecordingLLM()
+    context = ThreadContext(summary="s")
+
+    draft_reply(llm, context, _email(), recipient_preferences={})
+
+    assert "recipient_preferences" not in llm.received_context

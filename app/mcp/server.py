@@ -431,8 +431,23 @@ def _run_http() -> None:
     )
 
 
+def _wants_http_transport() -> bool:
+    transport = os.environ.get("MCP_TRANSPORT")
+    if transport is not None:
+        return transport == "streamable-http"
+    # MCP_TRANSPORT left completely unset: infer from $PORT, which every
+    # PaaS-style host (Render, Railway, Heroku) injects for a web service, and which
+    # a stdio launcher (Claude Desktop, a local `python -m app.mcp.server`) never
+    # sets. Without this, an operator who forgets to set MCP_TRANSPORT=streamable-http
+    # on such a host gets a silent "Application exited early" with zero diagnostic
+    # info (mcp.run()'s stdio loop hits EOF on a stdin nothing is attached to and
+    # exits cleanly) -- this at least fails loudly instead, via _run_http()'s own
+    # "MCP_AUTH_TOKEN must be set" RuntimeError if that's also missing.
+    return bool(os.environ.get("PORT"))
+
+
 def main() -> None:
-    if os.environ.get("MCP_TRANSPORT", "stdio") == "streamable-http":
+    if _wants_http_transport():
         _run_http()
     else:
         mcp.run()

@@ -3,11 +3,25 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.email.models import parse_email
 from app.providers.llm.claude import ClaudeProvider, _extract_json
 
 
 def _fake_response(text: str):
     return SimpleNamespace(content=[SimpleNamespace(text=text)])
+
+
+def _email():
+    return parse_email(
+        {
+            "message_id": "msg_001",
+            "from": {"name": "John", "email": "john@example.com"},
+            "to": [{"name": "Ashok", "email": "ashok@example.com"}],
+            "subject": "Enterprise pricing",
+            "body": "Can you send pricing?",
+            "timestamp": "2026-09-13T10:30:00Z",
+        }
+    )
 
 
 def test_extract_json_parses_plain_json():
@@ -169,3 +183,38 @@ def test_complete_json_ignores_non_text_content_blocks(monkeypatch):
     result = provider._complete_json("system", "user")
 
     assert result == {"summary": "ok"}
+
+
+# --- draft_reply: recipient_preferences injected into the system prompt ---------------
+
+
+def test_draft_reply_system_prompt_unchanged_when_no_recipient_preferences(monkeypatch):
+    provider = ClaudeProvider(api_key="fake-key", model="claude-sonnet-5")
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured["system"] = kwargs["system"]
+        return _fake_response('{"subject": "Re: Enterprise pricing", "body": "ok"}')
+
+    monkeypatch.setattr(provider._client.messages, "create", fake_create)
+
+    provider.draft_reply({}, _email())
+
+    assert "preferences" not in captured["system"].lower()
+
+
+def test_draft_reply_injects_recipient_preferences_into_the_system_prompt(monkeypatch):
+    provider = ClaudeProvider(api_key="fake-key", model="claude-sonnet-5")
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured["system"] = kwargs["system"]
+        return _fake_response('{"subject": "Re: Enterprise pricing", "body": "ok"}')
+
+    monkeypatch.setattr(provider._client.messages, "create", fake_create)
+
+    context = {"recipient_preferences": {"voice_signature": "short and concise", "remove_long_dash": True}}
+    provider.draft_reply(context, _email())
+
+    assert "short and concise" in captured["system"]
+    assert "remove_long_dash" in captured["system"]

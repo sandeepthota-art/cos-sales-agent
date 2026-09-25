@@ -66,3 +66,43 @@ def test_get_reply_draft_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]
     assert "get_reply_draft" in names
+
+
+# --- _wants_http_transport (Render "Application exited early" fix) --------------------
+# On Render, MCP_TRANSPORT was never set, so main() fell into stdio mode with no
+# client attached -- mcp.run() hit EOF on stdin and exited within milliseconds,
+# surfacing as Render's generic "Application exited early" with zero diagnostics.
+# $PORT is the signal every PaaS-style host injects for a web service and a stdio
+# launcher never sets.
+
+
+def test_wants_http_transport_when_mcp_transport_explicitly_set(monkeypatch):
+    from app.mcp.server import _wants_http_transport
+
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+    monkeypatch.delenv("PORT", raising=False)
+    assert _wants_http_transport() is True
+
+
+def test_wants_stdio_transport_when_mcp_transport_explicitly_set_to_stdio_even_with_port(monkeypatch):
+    from app.mcp.server import _wants_http_transport
+
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    monkeypatch.setenv("PORT", "8000")
+    assert _wants_http_transport() is False
+
+
+def test_wants_http_transport_inferred_from_port_when_mcp_transport_unset(monkeypatch):
+    from app.mcp.server import _wants_http_transport
+
+    monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+    monkeypatch.setenv("PORT", "10000")
+    assert _wants_http_transport() is True
+
+
+def test_wants_stdio_transport_when_neither_mcp_transport_nor_port_is_set(monkeypatch):
+    from app.mcp.server import _wants_http_transport
+
+    monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    assert _wants_http_transport() is False

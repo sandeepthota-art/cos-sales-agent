@@ -250,6 +250,30 @@ def test_pipeline_does_not_overwrite_already_sent_reply_draft(db, settings):
     assert db.reply_drafts.count_documents({}) == 1
 
 
+def test_pipeline_injects_recipient_preferences_into_the_generated_reply_draft(db, settings):
+    # End-to-end: a Person's own preferences (app.entities.models.Person.preferences)
+    # reach the actual generated draft body, via app.pipeline.run_pipeline's
+    # sender_person lookup -> app.replies.drafter.draft_reply's recipient_preferences
+    # param -> MockLLMProvider.draft_reply's voice_signature/remove_long_dash handling.
+    from app.database.repositories import PersonRepository
+    from app.entities.models import Person
+
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-EXISTING"},
+        Person(
+            id="PER-EXISTING", name="John", email="john@example.com",
+            preferences={"voice_signature": "Thanks,\nJohn's Team", "remove_long_dash": True},
+        ).model_dump(mode="json"),
+    )
+
+    payloads = [_raw_email("msg_001", "Can you send pricing? — thanks")]
+    run_pipeline(db, _ListEmailProvider(payloads), MockLLMProvider(), MockCalendarProvider(), settings)
+
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    assert draft["draft"]["body"].endswith("Thanks,\nJohn's Team")
+    assert "—" not in draft["draft"]["body"]
+
+
 def test_pipeline_does_not_overwrite_already_scheduled_calendar_action(db, settings):
     payloads_first = [_raw_email("msg_001", "Let's schedule a call soon.")]
     run_pipeline(db, _ListEmailProvider(payloads_first), MockLLMProvider(), MockCalendarProvider(), settings)

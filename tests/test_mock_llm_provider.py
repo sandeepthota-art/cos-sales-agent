@@ -116,6 +116,33 @@ def test_draft_reply_produces_subject_and_body():
     assert "ABC Corp" in draft["body"] or "pricing" in draft["body"].lower()
 
 
+def test_draft_reply_uses_default_signature_when_no_recipient_preferences():
+    provider = MockLLMProvider()
+    email = _email("Can you send pricing?")
+    draft = provider.draft_reply({}, email)
+    assert draft["body"].endswith("Best regards,\nSales Team")
+
+
+def test_draft_reply_applies_recipient_voice_signature_preference():
+    provider = MockLLMProvider()
+    email = _email("Can you send pricing?")
+    context = {"recipient_preferences": {"voice_signature": "Thanks,\nAshok"}}
+    draft = provider.draft_reply(context, email)
+    assert draft["body"].endswith("Thanks,\nAshok")
+    assert "Best regards" not in draft["body"]
+
+
+def test_draft_reply_applies_recipient_remove_long_dash_preference():
+    provider = MockLLMProvider()
+    email = _email("Can you send pricing?")
+    context = {
+        "recipient_preferences": {"voice_signature": "— sent from a dash – signature", "remove_long_dash": True}
+    }
+    draft = provider.draft_reply(context, email)
+    assert "—" not in draft["body"]
+    assert "–" not in draft["body"]
+
+
 def test_mock_llm_includes_sender_as_mentioned_person():
     provider = MockLLMProvider()
     email = _email("Just checking in.")
