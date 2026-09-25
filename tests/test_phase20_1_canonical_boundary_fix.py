@@ -156,7 +156,8 @@ def test_active_person_reply_draft_and_calendar_action_unchanged(db, settings):
     assert draft["person_id"] == "PER-1"
     action = CalendarActionRepository(db).find_one({"thread_id": "thread_msg_001"})
     assert action["person_id"] == "PER-1"
-    assert PersonRepository(db).find_many({}).__len__() == 1  # no duplicate created
+    # +1 for the operator's own dedicated profile (the payload's "to", settings.agent_email).
+    assert PersonRepository(db).find_many({}).__len__() == 2  # no duplicate created
 
 
 def test_unknown_sender_still_creates_a_new_person_and_reply_draft(db, settings):
@@ -187,8 +188,9 @@ def test_merged_person_end_to_end_reply_draft_and_calendar_action(db, settings):
     action = CalendarActionRepository(db).find_one({"thread_id": "thread_msg_001"})
     assert action["person_id"] == "PER-TEST-B"
     assert action["event"]["attendees"] == []  # Section 8: hard safety invariant preserved
-    # No third Person was created.
-    assert PersonRepository(db).find_many({}).__len__() == 2
+    # No third Person was created for the sender/canonical pair -- +1 more for the
+    # operator's own dedicated profile (the payload's "to", settings.agent_email).
+    assert PersonRepository(db).find_many({}).__len__() == 3
 
 
 def test_ambiguous_no_email_mentions_do_not_affect_the_concrete_sender_boundary(db, settings):
@@ -206,4 +208,5 @@ def test_ambiguous_no_email_mentions_do_not_affect_the_concrete_sender_boundary(
     draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
     assert draft["person_id"] == "PER-SENDER"
     # The two ambiguous, unrelated anchors are untouched -- no merge, no new record.
-    assert PersonRepository(db).find_many({}).__len__() == 3
+    # +1 for the operator's own dedicated profile (the payload's "to", settings.agent_email).
+    assert PersonRepository(db).find_many({}).__len__() == 4

@@ -36,6 +36,7 @@ from app.entities.resolution import (
     resolve_canonical_person_for_email,
     resolve_commitment,
     resolve_meeting,
+    resolve_operator_person,
     resolve_person,
     resolve_personal_item,
     resolve_project,
@@ -191,6 +192,7 @@ def _process_entities(
     analysis: EmailAnalysis,
     reference_now: datetime,
     agent_email: str,
+    agent_name: str | None = None,
 ) -> dict[str, list[str]]:
     # reference_now is the email's OWN timestamp, not wall-clock "now" -- this matches the
     # existing detect_meeting's established pattern (app/calendar/detector.py, called with
@@ -207,6 +209,13 @@ def _process_entities(
     # domain as the agent's own mailbox) vs "client" (BRD 6.4) -- never used to create
     # or resolve any Person/Organization.
     agent_email_domain = agent_email_normalized.split("@")[-1] if "@" in agent_email_normalized else None
+    # None (not just falsy) when unconfigured -- keeps the operator-recognition check
+    # below inert with zero configuration, matching agent_name's own None default.
+    agent_name_tokens = _name_tokens_pipeline(agent_name) if agent_name else None
+    # Set only at the operator Person's creation (see resolve_operator_person) --
+    # never overwrites an existing operator profile's own name on later calls, same
+    # contract as resolve_person's own email branch.
+    operator_display_name = f"{agent_name} (Me)" if agent_name else "Me"
 
     person_repo = PersonRepository(db)
     # Every Person actually resolved for THIS email (envelope + LLM mentions), as full
@@ -222,37 +231,84 @@ def _process_entities(
     # additive to (not a replacement for) the LLM-mention loop below: resolve_person
     # is idempotent by email address, so an address covered by BOTH this loop and the
     # LLM's own mention resolves to the exact same Person id both times, never a
-    # duplicate. The agent's own mailbox is skipped entirely -- it must never become a
-    # tracked Person.
+    # duplicate. The operator's own mailbox resolves to their dedicated operator
+    # profile (resolve_operator_person) instead of an ordinary Person -- tracked, but
+    # never indistinguishable from a real external contact.
     for envelope_email, addr in envelope.items():
         if envelope_email == agent_email_normalized:
-            continue
-        person_id = resolve_person(
-            db,
-            {"name": addr.name, "email": addr.email, "org": None},
-            is_sender=envelope_email == sender_email,
-            now=reference_now,
-            thread_id=thread_id,
-        )
+            person_id = resolve_operator_person(
+                db, agent_email, operator_display_name,
+                is_sender=envelope_email == sender_email,
+                now=reference_now,
+                thread_id=thread_id,
+            )
+        else:
+            person_id = resolve_person(
+                db,
+                {"name": addr.name, "email": addr.email, "org": None},
+                is_sender=envelope_email == sender_email,
+                now=reference_now,
+                thread_id=thread_id,
+            )
         entities_referenced["people"].append(person_id)
         resolved_people.append(person_repo.find_one({"id": person_id}))
 
     for mention in analysis.people_mentioned:
         mention_email = (mention.email or "").lower() or None
+
+        # Recognizes the operator either by email (a mention that happens to carry
+        # the operator's own address) or, when the mention has no email of its own
+        # (e.g. a calendar invite's body text naming the operator as an attendee), by
+        # agent_name -- ties the mention to the SAME dedicated operator profile the
+        # envelope loop above resolves, rather than falling into the ordinary
+        # same-email-match/no-email tiers below (which are for external contacts).
+        is_operator_mention = mention_email == agent_email_normalized
+        if not is_operator_mention and not mention_email and agent_name_tokens:
+            mention_name_tokens = _name_tokens_pipeline(mention.name)
+            is_operator_mention = bool(mention_name_tokens) and (
+                mention_name_tokens <= agent_name_tokens or agent_name_tokens <= mention_name_tokens
+            )
+
         is_sender = None
         if mention_email and mention_email == sender_email:
             is_sender = True
         elif mention_email and mention_email in envelope:
             is_sender = False
-        person_id = resolve_person(
-            db,
-            {"name": mention.name, "email": mention.email, "org": mention.org},
-            is_sender=is_sender,
-            now=reference_now,
-            thread_id=thread_id,
+
+        if is_operator_mention:
+            person_id = resolve_operator_person(
+                db, agent_email, operator_display_name, is_sender=is_sender,
+                now=reference_now, thread_id=thread_id,
+            )
+            entities_referenced["people"].append(person_id)
+            resolved_people.append(person_repo.find_one({"id": person_id}))
+            continue
+
+        # Context-aware reuse -- NOT a relaxation of resolve_person's own global
+        # "never merge on name alone" rule. A mention with no email of its own
+        # (e.g. a calendar invite's body text repeating a name already present in
+        # the real To/CC headers) is checked first against people ALREADY resolved
+        # for THIS SAME email (envelope address matches, or an earlier mention in
+        # this same loop) -- never a fresh, wider scan of the whole people
+        # collection. Anyone already in resolved_people was resolved for this
+        # exact thread_id moments ago in this same call, so no further write is
+        # needed here; a no-email mention with no such match still falls through
+        # to resolve_person's existing (unchanged) no-email tier below.
+        same_email_match = (
+            match_resolved_person_by_name(resolved_people, mention.name) if not mention_email else None
         )
+        if same_email_match is not None:
+            person_id = same_email_match["id"]
+        else:
+            person_id = resolve_person(
+                db,
+                {"name": mention.name, "email": mention.email, "org": mention.org},
+                is_sender=is_sender,
+                now=reference_now,
+                thread_id=thread_id,
+            )
         entities_referenced["people"].append(person_id)
-        resolved_people.append(person_repo.find_one({"id": person_id}))
+        resolved_people.append(same_email_match or person_repo.find_one({"id": person_id}))
 
     # org_id -> [project_id, ...], built only from projects actually resolved for THIS
     # email (never a fresh collection-wide scan) -- reused below to link a commitment to
@@ -573,7 +629,7 @@ def run_pipeline(
             # reference-date pattern, so relative phrases resolve consistently regardless
             # of when the pipeline actually runs.
             entities_referenced = _process_entities(
-                db, thread_id, email, analysis, email.timestamp, settings.agent_email
+                db, thread_id, email, analysis, email.timestamp, settings.agent_email, settings.agent_name
             )
             # Additive linking passes, run AFTER entity resolution so both have the
             # complete, up-to-date set of canonical people/orgs for this thread to work

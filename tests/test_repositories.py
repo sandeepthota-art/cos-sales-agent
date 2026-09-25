@@ -46,6 +46,56 @@ def test_email_repository_set_stage_updates_in_place(db):
     assert doc["processing_status"]["failed_stage"] == "ANALYZED"
 
 
+def _set_entity_metadata(repo, message_id, label_applied="Needs reply"):
+    repo.set_entity_metadata(
+        message_id=message_id,
+        record_id=message_id,
+        source_type="gmail",
+        source_link=None,
+        date="2026-09-13",
+        entities_referenced={},
+        goal_pillar="Sales",
+        label_applied=label_applied,
+        confidence=0.9,
+        priority="P2",
+    )
+
+
+def test_set_entity_metadata_writes_label_applied_and_appends_to_labels(db):
+    repo = EmailRepository(db)
+    repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "labels": []})
+
+    _set_entity_metadata(repo, "msg_001", label_applied="Needs reply: ASAP")
+
+    doc = repo.find_one({"message_id": "msg_001"})
+    assert doc["label_applied"] == "Needs reply: ASAP"
+    assert doc["labels"] == ["Needs reply: ASAP"]
+
+
+def test_set_entity_metadata_preserves_existing_raw_gmail_labels(db):
+    # `labels` can already hold real Gmail label IDs from ingestion (see
+    # providers.email.file.convert_gmail_message) -- set_entity_metadata must add
+    # the triage classification alongside them, never overwrite or clear them.
+    repo = EmailRepository(db)
+    repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "labels": ["IMPORTANT", "STARRED"]})
+
+    _set_entity_metadata(repo, "msg_001", label_applied="Read only")
+
+    doc = repo.find_one({"message_id": "msg_001"})
+    assert set(doc["labels"]) == {"IMPORTANT", "STARRED", "Read only"}
+
+
+def test_set_entity_metadata_does_not_duplicate_labels_on_reprocessing(db):
+    repo = EmailRepository(db)
+    repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "labels": []})
+
+    _set_entity_metadata(repo, "msg_001", label_applied="Delete")
+    _set_entity_metadata(repo, "msg_001", label_applied="Delete")
+
+    doc = repo.find_one({"message_id": "msg_001"})
+    assert doc["labels"] == ["Delete"]
+
+
 def test_context_snapshot_repository_latest_for_thread(db):
     repo = ContextSnapshotRepository(db)
     repo.upsert_by_key(

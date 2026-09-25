@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # sales rep address so the demo behaves correctly with zero configuration.
     agent_email: str = "ashok@oursalesagent-demo.example"
 
+    # The operator's own display name, e.g. "Sandeep Thota" -- optional (None by
+    # default, preserving old behavior with zero configuration). When set, a
+    # people_mentioned entry with no email of its own that names the operator (e.g. a
+    # calendar invite's body text listing them as an attendee) is skipped entirely
+    # instead of creating a shadow Person record for them -- see app/pipeline.py's
+    # _process_entities. Never affects agent_email-based recognition, which already
+    # works independently of this field.
+    agent_name: str | None = None
+
     mcp_email_enabled: bool = False
     mcp_calendar_enabled: bool = False
 

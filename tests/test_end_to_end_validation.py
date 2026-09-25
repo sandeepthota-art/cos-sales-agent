@@ -61,7 +61,7 @@ def settings():
     # own mailbox, so this has to line up with the fixture data, not the class default.
     return Settings(
         email_provider="mock", calendar_provider="mock", llm_provider="mock",
-        agent_email="ashok@example.com",
+        agent_email="ashok@example.com", agent_name=None,
     )
 
 
@@ -176,10 +176,12 @@ def test_context_aware_second_email_reply_uses_accumulated_thread_context(db, se
     assert set(thread["message_ids"]) == {"m1", "m2"}
 
     # Both emails resolve to the SAME person (thread + email-address reuse) -- proves
-    # email 2 is not treated as a fresh, isolated sender.
+    # email 2 is not treated as a fresh, isolated sender. (+1 for the operator's own
+    # dedicated profile, resolved via the envelope loop for settings.agent_email.)
     people = PersonRepository(db).find_many({})
-    assert len(people) == 1
-    assert "thread_alpha" in people[0]["open_threads"]
+    assert len(people) == 2
+    john = PersonRepository(db).find_one({"email": "john@example.com"})
+    assert "thread_alpha" in john["open_threads"]
 
     # Email 2's reply draft exists and was built from a real ThreadContext, not a
     # standalone summary of email 2 alone -- the draft for m2 must reference the

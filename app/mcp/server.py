@@ -361,6 +361,24 @@ def lookup_knowledge(
     return tools.lookup_knowledge(get_settings().knowledge_dir, entity_id, query, depth)
 
 
+@mcp.tool()
+def preview_duplicate_person_candidates() -> dict[str, Any]:
+    """Read-only report of possible duplicate Person records currently in MongoDB --
+    reuses the existing consolidation classifier (app.duplicate_consolidation.
+    generate_merge_plan) exactly as-is. Never writes, merges, or approves anything --
+    this is strictly a safety-net report for a human to review; nothing is changed in
+    the database by calling this tool, ever.
+
+    Returns {"candidate_count": int, "candidates": [...]} -- each candidate names the
+    duplicate person, the canonical person it likely duplicates, a confidence label,
+    the evidence behind that classification, and a count of downstream records
+    (commitments/follow-ups/meetings/etc.) that a future approved merge would update.
+    An actual merge always remains a separate, explicit, human-approved step outside
+    this tool.
+    """
+    return tools.preview_duplicate_person_candidates(_get_db())
+
+
 class _BearerAuthMiddleware(BaseHTTPMiddleware):
     """Rejects any request without a valid bearer token.
 

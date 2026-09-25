@@ -8,6 +8,7 @@ from app.analysis.schemas import EmailAnalysis
 from app.calendar.actions import build_calendar_action
 from app.calendar.detector import detect_meeting
 from app.config.settings import Settings
+from app.duplicate_consolidation import generate_merge_plan
 from app.context.diff import diff_context
 from app.context.engine import apply_context_delta
 from app.context.models import ContextDelta, ThreadContext
@@ -262,7 +263,7 @@ def persist_email_analysis(
     email_repo.set_stage(message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
 
     entities_referenced = _process_entities(
-        db, thread_id, email, analysis, reference_now, settings.agent_email
+        db, thread_id, email, analysis, reference_now, settings.agent_email, settings.agent_name
     )
     source_link = (
         f"https://mail.google.com/mail/u/0/#all/{message_id}"
@@ -878,3 +879,39 @@ def lookup_knowledge(
         "primary_match": primary["id"],
         "neighbors": lookup.get_neighbors(primary["id"], depth=depth),
     }
+
+
+def preview_duplicate_person_candidates(db: Database) -> dict[str, Any]:
+    """Read-only preview of possible duplicate Person records -- reuses the existing
+    duplicate-consolidation classifier (app.duplicate_consolidation.generate_merge_plan)
+    exactly as-is, never a second detection mechanism. Only ever classifies and reports;
+    never writes, merges, or approves anything -- every candidate returned still has
+    approved=False and nothing is changed until a human reviews it and a separate,
+    explicit consolidation run is approved.
+
+    Returns {candidate_count, candidates: [{duplicate_person_id, duplicate_name,
+    duplicate_email, canonical_person_id, canonical_name, canonical_email, confidence,
+    evidence, downstream_records_affected}]} -- downstream_records_affected is a single
+    total count (summed across collections) rather than the full nested impact
+    breakdown, so this stays a short, reportable summary rather than a technical dump.
+    """
+    plan = generate_merge_plan(db)
+    candidates = []
+    for entry in plan:
+        downstream_total = sum(
+            counts.get("total_affected", 0) for counts in entry.get("downstream_impact", {}).values()
+        )
+        candidates.append(
+            {
+                "duplicate_person_id": entry["duplicate_person_id"],
+                "duplicate_name": entry["duplicate_name"],
+                "duplicate_email": entry["duplicate_email"],
+                "canonical_person_id": entry["canonical_person_id"],
+                "canonical_name": entry["canonical_name"],
+                "canonical_email": entry["canonical_email"],
+                "confidence": entry["confidence"],
+                "evidence": entry["evidence"],
+                "downstream_records_affected": downstream_total,
+            }
+        )
+    return {"candidate_count": len(candidates), "candidates": candidates}

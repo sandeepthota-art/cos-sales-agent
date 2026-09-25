@@ -74,7 +74,12 @@ class EmailRepository(_BaseRepository):
                     "label_applied": label_applied,
                     "confidence": confidence,
                     "priority": priority,
-                }
+                },
+                # `labels` (from the Email model) carries raw Gmail label IDs when
+                # ingestion supplies them (see providers.email.file.convert_gmail_message)
+                # -- $addToSet appends the BRD 6-way triage classification alongside
+                # those without ever clearing or duplicating what's already there.
+                "$addToSet": {"labels": label_applied},
             },
         )
 

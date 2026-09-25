@@ -1,6 +1,6 @@
 ---
 name: gmail-historical-backfill
-description: On-demand (never scheduled) sweep of older Gmail messages -- a message count or an explicit date range you specify -- through the existing cos-sales-agent-v2 process_email tool. Capped per run, safe to re-run over the same scope any number of times thanks to message_id/COMPLETED dedup. Never sends email, never creates real calendar events, never invents data. Separate from gmail-auto-poll, which only ever looks at the last 15 minutes.
+description: On-demand (never scheduled) sweep of older Gmail messages -- a message count or an explicit date range you specify -- through the existing cos-sales-agent process_email tool, ending with a read-only preview_duplicate_person_candidates report (zero auto-merge). Capped per run, safe to re-run over the same scope any number of times thanks to message_id/COMPLETED dedup. Never sends email, never creates real calendar events, never invents data. Separate from gmail-auto-poll, which only ever looks at the last 15 minutes.
 ---
 
 # Gmail Historical Backfill (on-demand)
@@ -49,7 +49,7 @@ word to continue with the rest."* Never silently process more than 20 in one run
 
 ## Step 4: Process every message within the capped batch
 
-Call the `cos-sales-agent-v2` `process_email` tool once for every message in the
+Call the `cos-sales-agent` `process_email` tool once for every message in the
 capped batch -- the same tool and field mapping already used for single-email
 processing today. Call it even for messages you suspect are already processed:
 `process_email`'s pipeline checks `message_id` + `processing_status.stage ==
@@ -59,10 +59,26 @@ re-run this skill over the same range repeatedly (e.g. to work through a backlog
 letting `process_email` make that call.
 
 Never call any tool from a connector other than Gmail to *find* messages, and
-never call any `cos-sales-agent`/`cos-sales-agent-v2` tool other than
-`process_email` for this skill's CoS processing job.
+never call any `cos-sales-agent` tool other than `process_email` (Step 4) and
+`preview_duplicate_person_candidates` (Step 5, the final read-only check) for
+this skill's CoS processing job.
 
-## Step 5: Report the run
+## Step 5: Preview possible duplicate Person records (read-only)
+
+After processing the capped batch, always call `preview_duplicate_person_candidates`
+once, with no arguments. It re-runs the existing, already-approved duplicate
+classifier (`generate_merge_plan`) against whatever is currently in MongoDB and
+returns a report of possible duplicate Person records -- it never merges,
+approves, or changes anything, regardless of how many candidates it finds or
+how confident they look. Call it even if `candidate_count` turns out to be 0.
+
+This step exists specifically to catch the historical-backfill failure mode
+where a calendar invite's body text repeats an attendee's name and creates a
+flagged, no-email duplicate Person even though the context-aware matching fix
+already prevents most of these -- so any candidate this step reports still
+deserves a human's eyes before anything is merged.
+
+## Step 6: Report the run
 
 ```
 Gmail historical backfill @ <current time>
@@ -73,18 +89,29 @@ Completed (newly processed): <count>
 Skipped (already COMPLETED): <count>
 Failed: <count, with message_id + error if any>
 Remaining in scope (if any): <count> -- say the word to continue
+
+Possible duplicate Person records (read-only, zero auto-merge): <candidate_count>
+<for each candidate: "<duplicate_name> (<duplicate_person_id>) -> looks like <canonical_name> (<canonical_person_id>), confidence: <confidence>, would update <downstream_records_affected> downstream record(s)">
+<or, if candidate_count is 0: "None found this run.">
+Say the word if you'd like any of these merged -- nothing is merged automatically.
 ```
 
-Report only what the Gmail search and `process_email` results actually show.
-Never add a person, project, commitment, meeting, follow-up, or reply-draft
-detail that didn't come back from the tool.
+Report only what the Gmail search, `process_email`, and
+`preview_duplicate_person_candidates` results actually show. Never add a
+person, project, commitment, meeting, follow-up, reply-draft, or merge-candidate
+detail that didn't come back from a tool call.
 
 ## Hard rules (same as gmail-auto-poll)
 
 - Use Gmail only to find emails -- never send, reply, or forward.
-- Use `cos-sales-agent-v2` only for CoS processing -- `process_email` only, never
+- Use `cos-sales-agent` only for CoS processing -- `process_email` and the final
+  read-only `preview_duplicate_person_candidates` check, never
   `mark_email_completed`, `persist_email_analysis`, `persist_context_delta`,
-  `create_reply_draft`, or any other tool in its place.
+  `create_reply_draft`, or any other tool in their place.
+- `preview_duplicate_person_candidates` is strictly read-only. Never call any
+  merge/consolidation-executing tool from this skill -- reporting candidates
+  is the entire scope of Step 5; an actual merge is always a separate,
+  explicitly human-approved action outside this skill.
 - Never create a real Google Calendar event. `process_email` only ever proposes a
   `calendar_action` in MongoDB (`awaiting_approval` / `needs_clarification`) --
   it never creates a real event, and this skill must not either.

@@ -3,10 +3,10 @@ import pytest
 
 from app.config.settings import Settings
 from app.database.indexes import initialize_indexes
-from app.database.repositories import EmailRepository
+from app.database.repositories import EmailRepository, OrganizationRepository, PersonRepository
 from app.email.models import parse_email
 from app.interfaces.llm_provider import LLMProvider
-from app.mcp.tools import list_processed_emails, process_email
+from app.mcp.tools import list_processed_emails, preview_duplicate_person_candidates, process_email
 from app.providers.calendar.mock import MockCalendarProvider
 from app.providers.llm.mock import MockLLMProvider
 
@@ -51,7 +51,7 @@ def settings():
     # agent_email matches _raw_email's default "to" address -- envelope-based Person
     # resolution (app.pipeline._process_entities) must never create a Person for our
     # own mailbox, so this has to line up with the fixture data, not the class default.
-    return Settings(calendar_provider="mock", llm_provider="mock", agent_email="ashok@example.com")
+    return Settings(calendar_provider="mock", llm_provider="mock", agent_email="ashok@example.com", agent_name=None)
 
 
 def test_process_email_returns_draft_and_knowledge_for_buying_signal(db, settings):
@@ -205,7 +205,8 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
     assert entry["goal_pillar"] == "Sales"
     assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
     assert isinstance(entry["confidence"], float)
-    assert len(entry["entities_referenced"]["people"]) == 1
+    # John (sender) + the operator's own dedicated profile (Ashok, settings.agent_email).
+    assert len(entry["entities_referenced"]["people"]) == 2
 
 
 def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_that_stage(db, settings):
@@ -314,3 +315,64 @@ def test_list_processed_emails_handles_mixed_raw_and_processed_emails_without_cr
     by_id = {r["message_id"]: r for r in results}
     assert by_id["msg_processed"]["processing_status"]["stage"] == "COMPLETED"
     assert by_id["msg_raw"]["processing_status"] == {"stage": None, "error": None}
+
+
+# --- preview_duplicate_person_candidates (Task 2: read-only safety-net report) ---------
+
+
+def _person(**overrides):
+    doc = {
+        "id": "PER-391", "name": "Ashok Ganapam", "email": "ashok@databeat.io", "aliases": [],
+        "org": "DataBeat", "org_id": "ORG-001", "type": None, "goal_pillar": None, "role_in_pillar": None,
+        "tier": None, "voice_register": None, "last_inbound": None, "last_outbound": None,
+        "reports_to": None, "open_threads": ["thread_anchor"], "note_link": None,
+        "review_flag": False, "source": "gmail", "status": "active", "merged_into": None,
+    }
+    doc.update(overrides)
+    return doc
+
+
+def _seed_duplicate_pair(db, duplicate_id="PER-390", canonical_id="PER-391", shared_thread="thread_anchor"):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"},
+        {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"},
+    )
+    PersonRepository(db).upsert_by_key(
+        {"id": canonical_id}, _person(id=canonical_id, open_threads=[shared_thread])
+    )
+    PersonRepository(db).upsert_by_key(
+        {"id": duplicate_id},
+        _person(id=duplicate_id, name="Ashok Ganapam", email=None, org_id=None, open_threads=[shared_thread]),
+    )
+
+
+def test_preview_duplicate_person_candidates_reports_a_safe_to_review_pair(db):
+    _seed_duplicate_pair(db)
+
+    result = preview_duplicate_person_candidates(db)
+
+    assert result["candidate_count"] == 1
+    candidate = result["candidates"][0]
+    assert candidate["duplicate_person_id"] == "PER-390"
+    assert candidate["canonical_person_id"] == "PER-391"
+    assert candidate["confidence"]
+    assert candidate["evidence"]
+    assert isinstance(candidate["downstream_records_affected"], int)
+
+
+def test_preview_duplicate_person_candidates_never_writes_to_the_database(db):
+    _seed_duplicate_pair(db)
+
+    preview_duplicate_person_candidates(db)
+
+    duplicate = PersonRepository(db).find_one({"id": "PER-390"})
+    canonical = PersonRepository(db).find_one({"id": "PER-391"})
+    assert duplicate["status"] == "active"
+    assert duplicate["merged_into"] is None
+    assert canonical["status"] == "active"
+
+
+def test_preview_duplicate_person_candidates_is_empty_when_no_duplicates_exist(db):
+    result = preview_duplicate_person_candidates(db)
+
+    assert result == {"candidate_count": 0, "candidates": []}

@@ -128,11 +128,14 @@ def test_thread_document_gets_canonical_person_ids_and_org_ids(db):
     ), _NOW, "sandeep@example.com")
     ashok_id = entities["people"][0]
     ashok_org_id = PersonRepository(db).find_one({"id": ashok_id})["org_id"]
+    # The email's "to" (settings.agent_email in this call) resolves to the operator's
+    # own dedicated profile, which is also linked onto this thread.
+    operator_id = PersonRepository(db).find_one({"type": "operator"})["id"]
 
     _link_thread_to_entities(db, "thread_1")
 
     thread = ThreadRepository(db).find_one({"thread_id": "thread_1"})
-    assert thread["person_ids"] == [ashok_id]
+    assert thread["person_ids"] == sorted([ashok_id, operator_id])
     assert thread["org_ids"] == [ashok_org_id]
 
 
@@ -380,7 +383,8 @@ def test_multiple_objects_referring_to_ashok_all_use_the_same_canonical_person(d
 
     assert commitment["person_id"] == ashok_id
     assert ashok_id in meeting["person_ids"]
-    assert PersonRepository(db).find_many({}).__len__() == 1
+    # Ashok + the operator's own dedicated profile (the email's "to", agent_email).
+    assert PersonRepository(db).find_many({}).__len__() == 2
 
 
 def test_multiple_objects_referring_to_databeat_all_use_the_same_canonical_org(db):

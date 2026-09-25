@@ -45,9 +45,12 @@ def settings():
     # agent_email matches _raw_email's default "to" address -- envelope-based Person
     # resolution (app.pipeline._process_entities) must never create a Person for our
     # own mailbox, so this has to line up with the fixture data, not the class default.
+    # agent_name is explicitly unset (None), not left to fall back to whatever a real
+    # local .env happens to configure -- individual tests that need it opt in via
+    # settings.model_copy(update={"agent_name": ...}).
     return Settings(
         email_provider="mock", calendar_provider="mock", llm_provider="mock",
-        agent_email="ashok@example.com",
+        agent_email="ashok@example.com", agent_name=None,
     )
 
 
@@ -66,7 +69,10 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
     assert isinstance(stored["confidence"], float)
 
     entities_referenced = stored["entities_referenced"]
-    assert len(entities_referenced["people"]) == 1
+    # John (sender) + the operator's own dedicated profile (Ashok, the default "to"
+    # address, is settings.agent_email -- resolved via resolve_operator_person, not
+    # skipped and not an ordinary Person).
+    assert len(entities_referenced["people"]) == 2
     assert len(entities_referenced["commitments"]) == 1
     assert len(entities_referenced["follow_ups"]) == 1
     assert entities_referenced["projects"] == []
@@ -75,6 +81,10 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
 
     person = PersonRepository(db).find_one({"id": entities_referenced["people"][0]})
     assert person["email"] == "john@example.com"
+
+    operator = PersonRepository(db).find_one({"id": entities_referenced["people"][1]})
+    assert operator["email"] == "ashok@example.com"
+    assert operator["type"] == "operator"
 
     commitment = CommitmentRepository(db).find_one({"id": entities_referenced["commitments"][0]})
     assert commitment["class"] == "mine"
@@ -124,7 +134,9 @@ def test_pipeline_reuses_same_person_across_two_emails_in_same_thread(db, settin
     ]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    assert PersonRepository(db).find_many({}).__len__() == 1
+    # John (sender, reused across both emails) + the operator's own dedicated
+    # profile (also reused, not recreated, across both emails).
+    assert PersonRepository(db).find_many({}).__len__() == 2
 
 
 def test_pipeline_detects_relative_date_meeting_with_no_commitment_and_no_follow_up(db, settings):
@@ -211,8 +223,12 @@ def test_envelope_resolves_sender_even_when_llm_never_mentions_them_reuses_exist
     run_pipeline(db, MockEmailProvider(payloads=payloads), _NoPeopleLLM(), MockCalendarProvider(), settings)
 
     stored = db.emails.find_one({"message_id": "msg_001"}, {"_id": 0})
-    assert stored["entities_referenced"]["people"] == [existing_id]
-    assert PersonRepository(db).find_many({}).__len__() == 1  # reused, not duplicated
+    people = stored["entities_referenced"]["people"]
+    # John (reused, not duplicated) + the operator's own dedicated profile (Ashok,
+    # settings.agent_email).
+    assert len(people) == 2
+    assert people[0] == existing_id
+    assert PersonRepository(db).find_many({}).__len__() == 2
 
 
 def test_envelope_resolves_sender_creating_a_new_person_when_llm_never_mentions_them(db, settings):
@@ -221,18 +237,33 @@ def test_envelope_resolves_sender_creating_a_new_person_when_llm_never_mentions_
 
     stored = db.emails.find_one({"message_id": "msg_001"}, {"_id": 0})
     people = stored["entities_referenced"]["people"]
-    assert len(people) == 1
+    assert len(people) == 2  # John + the operator's own dedicated profile
     person = PersonRepository(db).find_one({"id": people[0]})
     assert person["email"] == "john@example.com"
 
 
-def test_envelope_resolution_never_creates_a_person_for_the_agent_email(db, settings):
+def test_envelope_resolution_creates_a_dedicated_operator_profile_for_the_agent_email(db, settings):
     # settings.agent_email == "ashok@example.com", the default "to" address in
-    # _raw_email -- envelope resolution must skip it entirely.
+    # _raw_email -- envelope resolution ties it to a dedicated operator profile
+    # (resolve_operator_person), tracked but never indistinguishable from a real
+    # external contact.
     payloads = [_raw_email("msg_001", "Just checking in.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _NoPeopleLLM(), MockCalendarProvider(), settings)
 
-    assert PersonRepository(db).find_one({"email": "ashok@example.com"}) is None
+    operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
+    assert operator is not None
+    assert operator["type"] == "operator"
+    assert operator["name"] == "Me"  # settings.agent_name unset in this fixture -- see operator_display_name
+
+
+def test_envelope_resolution_reuses_the_same_operator_profile_across_emails(db, settings):
+    first = [_raw_email("msg_001", "Just checking in.")]
+    run_pipeline(db, MockEmailProvider(payloads=first), _NoPeopleLLM(), MockCalendarProvider(), settings)
+    second = [_raw_email("msg_002", "Following up.", timestamp="2026-09-14T10:00:00Z")]
+    run_pipeline(db, MockEmailProvider(payloads=second), _NoPeopleLLM(), MockCalendarProvider(), settings)
+
+    operators = PersonRepository(db).find_many({"type": "operator"})
+    assert len(operators) == 1
 
 
 def test_envelope_and_llm_mention_of_the_same_address_do_not_create_a_duplicate_person(db, settings):
@@ -241,7 +272,9 @@ def test_envelope_and_llm_mention_of_the_same_address_do_not_create_a_duplicate_
 
     stored = db.emails.find_one({"message_id": "msg_001"}, {"_id": 0})
     people = stored["entities_referenced"]["people"]
-    assert len(people) == 1  # deduped, not one per resolution path
+    # John (deduped across envelope + mention, not one per resolution path) + the
+    # operator's own dedicated profile.
+    assert len(people) == 2
     assert PersonRepository(db).find_many({"email": "john@example.com"}).__len__() == 1
 
 
@@ -912,3 +945,237 @@ def test_pipeline_calendar_action_meeting_id_stays_unset_when_ambiguous(db, sett
     assert action["status"] == "needs_clarification"
     assert action["meeting_id"] is None
     assert action["event"]["attendees"] == []
+
+
+# --- Context-aware no-email mention reuse (calendar-invite duplicate fix) -------------
+# A no-email body mention is matched first against people already resolved for THIS
+# SAME email (envelope address matches, or an earlier mention) -- never a fresh, wider
+# scan, and never a relaxation of resolve_person's own global "never merge on name
+# alone" rule for mentions with no such same-email match.
+
+
+class _CalendarInviteBodyRepeatsAttendeeNameLLM(_NoPeopleLLM):
+    """Simulates a Google Calendar invite: the real attendee is in the envelope (CC),
+    and the LLM also reports the same name from the invite's body text ("Who:
+    Vijender Reddy Pochampally"), with no email of its own -- exactly the shape a
+    calendar invite's body produces."""
+
+    def analyze_email(self, email):
+        result = super().analyze_email(email)
+        result["people_mentioned"] = [
+            {"name": "Vijender Reddy Pochampally", "email": None, "org": None, "role_hint": None}
+        ]
+        return result
+
+
+def test_pipeline_calendar_invite_body_mention_reuses_the_envelope_person_not_a_duplicate(db, settings):
+    payloads = [
+        _raw_email(
+            "m_calendar_invite", "Invitation: COS Installation\nWhen: Friday\nWho: Vijender Reddy Pochampally",
+            cc=[{"name": "Vijender Reddy Pochampally", "email": "vijender@example.com"}],
+        )
+    ]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _CalendarInviteBodyRepeatsAttendeeNameLLM(),
+        MockCalendarProvider(), settings,
+    )
+
+    stored = db.emails.find_one({"message_id": "m_calendar_invite"}, {"_id": 0})
+    # John (sender) + Vijender (cc, resolved once) + the operator's own dedicated
+    # profile (Ashok, the default "to", is settings.agent_email). The body mention of
+    # Vijender must NOT add a second, no-email record for him.
+    people_ids = stored["entities_referenced"]["people"]
+    assert len(set(people_ids)) == 3
+
+    vijender_docs = PersonRepository(db).find_many({"name": "Vijender Reddy Pochampally"})
+    assert len(vijender_docs) == 1
+    assert vijender_docs[0]["email"] == "vijender@example.com"
+    assert vijender_docs[0]["review_flag"] is False
+
+
+class _NoPeopleLLMWithMention(_NoPeopleLLM):
+    def __init__(self, name):
+        self._name = name
+
+    def analyze_email(self, email):
+        result = super().analyze_email(email)
+        result["people_mentioned"] = [{"name": self._name, "email": None, "org": None, "role_hint": None}]
+        return result
+
+
+def test_pipeline_no_email_mention_with_no_same_email_match_still_creates_a_flagged_record(db, settings):
+    # Regression guard: the fix must not become a global fuzzy-name search. A no-email
+    # mention naming someone who is NOT already resolved on this same email still goes
+    # through the existing (unchanged) no-email tier -- new record, review_flag=True.
+    payloads = [_raw_email("m_novel_mention", "Please loop in Priya on this.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _NoPeopleLLMWithMention("Priya"), MockCalendarProvider(), settings,
+    )
+
+    priya = PersonRepository(db).find_one({"name": "Priya"})
+    assert priya is not None
+    # The no-email tier deliberately OMITS the email key entirely (not a stored null)
+    # -- see app.entities.resolution.resolve_person's sparse-index comment.
+    assert "email" not in priya
+    assert priya["review_flag"] is True
+
+
+def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tier(db, settings):
+    # Two different people already resolved on this same email share the token
+    # "Reddy" in a way that could ambiguously match a bare mention -- the fix must
+    # never guess between them; match_resolved_person_by_name already returns None
+    # for >1 candidate, so this must behave exactly as before the fix (new flagged
+    # record), not silently attach to either.
+    class _TwoRedditsLLM(_NoPeopleLLM):
+        def analyze_email(self, email):
+            result = super().analyze_email(email)
+            result["people_mentioned"] = [
+                {"name": "Anil Reddy", "email": "anil@example.com", "org": None, "role_hint": None},
+                {"name": "Sunil Reddy", "email": "sunil@example.com", "org": None, "role_hint": None},
+                {"name": "Reddy", "email": None, "org": None, "role_hint": None},
+            ]
+            return result
+
+    payloads = [_raw_email("m_ambiguous_reddy", "Loop in Reddy on this thread.")]
+    run_pipeline(db, MockEmailProvider(payloads=payloads), _TwoRedditsLLM(), MockCalendarProvider(), settings)
+
+    bare_reddy = PersonRepository(db).find_one({"name": "Reddy"})
+    assert bare_reddy is not None
+    assert "email" not in bare_reddy
+    assert bare_reddy["review_flag"] is True
+    # The two real, distinct people must remain untouched and separate.
+    assert PersonRepository(db).find_one({"email": "anil@example.com"}) is not None
+    assert PersonRepository(db).find_one({"email": "sunil@example.com"}) is not None
+
+
+# --- Operator Profile (settings.agent_name) -------------------------------------------
+# The operator IS tracked, like any other participant, but always tied to their own
+# single dedicated Person profile (type="operator", resolve_operator_person) instead
+# of an ordinary contact -- whether recognized by email (settings.agent_email,
+# enforced by the envelope loop above) or, when a people_mentioned entry has no email
+# of its own, by settings.agent_name (e.g. a calendar invite's body text listing the
+# operator as an attendee by name). agent_name is unset (None) by default, so every
+# test above this section that never configures it is unaffected by the name-based
+# recognition; email-based recognition (the envelope loop) is always active.
+
+
+class _CalendarInviteBodyMentionsOperatorByNameLLM(_NoPeopleLLM):
+    """Simulates a Google Calendar invite whose body text lists the operator himself
+    as an attendee, with no email of his own -- the exact shape that created a real
+    production shadow Person for the operator (no email, null org_id, review_flag
+    True) before the Operator Profile fix."""
+
+    def __init__(self, name):
+        self._name = name
+
+    def analyze_email(self, email):
+        result = super().analyze_email(email)
+        result["people_mentioned"] = [{"name": self._name, "email": None, "org": None, "role_hint": None}]
+        return result
+
+
+def test_pipeline_body_mention_of_operators_own_name_links_to_operator_profile(db, settings):
+    operator_settings = settings.model_copy(update={"agent_name": "Ashok Kumar"})
+    payloads = [
+        _raw_email(
+            "m_calendar_invite_self",
+            "Invitation: COS Installation\nWhen: Friday\nWho: Ashok Kumar",
+        )
+    ]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _CalendarInviteBodyMentionsOperatorByNameLLM("Ashok Kumar"),
+        MockCalendarProvider(), operator_settings,
+    )
+
+    stored = db.emails.find_one({"message_id": "m_calendar_invite_self"}, {"_id": 0})
+    # John (sender) + the operator's own dedicated profile (Ashok, resolved once via
+    # the envelope loop AND once via the body mention -- deduped to the same id).
+    assert len(set(stored["entities_referenced"]["people"])) == 2
+    # No separate, no-email shadow record for "Ashok Kumar" -- the mention ties
+    # straight to the operator profile.
+    assert PersonRepository(db).find_one({"name": "Ashok Kumar", "email": {"$exists": False}}) is None
+    operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
+    assert operator["type"] == "operator"
+    assert operator["name"] == "Ashok Kumar (Me)"
+    assert len(PersonRepository(db).find_many({})) == 2  # John + operator, no shadow third record
+
+
+def test_pipeline_body_mention_of_operators_partial_name_links_to_operator_profile(db, settings):
+    # Subset-token matching, consistent with match_resolved_person_by_name's own
+    # algorithm: a partial mention ("Ashok") must match the full configured
+    # agent_name ("Ashok Kumar") just as it would match a real Person's full name.
+    operator_settings = settings.model_copy(update={"agent_name": "Ashok Kumar"})
+    payloads = [_raw_email("m_partial_self_mention", "Please loop in Ashok on this.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _CalendarInviteBodyMentionsOperatorByNameLLM("Ashok"),
+        MockCalendarProvider(), operator_settings,
+    )
+
+    assert PersonRepository(db).find_one({"name": "Ashok", "email": {"$exists": False}}) is None
+    assert len(PersonRepository(db).find_many({})) == 2  # John + operator, no shadow third record
+
+
+def test_pipeline_mention_with_agent_email_links_to_operator_profile_regardless_of_name(db, settings):
+    # A people_mentioned entry can carry the operator's own email under a different
+    # display name (e.g. a signature block) -- must still tie to the operator
+    # profile by email, with no dependence on agent_name being configured at all.
+    class _MentionsAgentEmailUnderOtherNameLLM(_NoPeopleLLM):
+        def analyze_email(self, email):
+            result = super().analyze_email(email)
+            result["people_mentioned"] = [
+                {"name": "Ashok Ganapam Kumar", "email": "ashok@example.com", "org": None, "role_hint": None}
+            ]
+            return result
+
+    payloads = [_raw_email("m_agent_email_mention", "Reach out to Ashok directly.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _MentionsAgentEmailUnderOtherNameLLM(),
+        MockCalendarProvider(), settings,
+    )
+
+    operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
+    assert operator is not None
+    assert operator["type"] == "operator"
+    assert operator["name"] == "Me"  # agent_name unset in this fixture -- the mention's own name never wins
+    assert len(PersonRepository(db).find_many({})) == 2  # John + operator, no separate record
+
+
+def test_pipeline_body_mention_of_unrelated_name_unaffected_by_agent_name(db, settings):
+    # Regression guard: configuring agent_name must not affect a genuine no-email
+    # mention naming someone else entirely -- the existing (unchanged) no-email tier
+    # still creates a flagged record for them.
+    operator_settings = settings.model_copy(update={"agent_name": "Ashok Kumar"})
+    payloads = [_raw_email("m_unrelated_mention", "Please loop in Priya on this.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _NoPeopleLLMWithMention("Priya"),
+        MockCalendarProvider(), operator_settings,
+    )
+
+    priya = PersonRepository(db).find_one({"name": "Priya"})
+    assert priya is not None
+    assert priya["review_flag"] is True
+    assert priya.get("type") != "operator"
+
+
+def test_pipeline_body_mention_of_operators_name_still_creates_shadow_person_when_agent_name_unset(db, settings):
+    # Backward-compatibility guard: with agent_name left at its default (None), a
+    # body mention naming the operator has no way to be recognized as such (only
+    # agent_email recognizes it, and this mention carries no email) -- it falls
+    # through to the ordinary no-email tier, same as any other name would.
+    assert settings.agent_name is None
+    payloads = [
+        _raw_email(
+            "m_calendar_invite_self_unconfigured",
+            "Invitation: COS Installation\nWhen: Friday\nWho: Ashok Kumar",
+        )
+    ]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _CalendarInviteBodyMentionsOperatorByNameLLM("Ashok Kumar"),
+        MockCalendarProvider(), settings,
+    )
+
+    shadow = PersonRepository(db).find_one({"name": "Ashok Kumar"})
+    assert shadow is not None
+    assert "email" not in shadow
+    assert shadow["review_flag"] is True
+    assert shadow.get("type") != "operator"

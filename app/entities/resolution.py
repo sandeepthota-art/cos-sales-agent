@@ -376,6 +376,64 @@ def resolve_person(
     return person_id
 
 
+def resolve_operator_person(
+    db: Database, agent_email: str, display_name: str, is_sender: bool | None, now: datetime, thread_id: str
+) -> str:
+    """Resolves the operator's OWN dedicated Person profile -- a single, real,
+    tracked record for the system's own user, deliberately distinct from an
+    external lead. Reused forever after by exact email match, identical in
+    contract to resolve_person's own email branch: name/type are set only at
+    creation and never overwritten by a later call (only
+    last_inbound/last_outbound/open_threads ever change on reuse), so a later
+    mention's own wording (a signature, a calendar invite's attendee list) can never
+    clobber the operator's distinct display name or its type="operator" marker.
+
+    Called from app.pipeline._process_entities whenever an envelope address or a
+    people_mentioned entry is recognized as the operator (by agent_email or
+    agent_name) -- never creates a second, generic Person for the same address.
+    """
+    repo = PersonRepository(db)
+    email = agent_email.strip().lower()
+    existing = repo.find_one({"email": email})
+    if existing:
+        # Same merged-record redirect as resolve_person's own email branch -- an
+        # operator profile is not expected to ever be a duplicate-consolidation
+        # target, but this keeps the two code paths' invariants identical rather
+        # than assuming it can never happen.
+        existing = _reuse_target(db, repo, existing)
+        update: dict[str, Any] = {}
+        if is_sender is True:
+            new_last_inbound = _forward_only_timestamp_update(existing.get("last_inbound"), now)
+            if new_last_inbound is not None:
+                update["last_inbound"] = new_last_inbound
+        elif is_sender is False:
+            new_last_outbound = _forward_only_timestamp_update(existing.get("last_outbound"), now)
+            if new_last_outbound is not None:
+                update["last_outbound"] = new_last_outbound
+        new_open_threads = _add_thread_id(existing.get("open_threads", []), thread_id)
+        if new_open_threads != existing.get("open_threads", []):
+            update["open_threads"] = new_open_threads
+        if update:
+            repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
+        return existing["id"]
+
+    person_id = next_id(db, "PER-")
+    person = Person(
+        id=person_id,
+        name=display_name,
+        email=email,
+        org=None,
+        org_id=None,
+        type="operator",
+        review_flag=False,
+        last_inbound=now if is_sender is True else None,
+        last_outbound=now if is_sender is False else None,
+        open_threads=[thread_id],
+    )
+    repo.upsert_by_key({"id": person_id}, person.model_dump(mode="json"))
+    return person_id
+
+
 # Punctuation that functions as a separator between words in a project/entity name and
 # should be treated as equivalent to a space before general normalization -- NOT applied
 # to app.knowledge.normalize.normalize_text globally, since that function is shared by

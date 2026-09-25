@@ -77,7 +77,7 @@ def settings():
     # own mailbox, so this has to line up with the fixture data, not the class default.
     return Settings(
         calendar_provider="mock", llm_provider="claude", llm_api_key="unused", timezone="UTC",
-        agent_email="ashok@example.com",
+        agent_email="ashok@example.com", agent_name=None,
     )
 
 
@@ -169,17 +169,20 @@ def test_persist_email_analysis_resolves_people_and_stores_entities_referenced(d
 
     result = tools.persist_email_analysis(db, "msg_001", analysis, settings)
 
-    # 2, not 1: envelope-based resolution now also resolves the sender
-    # (john@example.com, from _raw_email's default "from") in addition to the LLM's
-    # own people_mentioned (Jane) -- the recipient (ashok@example.com, == settings.
-    # agent_email in this fixture) is correctly excluded as our own mailbox.
-    assert len(result["entities_referenced"]["people"]) == 2
+    # 3, not 1: envelope-based resolution also resolves the sender (john@example.com,
+    # from _raw_email's default "from") in addition to the LLM's own people_mentioned
+    # (Jane) -- and the recipient (ashok@example.com == settings.agent_email in this
+    # fixture) resolves to the operator's own dedicated profile, not an ordinary
+    # Person, but still tracked and still referenced here.
+    assert len(result["entities_referenced"]["people"]) == 3
     sender = PersonRepository(db).find_one({"email": "john@example.com"})
     mentioned = PersonRepository(db).find_one({"email": "jane@example.com"})
     assert sender is not None
     assert mentioned is not None
     assert mentioned["id"].startswith("PER-")
-    assert PersonRepository(db).find_one({"email": "ashok@example.com"}) is None
+    operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
+    assert operator is not None
+    assert operator["type"] == "operator"
 
     stored = EmailRepository(db).find_one({"message_id": "msg_001"})
     assert stored["entities_referenced"]["people"] == result["entities_referenced"]["people"]

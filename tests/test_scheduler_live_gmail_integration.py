@@ -32,7 +32,7 @@ def settings():
     # data, not the class default.
     return Settings(
         email_provider="mock", calendar_provider="mock", llm_provider="mock",
-        agent_email="ashok@example.com",
+        agent_email="ashok@example.com", agent_name=None,
     )
 
 
@@ -82,7 +82,9 @@ def test_fake_gmail_flows_through_scheduler_and_pipeline_into_mongodb(db, settin
     assert ContextSnapshotRepository(db).find_one({"thread_id": thread_id}) is not None
 
     refs = email["entities_referenced"]
-    assert len(refs["people"]) == 1
+    # The sender + the operator's own dedicated profile (the message's "to",
+    # settings.agent_email).
+    assert len(refs["people"]) == 2
     # The body matches both commitment patterns: "Could you send..." (owed_to_me) and
     # "I will send the proposal tomorrow" (mine) -- two distinct commitments, each
     # with its own derived follow-up.
