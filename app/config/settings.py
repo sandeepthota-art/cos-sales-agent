@@ -78,14 +78,24 @@ class Settings(BaseSettings):
     # The operator's own display name, e.g. "Sandeep Thota" -- optional (None by
     # default, preserving old behavior with zero configuration). When set, a
     # people_mentioned entry with no email of its own that names the operator (e.g. a
-    # calendar invite's body text listing them as an attendee) is skipped entirely
-    # instead of creating a shadow Person record for them -- see app/pipeline.py's
-    # _process_entities. Never affects agent_email-based recognition, which already
-    # works independently of this field.
+    # calendar invite's body text listing them as an attendee) resolves to the
+    # operator's own dedicated Person profile (type="operator") instead of creating a
+    # generic shadow record for them -- see app/pipeline.py's _process_entities and
+    # app.entities.resolution.resolve_operator_person. Never affects agent_email-based
+    # recognition, which already works independently of this field.
     agent_name: str | None = None
 
     mcp_email_enabled: bool = False
     mcp_calendar_enabled: bool = False
+
+    # Streamlit dashboard (app/ui/dashboard.py). read_only hides every
+    # approve/reject/edit/create-on-calendar/ignore button so the dashboard is a pure
+    # viewer -- for a public deployment meant for someone other than the operator.
+    # password is optional: unset (None, the default) bypasses the login gate
+    # entirely, so local development needs zero configuration; set it to require that
+    # exact password before anything else in the dashboard renders.
+    dashboard_read_only: bool = False
+    dashboard_password: str | None = None
 
     simulation_mode: bool = True
 

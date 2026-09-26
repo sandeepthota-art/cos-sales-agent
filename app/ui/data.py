@@ -6,9 +6,16 @@ unit tested without spinning up Streamlit.
 
 from app.database.repositories import (
     CalendarActionRepository,
+    CommitmentRepository,
     ContextSnapshotRepository,
     EmailRepository,
+    FollowUpRepository,
     KnowledgeRepository,
+    MeetingRepository,
+    OrganizationRepository,
+    PersonalItemRepository,
+    PersonRepository,
+    ProjectRepository,
     ReplyDraftRepository,
     ThreadRepository,
 )
@@ -59,3 +66,31 @@ def list_calendar_actions(db, status: str | None = None) -> list[dict]:
     if status:
         return repo.find_many({"status": status})
     return repo.find_many({})
+
+
+def list_people(db) -> list[dict]:
+    return PersonRepository(db).find_many({})
+
+
+def list_organizations(db) -> list[dict]:
+    return OrganizationRepository(db).find_many({})
+
+
+def list_projects(db) -> list[dict]:
+    return ProjectRepository(db).find_many({})
+
+
+def list_commitments(db) -> list[dict]:
+    return CommitmentRepository(db).find_many({})
+
+
+def list_follow_ups(db) -> list[dict]:
+    return FollowUpRepository(db).find_many({})
+
+
+def list_meetings(db) -> list[dict]:
+    return MeetingRepository(db).find_many({})
+
+
+def list_personal_items(db) -> list[dict]:
+    return PersonalItemRepository(db).find_many({})

@@ -25,8 +25,15 @@ from app.replies.models import ReplyDraft
 from app.ui.data import (
     dashboard_metrics,
     list_calendar_actions,
+    list_commitments,
     list_emails,
+    list_follow_ups,
     list_knowledge,
+    list_meetings,
+    list_organizations,
+    list_people,
+    list_personal_items,
+    list_projects,
     list_reply_drafts,
     list_threads,
     thread_context_versions,
@@ -59,6 +66,34 @@ def _render_dashboard_tab(db) -> None:
 
 def _render_emails_tab(db) -> None:
     st.dataframe(list_emails(db))
+
+
+def _render_people_tab(db) -> None:
+    st.dataframe(list_people(db))
+
+
+def _render_organizations_tab(db) -> None:
+    st.dataframe(list_organizations(db))
+
+
+def _render_projects_tab(db) -> None:
+    st.dataframe(list_projects(db))
+
+
+def _render_commitments_tab(db) -> None:
+    st.dataframe(list_commitments(db))
+
+
+def _render_follow_ups_tab(db) -> None:
+    st.dataframe(list_follow_ups(db))
+
+
+def _render_meetings_tab(db) -> None:
+    st.dataframe(list_meetings(db))
+
+
+def _render_personal_items_tab(db) -> None:
+    st.dataframe(list_personal_items(db))
 
 
 def _render_thread_explorer_tab(db) -> None:
@@ -101,12 +136,15 @@ def _render_knowledge_tab(db) -> None:
                 st.write(f"{entry['recorded_at']}: {entry['value']} (source {entry['source_email_id']})")
 
 
-def _render_reply_approval_tab(db) -> None:
+def _render_reply_approval_tab(db, settings) -> None:
     repo = ReplyDraftRepository(db)
     for doc in list_reply_drafts(db, status="awaiting_approval"):
         draft = ReplyDraft.model_validate(doc)
         st.write(f"**{draft.draft.subject}**")
         st.write(draft.draft.body)
+        if settings.dashboard_read_only:
+            st.caption("Read-only view -- approval actions disabled.")
+            continue
         col1, col2, col3 = st.columns(3)
         if col1.button("Approve", key=f"approve_{draft.reply_id}"):
             approved = approve(draft, approved_by="ui_user")
@@ -126,7 +164,7 @@ def _render_reply_approval_tab(db) -> None:
 
 def _render_calendar_approval_tab(db, settings) -> None:
     repo = CalendarActionRepository(db)
-    calendar_provider = ProviderFactory.create_calendar_provider(settings)
+    calendar_provider = None if settings.dashboard_read_only else ProviderFactory.create_calendar_provider(settings)
 
     for doc in list_calendar_actions(db, status="awaiting_approval") + list_calendar_actions(
         db, status="needs_clarification"
@@ -137,6 +175,9 @@ def _render_calendar_approval_tab(db, settings) -> None:
         st.write("Attendees: Authenticated user only")
         if action.status == "needs_clarification":
             st.warning(f"Needs clarification: {action.reason}")
+            continue
+        if settings.dashboard_read_only:
+            st.caption("Read-only view -- approval actions disabled.")
             continue
         col1, col2 = st.columns(2)
         if col1.button("Create on my calendar", key=f"create_{action.meeting_fingerprint}"):
@@ -155,8 +196,33 @@ def _render_calendar_approval_tab(db, settings) -> None:
             st.rerun()
 
 
+def _check_password_gate(settings) -> bool:
+    """Unset DASHBOARD_PASSWORD bypasses the gate entirely (zero configuration for
+    local development). When set, blocks every other render call until the exact
+    password is entered -- st.session_state persists the unlocked flag across
+    reruns within the same browser session so the prompt isn't re-shown on every
+    interaction."""
+    if not settings.dashboard_password:
+        return True
+    if st.session_state.get("dashboard_unlocked"):
+        return True
+
+    st.title("CoS Sales Agent")
+    entered = st.text_input("Password", type="password")
+    if entered and entered == settings.dashboard_password:
+        st.session_state["dashboard_unlocked"] = True
+        st.rerun()
+    elif entered:
+        st.error("Incorrect password.")
+    return False
+
+
 def main() -> None:
     settings = get_settings()
+
+    if not _check_password_gate(settings):
+        return
+
     db = _get_db()
 
     st.title("CoS Sales Agent")
@@ -164,6 +230,13 @@ def main() -> None:
         [
             "Dashboard",
             "Emails",
+            "People",
+            "Organizations",
+            "Projects",
+            "Commitments",
+            "Follow-ups",
+            "Meetings",
+            "Personal Items",
             "Thread Explorer",
             "Context Evolution",
             "Knowledge",
@@ -176,14 +249,28 @@ def main() -> None:
     with tabs[1]:
         _render_emails_tab(db)
     with tabs[2]:
-        _render_thread_explorer_tab(db)
+        _render_people_tab(db)
     with tabs[3]:
-        _render_context_evolution_tab(db)
+        _render_organizations_tab(db)
     with tabs[4]:
-        _render_knowledge_tab(db)
+        _render_projects_tab(db)
     with tabs[5]:
-        _render_reply_approval_tab(db)
+        _render_commitments_tab(db)
     with tabs[6]:
+        _render_follow_ups_tab(db)
+    with tabs[7]:
+        _render_meetings_tab(db)
+    with tabs[8]:
+        _render_personal_items_tab(db)
+    with tabs[9]:
+        _render_thread_explorer_tab(db)
+    with tabs[10]:
+        _render_context_evolution_tab(db)
+    with tabs[11]:
+        _render_knowledge_tab(db)
+    with tabs[12]:
+        _render_reply_approval_tab(db, settings)
+    with tabs[13]:
         _render_calendar_approval_tab(db, settings)
 
 

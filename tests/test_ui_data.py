@@ -5,17 +5,31 @@ import mongomock
 from app.database.indexes import initialize_indexes
 from app.database.repositories import (
     CalendarActionRepository,
+    CommitmentRepository,
     ContextSnapshotRepository,
     EmailRepository,
+    FollowUpRepository,
     KnowledgeRepository,
+    MeetingRepository,
+    OrganizationRepository,
+    PersonalItemRepository,
+    PersonRepository,
+    ProjectRepository,
     ReplyDraftRepository,
     ThreadRepository,
 )
 from app.ui.data import (
     dashboard_metrics,
     list_calendar_actions,
+    list_commitments,
     list_emails,
+    list_follow_ups,
     list_knowledge,
+    list_meetings,
+    list_organizations,
+    list_people,
+    list_personal_items,
+    list_projects,
     list_reply_drafts,
     list_threads,
     thread_context_versions,
@@ -108,3 +122,45 @@ def test_list_reply_drafts_and_calendar_actions_filter_by_status():
     assert len(list_reply_drafts(db, status="awaiting_approval")) == 1
     assert len(list_reply_drafts(db)) == 2
     assert len(list_calendar_actions(db, status="needs_clarification")) == 1
+
+
+def test_list_people_returns_stored_documents():
+    db = _db()
+    PersonRepository(db).upsert_by_key({"id": "PER-001"}, {"id": "PER-001", "name": "Ashok Ganapam"})
+    assert list_people(db)[0]["name"] == "Ashok Ganapam"
+
+
+def test_list_organizations_returns_stored_documents():
+    db = _db()
+    OrganizationRepository(db).upsert_by_key({"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat"})
+    assert list_organizations(db)[0]["name"] == "DataBeat"
+
+
+def test_list_projects_returns_stored_documents():
+    db = _db()
+    ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, {"id": "PRJ-001", "project": "Renewal Q4"})
+    assert list_projects(db)[0]["project"] == "Renewal Q4"
+
+
+def test_list_commitments_returns_stored_documents():
+    db = _db()
+    CommitmentRepository(db).upsert_by_key({"id": "COM-001"}, {"id": "COM-001", "what": "send pricing"})
+    assert list_commitments(db)[0]["what"] == "send pricing"
+
+
+def test_list_follow_ups_returns_stored_documents():
+    db = _db()
+    FollowUpRepository(db).upsert_by_key({"id": "FUP-001"}, {"id": "FUP-001", "commitment_id": "COM-001"})
+    assert list_follow_ups(db)[0]["commitment_id"] == "COM-001"
+
+
+def test_list_meetings_returns_stored_documents():
+    db = _db()
+    MeetingRepository(db).upsert_by_key({"id": "MTG-001"}, {"id": "MTG-001", "title": "Kickoff"})
+    assert list_meetings(db)[0]["title"] == "Kickoff"
+
+
+def test_list_personal_items_returns_stored_documents():
+    db = _db()
+    PersonalItemRepository(db).upsert_by_key({"id": "PSN-001"}, {"id": "PSN-001", "description": "Renew passport"})
+    assert list_personal_items(db)[0]["description"] == "Renew passport"

@@ -285,6 +285,39 @@ needed to deploy it as a Render Web Service:
    (`POST`, `Authorization: Bearer <MCP_AUTH_TOKEN>`); a liveness probe is
    available, unauthenticated, at `GET /health`.
 
+### Dashboard (Streamlit) as a second Render Web Service
+
+The read-only-capable dashboard (`app/ui/dashboard.py`) can be deployed
+alongside the MCP server as its own, separate Render Web Service — same
+repo, same image, different start command:
+
+1. Create a **second** Render Web Service from this same GitHub repository
+   (do not reuse the MCP service — they need different start commands and
+   are meant to run independently).
+2. Same Docker environment as the MCP service, but override the **start
+   command** in Render's dashboard (Render lets you override a Dockerfile's
+   `CMD` per-service without editing the `Dockerfile` itself, so both
+   services keep sharing one build):
+   ```
+   streamlit run app/ui/dashboard.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+   ```
+3. Set environment variables in Render's dashboard: the same
+   `MONGODB_URI`/`MONGODB_DATABASE` as the MCP service (this dashboard only
+   ever reads/writes Mongo directly — it has no MCP client of its own and
+   needs neither `MCP_TRANSPORT` nor `MCP_AUTH_TOKEN`), plus:
+   - `DASHBOARD_READ_ONLY=true` — for anyone other than the operator. Hides
+     every approve/reject/edit/create-on-calendar/ignore button; this
+     dashboard is the only place in the whole system those actions can be
+     triggered at all (see the module docstring in `app/ui/dashboard.py`),
+     so this is the entire safety boundary for a non-operator viewer.
+   - `DASHBOARD_PASSWORD=<a password you choose>` — optional but
+     recommended for a public deployment: without it, anyone with the URL
+     can see every collection's real content (emails, contacts, knowledge
+     graph) with no gate at all. Leave it unset only for a deployment you
+     already control access to some other way.
+4. Deploy. The dashboard is served directly at
+   `https://<your-second-render-service>.onrender.com/`.
+
 ## Security
 
 - Never commit `.env` (already excluded by `.gitignore`).
