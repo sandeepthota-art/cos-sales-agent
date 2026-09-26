@@ -10,9 +10,23 @@ exclusively through the explicit Approve-button handlers in
 code path in this module calls into the email/calendar providers.
 """
 
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import streamlit as st
+
+# Resolved relative to this file's own location, not the process's current working
+# directory or how `streamlit run` happened to be invoked -- same class of problem,
+# same fix, as app/config/settings.py's _ENV_FILE (see its own comment): `streamlit
+# run app/ui/dashboard.py` does not reliably put the repo root on sys.path in every
+# deployment context (confirmed failing on Render's Docker service -- "No module
+# named 'app'" -- despite working from a plain local shell), because unlike `python
+# -m app.mcp.server`, streamlit's own script runner does not treat the CWD the same
+# way `-m` does. __file__ always resolves correctly regardless of invocation style.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from app.calendar.actions import approve_calendar_action, reject_calendar_action
 from app.calendar.models import CalendarAction
