@@ -157,6 +157,21 @@ def test_pipeline_detects_relative_date_meeting_with_no_commitment_and_no_follow
 
     # The core corrected rule: a Meeting must never trigger a FollowUp by itself.
     assert entities_referenced["follow_ups"] == []
+
+
+def test_pipeline_propagates_goal_pillar_onto_the_resolved_meeting(db, settings):
+    # BRD gap-analysis FR-04: MockLLMProvider always extracts goal_pillar="Sales" --
+    # end-to-end proof that _process_entities actually threads this real,
+    # already-extracted value through to Meeting.project_or_pillar, not just at the
+    # resolve_meeting unit level.
+    from app.database.repositories import MeetingRepository
+
+    payloads = [_raw_email("m_pillar_meeting", "Sounds good. We will meet in 2 weeks.")]
+    run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
+
+    stored = db.emails.find_one({"message_id": "m_pillar_meeting"}, {"_id": 0})
+    meeting = MeetingRepository(db).find_one({"id": stored["entities_referenced"]["meetings"][0]})
+    assert meeting["project_or_pillar"] == "Sales"
     assert FollowUpRepository(db).find_many({}) == []
 
 

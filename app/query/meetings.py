@@ -33,11 +33,31 @@ def _domain_of(email: str | None) -> str | None:
     return email.strip().lower().split("@", 1)[1] or None
 
 
+# BRD gap-analysis FR-04: Meeting.project_or_pillar is now populated (see
+# app.entities.resolution.resolve_meeting) from the triggering email's own
+# analysis.goal_pillar -- a real, already-LLM-extracted value, never guessed here
+# from a title or free text. Only an EXACT, case-insensitive match against one of
+# these two known pillar names is ever mapped to SALES/FINANCE; anything else
+# (e.g. "Operations", "Product Development", or no value at all) falls through to
+# the existing INTERNAL/CUSTOMER/UNKNOWN domain-based logic below unchanged --
+# PROSPECT/PROJECT remain unassigned by design, same as before this change.
+_PILLAR_TO_CLASSIFICATION = {
+    "sales": MeetingClassification.SALES,
+    "finance": MeetingClassification.FINANCE,
+}
+
+
 def classify_meeting(db: Database, meeting: dict[str, Any], agent_email: str | None) -> MeetingClassification:
-    """Only INTERNAL/CUSTOMER/UNKNOWN are ever actually derived -- see
-    app.query.schemas.MeetingClassification for why SALES/FINANCE/PROSPECT/PROJECT
-    are never assigned: no stored field reliably supports them.
+    """SALES/FINANCE are derived only from an exact match on the meeting's own
+    stored `project_or_pillar` (never inferred independently of it). Otherwise,
+    only INTERNAL/CUSTOMER/UNKNOWN are derived, from attendee email domains vs.
+    the configured agent_email domain -- PROSPECT/PROJECT are never assigned: no
+    stored field reliably supports them.
     """
+    pillar = (meeting.get("project_or_pillar") or "").strip().lower()
+    if pillar in _PILLAR_TO_CLASSIFICATION:
+        return _PILLAR_TO_CLASSIFICATION[pillar]
+
     person_ids = meeting.get("person_ids") or []
     if not person_ids:
         return MeetingClassification.UNKNOWN

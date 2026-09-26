@@ -596,6 +596,7 @@ def resolve_meeting(
     actionable: bool,
     person_ids: list[str] | None = None,
     org_id: str | None = None,
+    project_or_pillar: str | None = None,
 ) -> str:
     repo = MeetingRepository(db)
 
@@ -608,6 +609,8 @@ def resolve_meeting(
                 update["person_ids"] = new_person_ids
             if org_id and not candidate.get("org_id"):
                 update["org_id"] = org_id
+            if project_or_pillar and not candidate.get("project_or_pillar"):
+                update["project_or_pillar"] = project_or_pillar
             if update:
                 repo.upsert_by_key({"id": candidate["id"]}, {**candidate, **update})
             return candidate["id"]
@@ -619,6 +622,7 @@ def resolve_meeting(
         attendees=raw.get("attendees", []),
         person_ids=person_ids or [],
         org_id=org_id,
+        project_or_pillar=project_or_pillar,
         actions_raised=raw.get("actions_raised", []),
         actionable=actionable,
         thread_id=thread_id,

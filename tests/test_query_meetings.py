@@ -207,10 +207,40 @@ def test_classify_meeting_unknown_without_agent_email_configured(db):
     assert classify_meeting(db, meeting, agent_email=None) == MeetingClassification.UNKNOWN
 
 
-def test_classify_meeting_never_assigns_sales_or_finance():
-    # SALES/FINANCE/PROSPECT/PROJECT exist in the enum for future extensibility but
-    # must never be produced by classify_meeting today -- no stored field supports them.
-    assert MeetingClassification.SALES not in {MeetingClassification.INTERNAL, MeetingClassification.CUSTOMER, MeetingClassification.UNKNOWN}
+def test_classify_meeting_sales_from_exact_project_or_pillar_match(db):
+    # BRD gap-analysis FR-04: Meeting.project_or_pillar (populated by
+    # app.pipeline from the triggering email's already-extracted analysis.goal_pillar)
+    # now DOES drive SALES/FINANCE when it's an exact match -- never inferred from
+    # attendee domains or free text once this field is present.
+    meeting = _meeting("MTG-1", project_or_pillar="Sales")
+    assert classify_meeting(db, meeting, agent_email="agent@ourcompany.example") == MeetingClassification.SALES
+
+
+def test_classify_meeting_finance_from_exact_project_or_pillar_match(db):
+    meeting = _meeting("MTG-1", project_or_pillar="Finance")
+    assert classify_meeting(db, meeting, agent_email="agent@ourcompany.example") == MeetingClassification.FINANCE
+
+
+def test_classify_meeting_project_or_pillar_match_is_case_insensitive(db):
+    meeting = _meeting("MTG-1", project_or_pillar="sales")
+    assert classify_meeting(db, meeting, agent_email="agent@ourcompany.example") == MeetingClassification.SALES
+
+
+def test_classify_meeting_unrecognized_pillar_falls_through_to_domain_logic_not_guessed(db):
+    # "Operations" is a real goal_pillar value this pipeline produces, but has no
+    # exact SALES/FINANCE mapping -- must fall through to the existing domain-based
+    # logic rather than being guessed into PROSPECT/PROJECT/anything else.
+    PersonRepository(db).upsert_by_key({"id": "PER-1"}, _person(id="PER-1", email="colleague@ourcompany.example"))
+    meeting = _meeting("MTG-1", person_ids=["PER-1"], project_or_pillar="Operations")
+    assert classify_meeting(db, meeting, agent_email="agent@ourcompany.example") == MeetingClassification.INTERNAL
+
+
+def test_classify_meeting_still_never_infers_prospect_or_project(db):
+    # PROSPECT/PROJECT remain unassigned by design -- nothing maps to them, with or
+    # without project_or_pillar set, since no stored value reliably supports either.
+    meeting = _meeting("MTG-1", project_or_pillar="Product Development")
+    result = classify_meeting(db, meeting, agent_email="agent@ourcompany.example")
+    assert result not in {MeetingClassification.PROSPECT, MeetingClassification.PROJECT}
 
 
 # --- get_meeting_brief_for_person / get_upcoming_meeting_briefs --------------------------------

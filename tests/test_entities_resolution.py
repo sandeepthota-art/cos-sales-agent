@@ -633,6 +633,45 @@ def test_resolve_meeting_stores_actionable_flag(db):
     assert stored["actionable"] is False
 
 
+def test_resolve_meeting_stores_project_or_pillar_on_creation(db):
+    # BRD gap-analysis FR-04: a real, already-extracted value passed straight
+    # through -- resolve_meeting never derives this itself.
+    meeting_id = resolve_meeting(
+        db, thread_id="thread_pillar", date=None, raw={"attendees": [], "actions_raised": []},
+        actionable=True, project_or_pillar="Sales",
+    )
+    stored = MeetingRepository(db).find_one({"id": meeting_id})
+    assert stored["project_or_pillar"] == "Sales"
+
+
+def test_resolve_meeting_backfills_project_or_pillar_onto_an_existing_meeting_that_lacks_it(db):
+    date = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    first_id = resolve_meeting(
+        db, thread_id="thread_backfill", date=date, raw={"attendees": [], "actions_raised": []}, actionable=True,
+    )
+    second_id = resolve_meeting(
+        db, thread_id="thread_backfill", date=date, raw={"attendees": [], "actions_raised": []},
+        actionable=True, project_or_pillar="Finance",
+    )
+    assert first_id == second_id
+    stored = MeetingRepository(db).find_one({"id": first_id})
+    assert stored["project_or_pillar"] == "Finance"
+
+
+def test_resolve_meeting_never_overwrites_an_already_set_project_or_pillar(db):
+    date = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    meeting_id = resolve_meeting(
+        db, thread_id="thread_no_overwrite", date=date, raw={"attendees": [], "actions_raised": []},
+        actionable=True, project_or_pillar="Sales",
+    )
+    resolve_meeting(
+        db, thread_id="thread_no_overwrite", date=date, raw={"attendees": [], "actions_raised": []},
+        actionable=True, project_or_pillar="Finance",
+    )
+    stored = MeetingRepository(db).find_one({"id": meeting_id})
+    assert stored["project_or_pillar"] == "Sales"
+
+
 def test_resolve_personal_item_deduplicates_on_sender_and_description(db):
     raw = {"item_type": "reminder", "description": "Renew passport"}
     first = resolve_personal_item(db, sender_email="jane@example.com", raw=raw, resolved_date=None)

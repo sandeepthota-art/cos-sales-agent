@@ -440,6 +440,12 @@ def _process_entities(
             actionable=actionable,
             person_ids=list(dict.fromkeys(p["id"] for p in attendee_people)),
             org_id=meeting_org_id,
+            # BRD gap-analysis FR-04: a real, already-extracted value -- never an
+            # independent guess. app.query.meetings.classify_meeting only ever maps
+            # an exact "Sales"/"Finance" match here to SALES/FINANCE; anything else
+            # stays available for the existing domain-based INTERNAL/CUSTOMER/UNKNOWN
+            # logic to handle unchanged.
+            project_or_pillar=analysis.goal_pillar,
         )
         entities_referenced["meetings"].append(meeting_id)
 
