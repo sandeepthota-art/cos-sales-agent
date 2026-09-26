@@ -126,13 +126,18 @@ def retrieve_follow_ups(
     db: Database, person_id: str | None = None, org_id: str | None = None,
     date_range: DateRange | None = None, limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """FollowUp has no due-date or status field of its own (confirmed against
-    app.entities.models.FollowUp and app.mcp.tools.list_follow_ups's own docstring)
-    -- "overdue"/date-scoped follow-up questions can only be answered by joining to
-    the PARENT Commitment's committed_date, a real stored relationship
-    (FollowUp.commitment_id), never a fabricated one. A follow-up whose parent
-    commitment has no committed_date (common in the real dataset) is excluded from
-    any date-bounded query rather than guessed into or out of range.
+    """BRD gap-analysis FR-03: date filtering uses FollowUp's OWN
+    follow_up_latest_at (app.entities.models.FollowUp) directly -- the field that
+    exists precisely for this purpose (BRD 6.4's timing-window range) -- rather than
+    joining through to the parent Commitment. A follow-up with no
+    follow_up_latest_at at all (audience never classified, or a client_open_window
+    follow-up with no anchor date) is excluded from any date-bounded query rather
+    than guessed into or out of range, via the same _in_range contract every other
+    retrieval function here already follows.
+
+    An OVERDUE-kind query additionally excludes any follow-up whose own `status`
+    is no longer "active" (resolved/dropped) -- "overdue" means still outstanding,
+    not merely in the past.
     """
     query: dict[str, Any] = {}
     if person_id:
@@ -142,12 +147,9 @@ def retrieve_follow_ups(
     docs = FollowUpRepository(db).find_many(query)
 
     if date_range is not None and date_range.kind.value != "all_time":
-        commitment_ids = [d["commitment_id"] for d in docs if d.get("commitment_id")]
-        commitments_by_id = {c["id"]: c for c in CommitmentRepository(db).find_many({"id": {"$in": commitment_ids}})} if commitment_ids else {}
-        docs = [
-            d for d in docs
-            if d.get("commitment_id") and _in_range(_parse_iso((commitments_by_id.get(d["commitment_id"]) or {}).get("committed_date")), date_range)
-        ]
+        docs = [d for d in docs if _in_range(_parse_iso(d.get("follow_up_latest_at")), date_range)]
+        if date_range.kind.value == "overdue":
+            docs = [d for d in docs if d.get("status", "active") == "active"]
 
     docs.sort(key=lambda d: d.get("id", ""))
     return docs[: _clamp(limit)]

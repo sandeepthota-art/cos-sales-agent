@@ -263,18 +263,39 @@ def test_next_escalation_level_advances_and_caps_at_four():
     assert cq.next_escalation_level(4) == 4  # terminal -- never advances past 4
 
 
-def test_get_overdue_followups_via_parent_commitment(db):
-    CommitmentRepository(db).upsert_by_key({"id": "COM-PAST"}, _commitment("COM-PAST", committed_date="2026-01-01T00:00:00Z"))
-    FollowUpRepository(db).upsert_by_key({"id": "FU-PAST"}, {"id": "FU-PAST", "commitment_id": "COM-PAST", "thread_id": "t1", "person_id": None, "org_id": None})
+def test_get_overdue_followups_uses_the_follow_ups_own_latest_at(db):
+    # BRD gap-analysis FR-03: dated directly off FollowUp.follow_up_latest_at (the
+    # field that exists precisely for this purpose) -- no longer via the parent
+    # Commitment's committed_date; see app.query.retrieval.retrieve_follow_ups.
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-PAST"},
+        {"id": "FU-PAST", "commitment_id": "COM-PAST", "thread_id": "t1", "person_id": None, "org_id": None,
+         "status": "active", "follow_up_latest_at": "2026-01-01T00:00:00Z"},
+    )
 
     result = cq.get_overdue_followups(db, reference_datetime=_REF, timezone="UTC")
 
     assert [f["id"] for f in result] == ["FU-PAST"]
 
 
-def test_get_overdue_followups_excludes_undated_parent(db):
-    CommitmentRepository(db).upsert_by_key({"id": "COM-UNDATED"}, _commitment("COM-UNDATED", committed_date=None))
-    FollowUpRepository(db).upsert_by_key({"id": "FU-UNDATED"}, {"id": "FU-UNDATED", "commitment_id": "COM-UNDATED", "thread_id": "t1", "person_id": None, "org_id": None})
+def test_get_overdue_followups_excludes_a_follow_up_with_no_latest_at(db):
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-UNDATED"},
+        {"id": "FU-UNDATED", "commitment_id": "COM-UNDATED", "thread_id": "t1", "person_id": None, "org_id": None,
+         "status": "active", "follow_up_latest_at": None},
+    )
+
+    result = cq.get_overdue_followups(db, reference_datetime=_REF, timezone="UTC")
+
+    assert result == []
+
+
+def test_get_overdue_followups_excludes_resolved(db):
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-RESOLVED"},
+        {"id": "FU-RESOLVED", "commitment_id": "COM-PAST", "thread_id": "t1", "person_id": None, "org_id": None,
+         "status": "resolved", "follow_up_latest_at": "2026-01-01T00:00:00Z"},
+    )
 
     result = cq.get_overdue_followups(db, reference_datetime=_REF, timezone="UTC")
 

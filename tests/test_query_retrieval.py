@@ -121,23 +121,36 @@ def test_retrieve_commitments_latest_returns_exactly_one(db):
     assert [c["id"] for c in result] == ["COM-NEW"]
 
 
-# --- FOLLOW_UPS (joined through parent commitment for date filtering) ------------------------
+# --- FOLLOW_UPS (BRD gap-analysis FR-03: dated directly off FollowUp's own
+# follow_up_latest_at, never joined through the parent Commitment) -----------------------------
+
+
+def _follow_up(fid, **overrides):
+    doc = {
+        "id": fid, "commitment_id": None, "thread_id": "t1", "person_id": None, "org_id": None,
+        "escalation_level": 1, "surfaced": False, "status": "active", "audience": None,
+        "follow_up_earliest_at": None, "follow_up_latest_at": None,
+    }
+    doc.update(overrides)
+    return doc
 
 
 def test_retrieve_follow_ups_filters_by_person(db):
-    FollowUpRepository(db).upsert_by_key({"id": "FU-1"}, {"id": "FU-1", "commitment_id": None, "thread_id": "t1", "person_id": "PER-1", "org_id": None})
-    FollowUpRepository(db).upsert_by_key({"id": "FU-2"}, {"id": "FU-2", "commitment_id": None, "thread_id": "t2", "person_id": "PER-2", "org_id": None})
+    FollowUpRepository(db).upsert_by_key({"id": "FU-1"}, _follow_up("FU-1", person_id="PER-1"))
+    FollowUpRepository(db).upsert_by_key({"id": "FU-2"}, _follow_up("FU-2", person_id="PER-2"))
 
     result = retrieval.retrieve_follow_ups(db, person_id="PER-1")
 
     assert [f["id"] for f in result] == ["FU-1"]
 
 
-def test_retrieve_follow_ups_overdue_uses_parent_commitment_date(db):
-    CommitmentRepository(db).upsert_by_key({"id": "COM-PAST"}, _commitment("COM-PAST", committed_date="2026-01-01T00:00:00Z"))
-    CommitmentRepository(db).upsert_by_key({"id": "COM-FUTURE"}, _commitment("COM-FUTURE", committed_date="2026-06-01T00:00:00Z"))
-    FollowUpRepository(db).upsert_by_key({"id": "FU-PAST"}, {"id": "FU-PAST", "commitment_id": "COM-PAST", "thread_id": "t1", "person_id": None, "org_id": None})
-    FollowUpRepository(db).upsert_by_key({"id": "FU-FUTURE"}, {"id": "FU-FUTURE", "commitment_id": "COM-FUTURE", "thread_id": "t1", "person_id": None, "org_id": None})
+def test_retrieve_follow_ups_overdue_uses_the_follow_ups_own_latest_at(db):
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-PAST"}, _follow_up("FU-PAST", follow_up_latest_at="2026-01-01T00:00:00Z")
+    )
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-FUTURE"}, _follow_up("FU-FUTURE", follow_up_latest_at="2026-06-01T00:00:00Z")
+    )
     overdue = resolve_date_range(DateRangeKind.OVERDUE, _REF, "UTC")
 
     result = retrieval.retrieve_follow_ups(db, date_range=overdue)
@@ -145,16 +158,78 @@ def test_retrieve_follow_ups_overdue_uses_parent_commitment_date(db):
     assert [f["id"] for f in result] == ["FU-PAST"]
 
 
-def test_retrieve_follow_ups_without_a_dated_parent_excluded_from_date_filter(db):
-    # A commitment with no committed_date -- the follow-up must be excluded from a
-    # date-bounded query, never guessed into range.
-    CommitmentRepository(db).upsert_by_key({"id": "COM-UNDATED"}, _commitment("COM-UNDATED", committed_date=None))
-    FollowUpRepository(db).upsert_by_key({"id": "FU-UNDATED"}, {"id": "FU-UNDATED", "commitment_id": "COM-UNDATED", "thread_id": "t1", "person_id": None, "org_id": None})
+def test_retrieve_follow_ups_overdue_excludes_resolved_and_dropped(db):
+    # "Overdue" means still outstanding -- a follow-up whose due window has passed
+    # but that's already resolved/dropped must not appear.
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-RESOLVED"}, _follow_up("FU-RESOLVED", follow_up_latest_at="2026-01-01T00:00:00Z", status="resolved")
+    )
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-DROPPED"}, _follow_up("FU-DROPPED", follow_up_latest_at="2026-01-01T00:00:00Z", status="dropped")
+    )
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-STILL-ACTIVE"}, _follow_up("FU-STILL-ACTIVE", follow_up_latest_at="2026-01-01T00:00:00Z", status="active")
+    )
+    overdue = resolve_date_range(DateRangeKind.OVERDUE, _REF, "UTC")
+
+    result = retrieval.retrieve_follow_ups(db, date_range=overdue)
+
+    assert [f["id"] for f in result] == ["FU-STILL-ACTIVE"]
+
+
+def test_retrieve_follow_ups_active_but_not_yet_due_is_not_overdue(db):
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-NOT-DUE-YET"}, _follow_up("FU-NOT-DUE-YET", follow_up_latest_at="2026-06-01T00:00:00Z", status="active")
+    )
     overdue = resolve_date_range(DateRangeKind.OVERDUE, _REF, "UTC")
 
     result = retrieval.retrieve_follow_ups(db, date_range=overdue)
 
     assert result == []
+
+
+def test_retrieve_follow_ups_with_no_latest_at_excluded_from_date_filter(db):
+    # No timing window at all (audience never classified, or an open-window
+    # follow-up with no anchor date) -- excluded from any date-bounded query,
+    # never guessed into or out of range.
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-UNDATED"}, _follow_up("FU-UNDATED", follow_up_latest_at=None, status="active")
+    )
+    overdue = resolve_date_range(DateRangeKind.OVERDUE, _REF, "UTC")
+
+    result = retrieval.retrieve_follow_ups(db, date_range=overdue)
+
+    assert result == []
+
+
+def test_retrieve_follow_ups_all_time_ignores_status_and_dates(db):
+    # An unbounded (ALL_TIME) query is unaffected by either the date filter or the
+    # overdue-specific status exclusion -- both are scoped strictly to bounded kinds.
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-RESOLVED"}, _follow_up("FU-RESOLVED", follow_up_latest_at="2026-01-01T00:00:00Z", status="resolved")
+    )
+    all_time = resolve_date_range(DateRangeKind.ALL_TIME, _REF, "UTC")
+
+    result = retrieval.retrieve_follow_ups(db, date_range=all_time)
+
+    assert [f["id"] for f in result] == ["FU-RESOLVED"]
+
+
+def test_retrieve_follow_ups_overdue_timezone_boundary(db):
+    # 2026-03-11T23:30 IST (UTC+5:30) is 2026-03-11T18:00 UTC -- i.e. genuinely
+    # BEFORE _REF (2026-03-12T10:00 UTC) either way, so this is overdue regardless
+    # of which timezone resolve_date_range is asked to reason in. The real boundary
+    # check is that resolve_date_range's own reference_datetime is always UTC-aware
+    # (see app.query.dates), so a naive-vs-aware mismatch can't silently misclassify
+    # a follow-up as overdue (or not) depending on the caller's timezone string.
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-IST"}, _follow_up("FU-IST", follow_up_latest_at="2026-03-11T23:30:00+05:30", status="active")
+    )
+    overdue_utc = resolve_date_range(DateRangeKind.OVERDUE, _REF, "UTC")
+    overdue_ist = resolve_date_range(DateRangeKind.OVERDUE, _REF, "Asia/Kolkata")
+
+    assert [f["id"] for f in retrieval.retrieve_follow_ups(db, date_range=overdue_utc)] == ["FU-IST"]
+    assert [f["id"] for f in retrieval.retrieve_follow_ups(db, date_range=overdue_ist)] == ["FU-IST"]
 
 
 # --- KNOWLEDGE -------------------------------------------------------------------------------
