@@ -271,13 +271,27 @@ def list_follow_ups(
 
 @mcp.tool()
 def list_meetings(
-    thread_id: str | None = None, actionable: bool | None = None, limit: int = 50
+    thread_id: str | None = None,
+    actionable: bool | None = None,
+    category: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List canonical meetings (MTG-xxx) from the `meetings` collection. Optional
-    filters: thread_id (exact), actionable (exact). Read-only -- never creates a
-    calendar event and never calls a calendar provider.
+    filters: thread_id (exact), actionable (exact), category (BRD gap-analysis
+    FR-04 -- one of "sales"/"finance"/"internal"/"customer"/"unknown",
+    case-insensitive; "prospect"/"project" are rejected since no stored field
+    reliably supports them), start_date/end_date (ISO 8601, half-open [start,
+    end) against this meeting's own `date`). Combine category with start_date/
+    end_date to answer e.g. "what sales meetings do I have today" -- pass
+    today's own bounds. Read-only -- never creates a calendar event and never
+    calls a calendar provider.
     """
-    return tools.list_meetings(_get_db(), thread_id, actionable, limit)
+    return tools.list_meetings(
+        _get_db(), thread_id, actionable, category, start_date, end_date, limit,
+        agent_email=get_settings().agent_email,
+    )
 
 
 @mcp.tool()

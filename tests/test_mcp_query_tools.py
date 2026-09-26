@@ -503,6 +503,169 @@ def test_list_meetings_filters_by_actionable(db):
     assert [m["id"] for m in results] == ["MTG-001"]
 
 
+# --- list_meetings: category filter (BRD gap-analysis FR-04 integration gap) --------
+
+
+_AGENT_EMAIL = "agent@ourcompany.example"
+
+
+def test_list_meetings_no_category_returns_every_meeting_unchanged(db):
+    # Backward compatibility: mixed classifications present, no category filter
+    # requested -- every meeting still comes back, exactly like before this change.
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES"}, _meeting("MTG-SALES", "t1", project_or_pillar="Sales")
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-FINANCE"}, _meeting("MTG-FINANCE", "t2", project_or_pillar="Finance")
+    )
+    MeetingRepository(db).upsert_by_key({"id": "MTG-UNKNOWN"}, _meeting("MTG-UNKNOWN", "t3"))
+
+    results = tools.list_meetings(db)
+
+    assert {m["id"] for m in results} == {"MTG-SALES", "MTG-FINANCE", "MTG-UNKNOWN"}
+
+
+def test_list_meetings_category_sales_returns_only_sales_meetings(db):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES"}, _meeting("MTG-SALES", "t1", project_or_pillar="Sales")
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-FINANCE"}, _meeting("MTG-FINANCE", "t2", project_or_pillar="Finance")
+    )
+
+    results = tools.list_meetings(db, category="SALES")
+
+    assert [m["id"] for m in results] == ["MTG-SALES"]
+
+
+def test_list_meetings_category_finance_returns_only_finance_meetings(db):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES"}, _meeting("MTG-SALES", "t1", project_or_pillar="Sales")
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-FINANCE"}, _meeting("MTG-FINANCE", "t2", project_or_pillar="Finance")
+    )
+
+    results = tools.list_meetings(db, category="finance")
+
+    assert [m["id"] for m in results] == ["MTG-FINANCE"]
+
+
+def test_list_meetings_category_internal_returns_only_internal_meetings(db):
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-COLLEAGUE"}, _person("PER-COLLEAGUE", email="colleague@ourcompany.example")
+    )
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-CUSTOMER"}, _person("PER-CUSTOMER", email="buyer@theirco.example")
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-INTERNAL"}, _meeting("MTG-INTERNAL", "t1", person_ids=["PER-COLLEAGUE"])
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-CUSTOMER"}, _meeting("MTG-CUSTOMER", "t2", person_ids=["PER-CUSTOMER"])
+    )
+
+    results = tools.list_meetings(db, category="internal", agent_email=_AGENT_EMAIL)
+
+    assert [m["id"] for m in results] == ["MTG-INTERNAL"]
+
+
+def test_list_meetings_category_customer_returns_only_customer_meetings(db):
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-COLLEAGUE"}, _person("PER-COLLEAGUE", email="colleague@ourcompany.example")
+    )
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-CUSTOMER"}, _person("PER-CUSTOMER", email="buyer@theirco.example")
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-INTERNAL"}, _meeting("MTG-INTERNAL", "t1", person_ids=["PER-COLLEAGUE"])
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-CUSTOMER"}, _meeting("MTG-CUSTOMER", "t2", person_ids=["PER-CUSTOMER"])
+    )
+
+    results = tools.list_meetings(db, category="customer", agent_email=_AGENT_EMAIL)
+
+    assert [m["id"] for m in results] == ["MTG-CUSTOMER"]
+
+
+def test_list_meetings_category_unknown_returns_only_unclassifiable_meetings(db):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES"}, _meeting("MTG-SALES", "t1", project_or_pillar="Sales")
+    )
+    MeetingRepository(db).upsert_by_key({"id": "MTG-NO-ATTENDEES"}, _meeting("MTG-NO-ATTENDEES", "t2"))
+
+    results = tools.list_meetings(db, category="unknown", agent_email=_AGENT_EMAIL)
+
+    assert [m["id"] for m in results] == ["MTG-NO-ATTENDEES"]
+
+
+@pytest.mark.parametrize("bad_category", ["prospect", "project", "bogus", ""])
+def test_list_meetings_rejects_unsupported_categories_deterministically(db, bad_category):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES"}, _meeting("MTG-SALES", "t1", project_or_pillar="Sales")
+    )
+
+    with pytest.raises(ValueError, match="category must be one of"):
+        tools.list_meetings(db, category=bad_category)
+
+
+def test_list_meetings_category_combined_with_date_range(db):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES-TODAY"},
+        _meeting("MTG-SALES-TODAY", "t1", project_or_pillar="Sales", date="2026-09-27T10:00:00Z"),
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES-NEXT-WEEK"},
+        _meeting("MTG-SALES-NEXT-WEEK", "t2", project_or_pillar="Sales", date="2026-10-04T10:00:00Z"),
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-FINANCE-TODAY"},
+        _meeting("MTG-FINANCE-TODAY", "t3", project_or_pillar="Finance", date="2026-09-27T11:00:00Z"),
+    )
+
+    results = tools.list_meetings(
+        db, category="sales", start_date="2026-09-27T00:00:00Z", end_date="2026-09-28T00:00:00Z"
+    )
+
+    assert [m["id"] for m in results] == ["MTG-SALES-TODAY"]
+
+
+def test_list_meetings_category_and_date_range_with_no_matches_returns_empty_not_an_error(db):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-SALES-TODAY"},
+        _meeting("MTG-SALES-TODAY", "t1", project_or_pillar="Sales", date="2026-09-27T10:00:00Z"),
+    )
+
+    results = tools.list_meetings(
+        db, category="finance", start_date="2026-09-27T00:00:00Z", end_date="2026-09-28T00:00:00Z"
+    )
+
+    assert results == []
+
+
+def test_list_meetings_date_range_excludes_undated_meetings(db):
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-DATED"},
+        _meeting("MTG-DATED", "t1", project_or_pillar="Sales", date="2026-09-27T10:00:00Z"),
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-UNDATED"}, _meeting("MTG-UNDATED", "t2", project_or_pillar="Sales", date=None)
+    )
+
+    results = tools.list_meetings(
+        db, category="sales", start_date="2026-09-27T00:00:00Z", end_date="2026-09-28T00:00:00Z"
+    )
+
+    assert [m["id"] for m in results] == ["MTG-DATED"]
+
+
+@pytest.mark.parametrize("bad_field", ["start_date", "end_date"])
+def test_list_meetings_rejects_unparseable_date_bounds(db, bad_field):
+    with pytest.raises(ValueError, match="not a valid ISO 8601"):
+        tools.list_meetings(db, **{bad_field: "not-a-date"})
+
+
 # --- get_project_summary ---
 
 

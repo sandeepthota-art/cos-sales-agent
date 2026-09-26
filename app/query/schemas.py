@@ -68,13 +68,17 @@ class RelationshipKind(StrEnum):
 
 
 class MeetingClassification(StrEnum):
-    """Phase 23.2: SALES/FINANCE/PROSPECT/PROJECT are part of the vocabulary for
-    future extensibility but are NEVER assigned by app.query.meetings today -- no
-    stored field reliably supports them (Meeting.project_or_pillar is declared but
-    never populated by the live pipeline). Only INTERNAL/CUSTOMER are ever actually
-    derived (from attendee email domains vs. the configured agent_email domain,
-    both real stored/configured values), and UNKNOWN otherwise. Never guessed from
-    a title or free text.
+    """Phase 23.2, updated by the BRD gap-analysis FR-04 remediation:
+    app.query.meetings.classify_meeting now derives SALES/FINANCE from an exact,
+    case-insensitive match on the meeting's own stored `project_or_pillar` field
+    (populated by app.entities.resolution.resolve_meeting from the triggering
+    email's real, already-extracted analysis.goal_pillar -- never guessed from a
+    title or free text). INTERNAL/CUSTOMER are derived from attendee email domains
+    vs. the configured agent_email domain, and UNKNOWN otherwise. PROSPECT/PROJECT
+    remain part of this vocabulary for future extensibility but are still NEVER
+    assigned -- no stored field reliably supports either one, and
+    app.mcp.tools.list_meetings's `category` filter rejects both rather than
+    silently returning zero results.
     """
 
     INTERNAL = "internal"

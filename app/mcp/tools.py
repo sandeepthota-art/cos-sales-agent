@@ -30,7 +30,8 @@ from app.email.models import Email, parse_email
 from app.entities.resolution import resolve_canonical_person_for_email
 from app.query import retrieval
 from app.query.dates import resolve_date_range
-from app.query.schemas import DateRangeKind, QueryRequest
+from app.query.meetings import classify_meeting
+from app.query.schemas import DateRangeKind, MeetingClassification, QueryRequest
 from app.query.service import execute_query
 from app.interfaces.calendar_provider import CalendarProvider
 from app.interfaces.llm_provider import LLMProvider
@@ -60,6 +61,63 @@ _MAX_QUERY_LIMIT = 500
 
 def _clamp_limit(limit: int) -> int:
     return max(1, min(limit, _MAX_QUERY_LIMIT))
+
+
+# BRD gap-analysis FR-04 (integration gap closure): the only category values
+# list_meetings will ever filter on -- exactly the ones app.query.meetings.
+# classify_meeting actually assigns. PROSPECT/PROJECT are deliberately excluded:
+# they exist in MeetingClassification's vocabulary for future extensibility, but
+# no stored field reliably supports them today, so accepting them here would
+# silently return zero results forever instead of surfacing that real limitation.
+_SUPPORTED_MEETING_CATEGORIES: dict[str, MeetingClassification] = {
+    "sales": MeetingClassification.SALES,
+    "finance": MeetingClassification.FINANCE,
+    "internal": MeetingClassification.INTERNAL,
+    "customer": MeetingClassification.CUSTOMER,
+    "unknown": MeetingClassification.UNKNOWN,
+}
+
+
+def _validate_meeting_category(category: str) -> MeetingClassification:
+    normalized = category.strip().lower()
+    if normalized not in _SUPPORTED_MEETING_CATEGORIES:
+        raise ValueError(
+            f"category must be one of {sorted(_SUPPORTED_MEETING_CATEGORIES)} "
+            f"(case-insensitive); got {category!r}. 'prospect'/'project' are not "
+            "accepted here -- no stored field reliably supports them yet, so "
+            "classify_meeting never assigns them (see app.query.meetings)."
+        )
+    return _SUPPORTED_MEETING_CATEGORIES[normalized]
+
+
+def _parse_required_iso(value: str, param_name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{param_name} is not a valid ISO 8601 date/datetime: {value!r}") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _meeting_date_in_bounds(date_value: Any, start_dt: datetime | None, end_dt: datetime | None) -> bool:
+    """Same half-open, undated-excluded-from-a-bounded-query contract as
+    app.query.retrieval._in_range -- start inclusive, end exclusive, and a meeting
+    with no `date` at all never matches once a bound was actually requested.
+    """
+    if start_dt is None and end_dt is None:
+        return True
+    if not date_value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(date_value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if start_dt is not None and parsed < start_dt:
+        return False
+    if end_dt is not None and parsed >= end_dt:
+        return False
+    return True
 
 
 def _safe_processing_status(email: dict[str, Any]) -> dict[str, Any | None]:
@@ -692,10 +750,38 @@ def list_follow_ups(
 
 
 def list_meetings(
-    db: Database, thread_id: str | None = None, actionable: bool | None = None, limit: int = 50
+    db: Database,
+    thread_id: str | None = None,
+    actionable: bool | None = None,
+    category: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 50,
+    agent_email: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read-only listing over the existing `meetings` collection. Never creates a
     calendar event and never calls a calendar provider/MCP.
+
+    category (BRD gap-analysis FR-04, closing the integration gap): an optional
+    exact-match filter on this meeting's derived classification
+    (app.query.meetings.classify_meeting) -- one of "sales", "finance", "internal",
+    "customer", "unknown" (case-insensitive). Reuses that existing classification
+    function as-is; this tool does not introduce a second, competing classification
+    mechanism. Raises ValueError for any other value, including "prospect"/
+    "project" -- see _validate_meeting_category for why those are rejected rather
+    than silently returning zero results.
+
+    start_date/end_date: optional ISO 8601 date or datetime strings, filtered
+    against this meeting's own stored `date` field with the same half-open,
+    undated-excluded contract used throughout app.query.retrieval (start
+    inclusive, end exclusive). Independent of `category` -- either or both may be
+    supplied, e.g. to answer "what sales meetings do I have today" by passing
+    today's own [start, end) bounds alongside category="sales". Raises ValueError
+    for an unparseable value rather than silently ignoring it.
+
+    agent_email: only used for classify_meeting's INTERNAL/CUSTOMER domain
+    derivation when `category` is supplied -- irrelevant to SALES/FINANCE, which
+    are derived purely from the meeting's own stored project_or_pillar field.
     """
     query: dict[str, Any] = {}
     if thread_id:
@@ -703,7 +789,19 @@ def list_meetings(
     if actionable is not None:
         query["actionable"] = actionable
 
-    return MeetingRepository(db).find_many(query)[: _clamp_limit(limit)]
+    docs = MeetingRepository(db).find_many(query)
+
+    if start_date is not None or end_date is not None:
+        start_dt = _parse_required_iso(start_date, "start_date") if start_date is not None else None
+        end_dt = _parse_required_iso(end_date, "end_date") if end_date is not None else None
+        docs = [d for d in docs if _meeting_date_in_bounds(d.get("date"), start_dt, end_dt)]
+
+    if category is not None:
+        target = _validate_meeting_category(category)
+        docs = [d for d in docs if classify_meeting(db, d, agent_email) == target]
+
+    docs.sort(key=lambda d: d.get("id", ""))
+    return docs[: _clamp_limit(limit)]
 
 
 def list_reply_drafts(
