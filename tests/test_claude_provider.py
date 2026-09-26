@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.email.models import parse_email
-from app.providers.llm.claude import ClaudeProvider, _extract_json
+from app.providers.llm.claude import _ANALYSIS_INSTRUCTIONS, ClaudeProvider, _extract_json
 
 
 def _fake_response(text: str):
@@ -218,3 +218,47 @@ def test_draft_reply_injects_recipient_preferences_into_the_system_prompt(monkey
 
     assert "short and concise" in captured["system"]
     assert "remove_long_dash" in captured["system"]
+
+
+# --- Extraction prompt boundary: ignore meta-instructions / engineering specs --------
+# Regression coverage for a real incident: an internal "Minutes of the meeting on COS
+# Agent" email (engineering requirements about the AI system itself -- "labelling
+# should be performed", "system should create only 1 draft email") got extracted into
+# 23 knowledge_items as if they were business facts about a person/company. Fixed by
+# adding a strict boundary to _ANALYSIS_INSTRUCTIONS. This is a prompt-content test, not
+# a live-model behavioral test -- consistent with this suite's own convention of never
+# making a real LLM API call (see test_complete_json_explicitly_disables_extended_thinking
+# and the recipient_preferences tests above, which likewise assert on constructed
+# prompt/request content rather than a live response). _ANALYSIS_INSTRUCTIONS is shared
+# by both ClaudeProvider and OpenAIProvider (app/providers/llm/openai.py imports it
+# directly), so this single test covers both real-LLM code paths.
+
+
+def test_analysis_instructions_forbid_extracting_meta_instructions_about_the_agent_itself():
+    lowered = _ANALYSIS_INSTRUCTIONS.lower()
+    assert "meta-instruction" in lowered
+    assert "agent's own behavior" in lowered or "agent's own behaviour" in lowered
+    assert "configuration" in lowered
+
+
+def test_analysis_instructions_forbid_extracting_software_engineering_specs():
+    lowered = _ANALYSIS_INSTRUCTIONS.lower()
+    assert "software engineering specs" in lowered
+    assert "database structures" in lowered
+    assert "schemas" in lowered
+
+
+def test_analysis_instructions_scope_extraction_to_business_domain_facts():
+    lowered = _ANALYSIS_INSTRUCTIONS.lower()
+    assert "business domain only" in lowered
+    assert "project timelines" in lowered
+    assert "deal terms" in lowered
+
+
+def test_analysis_instructions_instruct_leaving_lists_empty_for_internal_engineering_emails():
+    # The exact failure shape: a WHOLE email about the agent's own configuration, not
+    # just one stray sentence -- the prompt must tell the model to leave the
+    # business-fact lists empty rather than force-extracting something from it.
+    lowered = _ANALYSIS_INSTRUCTIONS.lower()
+    assert "internal engineering discussion" in lowered
+    assert "leave" in lowered and "empty" in lowered
