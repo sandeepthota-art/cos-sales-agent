@@ -169,7 +169,9 @@ of `mcp.list_tools()`.)*
   `persist_context_delta`, `create_reply_draft`, `mark_email_completed`.
 - **Read/query path**: `list_processed_emails`, `search_emails`, `get_thread`,
   `list_people`, `list_projects`, `list_commitments`, `list_follow_ups`,
-  `list_meetings`, `list_reply_drafts`, `get_reply_draft`,
+  `list_meetings` (optional `category`/`start_date`/`end_date` filters,
+  closing FR-04's integration gap — see §2's `meetings` collection row),
+  `list_reply_drafts`, `get_reply_draft`,
   `get_project_summary`, `get_company_summary`, `lookup_knowledge`.
 - **Safety-net tool**: `preview_duplicate_person_candidates` — strictly
   read-only; classifies possible duplicate Person records and reports them
@@ -224,6 +226,20 @@ ENTITIES_PROCESSED → REPLY_PROCESSED → MEETING_PROCESSED → COMPLETED
   intentionally never assigned — no existing field reliably distinguishes
   them, and guessing from arbitrary keywords was rejected as a correctness
   risk; out of scope for V1 until a reliable signal exists.
+- **Meeting category is server-side filterable through MCP** (FR-04's
+  remaining integration gap, now closed): the `list_meetings` MCP tool
+  (`app/mcp/tools.py`) gained an optional `category` parameter reusing
+  `classify_meeting` as-is — one of `sales`/`finance`/`internal`/
+  `customer`/`unknown` (case-insensitive); `prospect`/`project` are
+  rejected with a `ValueError` rather than silently returning zero
+  results, since `classify_meeting` never assigns either. `list_meetings`
+  also gained optional `start_date`/`end_date` (ISO 8601, half-open
+  `[start, end)` against the meeting's own `date`), combinable with
+  `category` — e.g. "what sales meetings do I have today" is answered
+  deterministically by `list_meetings(category="sales", start_date=...,
+  end_date=...)`, with no natural-language special-casing anywhere in the
+  tool itself. Both new parameters are optional and default to the exact
+  prior behavior; `list_meetings()` with no arguments is unchanged.
 - **Overdue follow-ups use the follow-up's own dates**: `retrieve_follow_ups`
   (`app/query/retrieval.py`) filters on `FollowUp.follow_up_latest_at`
   directly (UTC-aware throughout `app/query/dates.py`), and an `OVERDUE`

@@ -25,8 +25,8 @@ wherever they apply:
 | Metric | Count |
 |---|---|
 | Total requirements evaluated | 56 |
-| SATISFIED | 40 |
-| PARTIALLY SATISFIED | 8 (integration-gap tag now clear — see remediation note below) |
+| SATISFIED | 42 |
+| PARTIALLY SATISFIED | 6 |
 | MISSING | 4 (includes 1 tagged "by design" — a deliberate architectural choice, not an oversight) |
 | NEEDS VERIFICATION | 2 |
 | AMBIGUOUS | 2 |
@@ -72,6 +72,17 @@ meeting's own stored `project_or_pillar`, propagated from the triggering
 email's real `analysis.goal_pillar`, never guessed. PROSPECT/PROJECT remain
 unassigned by the same original, deliberate design choice — still correctly
 out of scope, not a regression.)*
+*(Second correction, this revision: "What sales meetings do I have today?"
+and "What finance meetings do I have today?" CAN now be answered — the
+`list_meetings` MCP tool gained a `category` filter (reusing `classify_meeting`
+as-is) plus optional `start_date`/`end_date` bounds, combinable in one
+deterministic call. Verified end-to-end against a real-`run_pipeline`-derived
+mongomock dataset, not hand-fabricated documents: a same-day "Sales" meeting
+and a six-days-out "Finance" meeting were both created by processing genuine
+email content through the actual pipeline, then correctly retrieved/excluded
+by `list_meetings(category=..., start_date=..., end_date=...)` exactly as the
+real dates dictated — including a correct empty result for "finance meetings
+today" on a day when only the Sales meeting was scheduled.)*
 
 ---
 
@@ -115,8 +126,8 @@ out of scope, not a regression.)*
 | REQ-34 | Meeting detection from email text | §2, §3 | `detect_meeting` | `meetings` | Meetings tab | `app/calendar/detector.py` tests | SATISFIED | — |
 | REQ-35 | Meeting duplicate protection (same thread, same date) | §2 | `resolve_meeting` (matches on thread_id+date, merges rather than duplicates) | `meetings` | Meetings tab | entity resolution tests | SATISFIED | Scoped to the same thread only — a meeting mentioned across two *different* threads is not deduped against itself |
 | REQ-36 | Meeting participant resolution to canonical Person | §2 | `person_ids` on `Meeting` | `meetings`, `people` | Meetings tab | pipeline tests | SATISFIED | — |
-| REQ-37 | Meeting category: Sales/Finance/etc. | §2 (not claimed) | `classify_meeting` (`app/query/meetings.py`) now derives `SALES`/`FINANCE` from an exact, case-insensitive match on the meeting's own stored `project_or_pillar` (populated by `resolve_meeting` from the triggering email's real, LLM-extracted `analysis.goal_pillar` — never guessed independently); `INTERNAL`/`CUSTOMER`/`UNKNOWN` unchanged; `PROSPECT`/`PROJECT` still never assigned (no reliable field for them) | `meetings` (`project_or_pillar` field) | Meetings tab (raw `project_or_pillar` column visible, no dedicated category filter/badge) | `tests/test_query_meetings.py`, `tests/test_entities_resolution.py`, `tests/test_pipeline_entities.py` | PARTIALLY SATISFIED | Upgraded from MISSING: SALES/FINANCE classification is now real, tested, and non-guessed. Gap: the derived `MeetingClassification` label itself is only computed inside the unexposed `get_meeting_brief`/`get_meeting_brief_for_person` (`app/query/meetings.py`) — no MCP tool returns it directly, and `list_meetings` has no `project_or_pillar` filter parameter (a client can read the raw field per-document but cannot filter server-side by it yet). PROSPECT/PROJECT remain an explicit, documented non-goal, not an oversight |
-| REQ-38 | "What sales/finance meetings do I have today?" | Not claimed anywhere in architecture | `list_meetings` MCP tool now returns each meeting's stored `project_or_pillar` field (previously always absent/null); a client can filter the returned list by `project_or_pillar in {"Sales", "Finance"}` combined with a date check | `meetings` | — | Covered indirectly by the REQ-37 test files above (no dedicated acceptance test for this exact question) | PARTIALLY SATISFIED | Upgraded from MISSING: the data needed to answer this now exists and is reachable via an existing MCP tool, but there is still no single dedicated query/tool that filters by category and date together — same client-side-filtering limitation `REQ-33` had before its own fix, not yet closed for this requirement |
+| REQ-37 | Meeting category: Sales/Finance/etc. | §2 (not claimed) | `classify_meeting` (`app/query/meetings.py`) derives `SALES`/`FINANCE` from an exact, case-insensitive match on the meeting's own stored `project_or_pillar` (populated by `resolve_meeting` from the triggering email's real, LLM-extracted `analysis.goal_pillar` — never guessed independently); `INTERNAL`/`CUSTOMER`/`UNKNOWN` unchanged; `PROSPECT`/`PROJECT` still never assigned (no reliable field for them). `list_meetings` MCP tool now exposes a `category` filter reusing `classify_meeting` directly — no second classification mechanism | `meetings` (`project_or_pillar` field) | Meetings tab (raw `project_or_pillar` column visible, no dedicated category filter/badge in the UI) | `tests/test_query_meetings.py`, `tests/test_entities_resolution.py`, `tests/test_pipeline_entities.py`, `tests/test_mcp_query_tools.py` (17 `list_meetings` category/date-range cases), `tests/test_mcp_server.py` (2 genuine MCP-dispatch-layer cases via `mcp.call_tool`) | SATISFIED | Upgraded from PARTIALLY SATISFIED: the FR-04 integration gap is closed — `list_meetings(category=...)` is deterministic, MCP-reachable (proven through `mcp.call_tool`, not just the underlying Python function), tested, and rejects `prospect`/`project` explicitly rather than silently returning zero results. Only remaining gap: no dashboard UI filter/badge (not required by FR-04's own acceptance criteria) |
+| REQ-38 | "What sales/finance meetings do I have today?" | Not claimed anywhere in architecture | `list_meetings(category="sales"/"finance", start_date=..., end_date=...)` answers this deterministically in one MCP call — `start_date`/`end_date` (new, optional, ISO 8601, half-open) combine with `category` exactly as required | `meetings` | — | `tests/test_mcp_query_tools.py::test_list_meetings_category_combined_with_date_range`, `::test_list_meetings_category_and_date_range_with_no_matches_returns_empty_not_an_error`; independently verified end-to-end against a real-pipeline-derived (non-fabricated) mongomock dataset — see the FR-04 close-out verification note below | SATISFIED | Upgraded from PARTIALLY SATISFIED: both the category filter and the date-bounds filter needed to answer this exact question now exist on the same, already-MCP-reachable `list_meetings` tool, combinable in one call — no client-side post-filtering required |
 | REQ-39 | Calendar action proposal (never auto-create) | §5 core principle | `build_calendar_action` | `calendar_actions` | Calendar Approval tab | `tests/test_pipeline.py` | SATISFIED | — |
 | REQ-40 | Human approval required before real calendar event | §4, §5 | Dashboard's "Create on my calendar" button only, gated by `DASHBOARD_READ_ONLY` | `calendar_actions` | Calendar Approval tab | `tests/test_ui_smoke.py::test_dashboard_read_only_mode_hides_approval_buttons` | SATISFIED | — |
 | REQ-41 | Real external calendar provider integration | §1 (mentions `CalendarProvider`) | `ProviderFactory.create_calendar_provider` — only `mock` is configured in the current Render deployment | `calendar_actions` | Calendar Approval tab | none against a real provider | NEEDS VERIFICATION | A real (Google Calendar) `CalendarProvider` implementation's existence/correctness is not demonstrated anywhere in this codebase — only the interface and a mock exist |
@@ -283,7 +294,7 @@ List of follow-ups, each carrying its parent commitment's summary for context.
 
 ---
 
-### FR-04 — Meeting Category Classification (Sales / Finance / Custom) — **PARTIALLY IMPLEMENTED**
+### FR-04 — Meeting Category Classification (Sales / Finance / Custom) — **FULLY IMPLEMENTED**
 
 Option (a) was chosen, per this FR's own instruction, using the field this
 FR itself identified as the natural home: `resolve_meeting`
@@ -296,17 +307,28 @@ case-insensitive match on that stored field. Tests:
 `tests/test_query_meetings.py`, `tests/test_entities_resolution.py`,
 `tests/test_pipeline_entities.py`.
 
-**What's not done:** acceptance criterion 1 ("queryable as a sales
-meeting") is only partially closed — `project_or_pillar` is now present on
-every `list_meetings` MCP response, so a client *can* filter by it, but
-there is no dedicated server-side filter parameter or classification-aware
-tool, and the computed `MeetingClassification` enum value itself
-(`INTERNAL`/`CUSTOMER`/`SALES`/`FINANCE`/`UNKNOWN`) is only produced inside
-the unexposed `get_meeting_brief`. Criterion 2 (never guesses; `None` stays
-`None`) and criterion 3 (this is the chosen path, not "Out of Scope") are
-both fully met. Closing the remaining gap (a `list_meetings` filter
-parameter, or a dedicated classified-meetings tool) was judged out of this
-remediation's scope — it's a small, additive follow-up, not a redesign.
+**Integration gap closed (this revision):** `list_meetings`
+(`app/mcp/tools.py`/`app/mcp/server.py`) gained an optional `category`
+parameter — one of `sales`/`finance`/`internal`/`customer`/`unknown`
+(case-insensitive), reusing `classify_meeting` directly with no second
+classification mechanism — and optional `start_date`/`end_date` (ISO 8601,
+half-open `[start, end)` against the meeting's own `date`), combinable
+with `category` in one call. `prospect`/`project` are rejected with a
+clear `ValueError` (`test_list_meetings_rejects_unsupported_categories_
+deterministically`) rather than silently returning zero results.
+Reachability was proven at the actual MCP dispatch layer, not just the
+underlying Python function: `tests/test_mcp_server.py::
+test_list_meetings_category_filter_is_reachable_through_the_mcp_tool_layer`
+calls `mcp.call_tool("list_meetings", {"category": "SALES"})` directly.
+17 additional tests in `tests/test_mcp_query_tools.py` cover every
+supported category, invalid-category rejection, category+date combination,
+zero-match (empty, not an error), undated-meeting exclusion, and unparseable
+date bounds. `list_meetings()` with no arguments is unchanged (2 pre-existing
+tests still pass verbatim). All 5 acceptance criteria below are now met:
+category filtering exists, is deterministic (no LLM, no NL special-casing —
+the tool takes concrete parameters), is MCP-reachable (proven via
+`mcp.call_tool`), is tested, and SALES/FINANCE use the existing, reliable
+`project_or_pillar`-based classification path exclusively.
 
 **Requirement**
 
@@ -797,6 +819,15 @@ something previously stated explicitly in the architecture document.
 *Only changes genuinely necessary to close a real gap — nothing here
 redesigns a component that already satisfies its requirement.*
 
+**Historical record, kept as originally written:** this table (and Sections
+6/7/8's scenario/schema/acceptance-test rows below, wherever they reference
+FR-01 through FR-04) was written before any of FR-01–FR-04 were implemented.
+All four are now done — see Section 3's per-FR status headers and REQ-51,
+REQ-52, REQ-33, REQ-37, REQ-38 in Section 2 for what was actually built
+(which differs in detail from what's planned below, e.g. FR-04 used the
+already-existing `project_or_pillar` field rather than a new `category`
+field, per Section 3's own explicit recommendation to review that first).
+
 | Requirement | Existing Component | Required Change | New Component Needed? | Code Change? | DB Schema Change? |
 |---|---|---|---|---|---|
 | FR-01 Executive query tool | `app/query/service.py` (already complete) | Add one new `@mcp.tool()` wrapper in `app/mcp/server.py` + `app/mcp/tools.py` | No — wire up existing code | Yes (small, additive) | No |
@@ -822,7 +853,7 @@ redesigns a component that already satisfies its requirement.*
 | Knowledge lookup | `lookup_knowledge` | No | — |
 | Duplicate detection (read-only) | `preview_duplicate_person_candidates` | No | — |
 | **"What's on my table?"** | none | **Yes** | Add FR-02 |
-| **"What sales meetings do I have today?"** | none (and `list_meetings` has no category filter, since none exists yet) | **Yes** | Add FR-04 then a filtered query |
+| **"What sales meetings do I have today?"** | *(as originally written; now closed — see FR-04's SATISFIED status in Section 2/3)* none (and `list_meetings` has no category filter, since none exists yet) | ~~Yes~~ Done | ~~Add FR-04 then a filtered query~~ `list_meetings(category="sales", start_date=..., end_date=...)` |
 | **"What finance meetings do I have today?"** | none | **Yes** | Same as above |
 | **General natural-language question ("What changed since yesterday?", "Which customers are waiting for me?")** | none — a skill (`sales-inbox-assistant`) currently hand-orchestrates raw `list_*` calls client-side instead | **Yes** | Add FR-01 |
 | **Overdue follow-ups** | none | **Yes** | Add FR-03 |
@@ -879,10 +910,10 @@ redesigns a component that already satisfies its requirement.*
 
 ### Functional Requirements
 
-- **FR-01** — Executive Query MCP Tool (natural-language question → structured evidence, no LLM call inside the tool itself)
-- **FR-02** — "What's on my table?" Cross-Entity Aggregation Tool
-- **FR-03** — Overdue Follow-up Query
-- **FR-04** — Meeting Category Classification (Sales/Finance/etc.) — *or* formally declare Out of Scope (see below)
+- **FR-01** — Executive Query MCP Tool (natural-language question → structured evidence, no LLM call inside the tool itself) — **IMPLEMENTED**
+- **FR-02** — "What's on my table?" Cross-Entity Aggregation Tool — **IMPLEMENTED**
+- **FR-03** — Overdue Follow-up Query — **IMPLEMENTED**
+- **FR-04** — Meeting Category Classification (Sales/Finance/etc.) — **IMPLEMENTED**, including the `list_meetings` `category` filter closing the integration gap
 - **FR-05** — Attachment Handling — build real ingestion, *or* formally declare Out of Scope (see below)
 - **FR-06** — Real (non-simulated) Email Sending — *only if the product actually requires it;* otherwise formally declare simulated-only (see below)
 - **FR-07** — Real Calendar Provider Failure Handling
@@ -906,7 +937,7 @@ should get one explicit line in the BRD rather than staying implicit:
 
 1. **Real email sending**: recommend the BRD state *"V1 sends no real email; every reply is a human-reviewed simulated send only"* unless FR-06 is deliberately taken on.
 2. **Attachments**: recommend the BRD state *"Email attachments are not ingested, parsed, or searchable in V1"* unless FR-05 is deliberately taken on.
-3. **Meeting Sales/Finance categorization**: recommend the BRD either accept FR-04's `goal_pillar`-derived category, or explicitly state *"Meeting categorization beyond INTERNAL/CUSTOMER/UNKNOWN is out of scope for V1."*
+3. **Meeting Sales/Finance categorization**: **done** — FR-04's `goal_pillar`-derived category is implemented, MCP-reachable via `list_meetings(category=...)`, and tested; PROSPECT/PROJECT remain explicitly out of scope for V1 (no reliable field supports either).
 4. **Cross-thread meeting deduplication**: today's dedup is thread-scoped only; recommend the BRD explicitly accept this scope rather than assume system-wide dedup exists.
 5. **Duplicate-person merge execution via MCP**: currently a manual, script-level, human-run process outside MCP's reach entirely (not even reachable by the operator's own MCP client, let alone a dashboard viewer). This appears to be a *deliberate* safety choice (an irreversible action kept maximally hard to trigger by accident) — recommend the BRD explicitly ratify this as intentional rather than leave it looking like an oversight.
 6. **Real calendar provider**: recommend the BRD state which real calendar system (if any) is required for V1, since only a mock exists today and is what's actually deployed.
