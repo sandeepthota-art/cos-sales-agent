@@ -1,9 +1,15 @@
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from pymongo import ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
+
+# BRD gap-analysis C1 (structured logging): a dedicated logger, not the root logger,
+# so a caller (or a future log-shipping config) can filter/route pipeline-stage
+# events independently of everything else this process logs.
+_stage_logger = logging.getLogger("app.pipeline.stage")
 
 
 class _BaseRepository:
@@ -32,7 +38,16 @@ class EmailRepository(_BaseRepository):
         stage: str,
         error: str | None = None,
         failed_stage: str | None = None,
+        thread_id: str | None = None,
+        duration_ms: float | None = None,
+        error_type: str | None = None,
     ) -> None:
+        """thread_id/duration_ms/error_type (BRD gap-analysis C1) are logging-only --
+        none of the three are persisted onto the email document itself (the stored
+        processing_status shape is unchanged, so no existing reader/test is
+        affected). Never logs a secret or credential -- only ids, a stage name, an
+        optional error's type/message, and a duration.
+        """
         self._collection.update_one(
             {"message_id": message_id},
             {
@@ -46,6 +61,18 @@ class EmailRepository(_BaseRepository):
                 }
             },
             upsert=True,
+        )
+        _stage_logger.info(
+            "pipeline stage transition",
+            extra={
+                "message_id": message_id,
+                "thread_id": thread_id,
+                "stage": stage,
+                "failed_stage": failed_stage,
+                "duration_ms": duration_ms,
+                "error_type": error_type,
+                "error_message": error,
+            },
         )
 
     def set_entity_metadata(

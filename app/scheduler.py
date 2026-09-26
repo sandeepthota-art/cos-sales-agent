@@ -149,7 +149,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, structured=(settings.log_format == "json"))
 
     client = get_client(settings.mongodb_uri)
     db = initialize_database(client, settings.mongodb_database)

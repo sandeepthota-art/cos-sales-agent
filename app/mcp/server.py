@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.analysis.schemas import EmailAnalysis
+from app.config.logging import configure_logging
 from app.config.settings import get_settings
 from app.context.models import ContextDelta
 from app.database.mongodb import get_client, initialize_database
@@ -484,6 +485,14 @@ def _wants_http_transport() -> bool:
 
 
 def main() -> None:
+    # BRD gap-analysis C1: this entry point never called configure_logging at all
+    # before this change -- every log line (including every pipeline stage
+    # transition logged by app.database.repositories.EmailRepository.set_stage)
+    # went through Python's unconfigured root logger default. Same settings-driven
+    # LOG_LEVEL/LOG_FORMAT every other entry point (main.py, app.scheduler) already uses.
+    settings = get_settings()
+    configure_logging(settings.log_level, structured=(settings.log_format == "json"))
+
     if _wants_http_transport():
         _run_http()
     else:

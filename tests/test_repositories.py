@@ -46,6 +46,29 @@ def test_email_repository_set_stage_updates_in_place(db):
     assert doc["processing_status"]["failed_stage"] == "ANALYZED"
 
 
+def test_email_repository_set_stage_emits_a_structured_log_record(db, caplog):
+    # BRD gap-analysis C1: thread_id/duration_ms/error_type are logging-only -- none
+    # of the three change the persisted document (asserted above already).
+    import logging
+
+    repo = EmailRepository(db)
+    with caplog.at_level(logging.INFO, logger="app.pipeline.stage"):
+        repo.set_stage(
+            "msg_001", "FAILED", error="boom", failed_stage="ANALYZED",
+            thread_id="t1", duration_ms=42.0, error_type="ValueError",
+        )
+
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.message_id == "msg_001"
+    assert record.thread_id == "t1"
+    assert record.stage == "FAILED"
+    assert record.failed_stage == "ANALYZED"
+    assert record.duration_ms == 42.0
+    assert record.error_type == "ValueError"
+    assert record.error_message == "boom"
+
+
 def _set_entity_metadata(repo, message_id, label_applied="Needs reply"):
     repo.set_entity_metadata(
         message_id=message_id,

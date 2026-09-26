@@ -133,7 +133,7 @@ def run_file_ingestion(db, settings, input_path: str) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, structured=(settings.log_format == "json"))
 
     if args.healthcheck:
         ok, lines = run_healthcheck(settings)

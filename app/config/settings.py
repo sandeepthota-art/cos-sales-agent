@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Kolkata"
 
     log_level: str = "INFO"
+    # BRD gap-analysis C1: "text" (default, unchanged) or "json" -- a production
+    # deployment's log aggregator sets LOG_FORMAT=json; local/dev defaults stay
+    # exactly as before with zero configuration.
+    log_format: str = "text"
 
     demo_seed: int = 42
 

@@ -1,4 +1,5 @@
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -573,8 +574,14 @@ def run_pipeline(
         # it is recorded as a FAILED result at whatever stage was in flight,
         # and the loop moves on to the next email.
         current_stage = ProcessingStage.THREADED
+        # BRD gap-analysis C1: wall-clock timing for this one email's processing,
+        # reported alongside the terminal (COMPLETED/FAILED) stage transition only --
+        # not a new retry/perf mechanism, just what gets logged.
+        stage_started = time.perf_counter()
+        thread_id_for_logging: str | None = None
         try:
             thread_id = resolve_and_persist_thread(thread_repo, email_repo, email)
+            thread_id_for_logging = thread_id
 
             current_stage = ProcessingStage.ANALYZED
             outcome = analyze_email_with_validation(llm_provider, email)
@@ -749,7 +756,10 @@ def run_pipeline(
                     calendar_repo.upsert_by_key(calendar_key, action.model_dump(mode="json"))
             email_repo.set_stage(email.message_id, ProcessingStage.MEETING_PROCESSED.value)
 
-            email_repo.set_stage(email.message_id, ProcessingStage.COMPLETED.value)
+            email_repo.set_stage(
+                email.message_id, ProcessingStage.COMPLETED.value,
+                thread_id=thread_id_for_logging, duration_ms=(time.perf_counter() - stage_started) * 1000,
+            )
             results.append(EmailResult(message_id=email.message_id, final_stage="COMPLETED"))
         except Exception as exc:  # noqa: BLE001 - deliberately broad: any provider/stage failure must not crash the batch
             error_detail = f"{type(exc).__name__}: {exc}"
@@ -758,6 +768,9 @@ def run_pipeline(
                 ProcessingStage.FAILED.value,
                 error=error_detail,
                 failed_stage=current_stage.value,
+                thread_id=thread_id_for_logging,
+                duration_ms=(time.perf_counter() - stage_started) * 1000,
+                error_type=type(exc).__name__,
             )
             results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=error_detail))
             continue
