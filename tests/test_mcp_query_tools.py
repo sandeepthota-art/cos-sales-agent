@@ -719,3 +719,104 @@ def test_search_emails_results_are_json_serializable(db):
     results = tools.search_emails(db)
 
     json.dumps(results)  # raises if anything non-JSON-serializable (ObjectId, datetime) leaked through
+
+
+# --- ask_question / whats_on_my_table (BRD gap-analysis FR-01 / FR-02) -----------------------
+
+
+@pytest.fixture
+def settings():
+    from app.config.settings import Settings
+
+    return Settings(
+        email_provider="mock", calendar_provider="mock", llm_provider="mock",
+        agent_email="agent@ourcompany.example", timezone="UTC",
+    )
+
+
+def test_ask_question_returns_structured_query_engine_result(db, settings):
+    CommitmentRepository(db).upsert_by_key(
+        {"id": "COM-1"},
+        {"id": "COM-1", "what": "send pricing", "class": "owed_to_me", "person_id": None, "org_id": None,
+         "source_record": "e:1", "made_on": "2026-03-01T00:00:00Z", "committed_date": None, "status": "open"},
+    )
+
+    result = tools.ask_question(db, settings, "What commitments are due?")
+
+    assert result["status"] == "ok"
+    assert result["intent"] == "commitments"
+    assert any(r["id"] == "COM-1" for r in result["records"])
+
+
+def test_ask_question_unrecognized_text_returns_error_status_not_a_guess(db, settings):
+    result = tools.ask_question(db, settings, "xyzzy plugh completely nonsensical gibberish")
+
+    assert result["status"] == "error"
+    assert result["intent"] == "unsupported"
+
+
+def test_ask_question_never_makes_an_llm_call(db, settings, monkeypatch):
+    # No llm_classify is ever passed through -- verified by making ANY attempt to
+    # construct a real LLM provider raise, then confirming ask_question still works.
+    import app.providers.factory as factory_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("ask_question must never construct an LLM provider")
+
+    monkeypatch.setattr(factory_module.ProviderFactory, "create_llm_provider", _boom)
+
+    result = tools.ask_question(db, settings, "What meetings do I have today?")
+
+    assert result["intent"] == "meetings"
+
+
+def test_ask_question_results_are_json_serializable(db, settings):
+    import json
+
+    result = tools.ask_question(db, settings, "What are my P1 emails?")
+
+    json.dumps(result)
+
+
+def test_whats_on_my_table_includes_every_category_key_even_when_empty(db, settings):
+    result = tools.whats_on_my_table(db, settings)
+
+    assert set(result.keys()) == {
+        "p1_emails", "pending_replies", "overdue_follow_ups",
+        "commitments_due", "upcoming_meetings", "active_projects",
+    }
+    for value in result.values():
+        assert value == []
+
+
+def test_whats_on_my_table_aggregates_real_data_per_category(db, settings):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "m1"}, _email("m1", priority="P1", label_applied="Needs reply: ASAP")
+    )
+    ReplyDraftRepository(db).upsert_by_key(
+        {"source_email_id": "m1"},
+        {"reply_id": "reply_m1", "thread_id": "m1", "source_email_id": "m1", "status": "awaiting_approval",
+         "draft": {"subject": "Re: Renewal check-in", "body": "..."}},
+    )
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FU-1"},
+        {"id": "FU-1", "commitment_id": None, "thread_id": "m1", "person_id": None, "org_id": None,
+         "escalation_level": 1, "surfaced": False, "status": "active", "audience": "client_fixed_date",
+         "follow_up_earliest_at": "2020-01-01T00:00:00Z", "follow_up_latest_at": "2020-01-02T00:00:00Z"},
+    )
+    ProjectRepository(db).upsert_by_key({"id": "PRJ-1"}, {"id": "PRJ-1", "project": "Renewal Q4"})
+
+    result = tools.whats_on_my_table(db, settings)
+
+    assert [e["message_id"] for e in result["p1_emails"]] == ["m1"]
+    assert [d["reply_id"] for d in result["pending_replies"]] == ["reply_m1"]
+    assert [f["id"] for f in result["overdue_follow_ups"]] == ["FU-1"]
+    assert [p["id"] for p in result["active_projects"]] == ["PRJ-1"]
+
+
+def test_whats_on_my_table_is_json_serializable(db, settings):
+    import json
+
+    result = tools.whats_on_my_table(db, settings)
+
+    json.dumps(result)

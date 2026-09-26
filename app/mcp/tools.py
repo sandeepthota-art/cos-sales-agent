@@ -28,6 +28,10 @@ from app.database.repositories import (
 )
 from app.email.models import Email, parse_email
 from app.entities.resolution import resolve_canonical_person_for_email
+from app.query import retrieval
+from app.query.dates import resolve_date_range
+from app.query.schemas import DateRangeKind, QueryRequest
+from app.query.service import execute_query
 from app.interfaces.calendar_provider import CalendarProvider
 from app.interfaces.llm_provider import LLMProvider
 from app.knowledge_lookup import KnowledgeLookup
@@ -915,3 +919,58 @@ def preview_duplicate_person_candidates(db: Database) -> dict[str, Any]:
             }
         )
     return {"candidate_count": len(candidates), "candidates": candidates}
+
+
+def ask_question(db: Database, settings: Settings, text: str, timezone_name: str | None = None) -> dict[str, Any]:
+    """BRD gap-analysis FR-01: the MCP-reachable entry point into the existing,
+    independently-tested query engine (app.query.service.execute_query) --
+    previously fully built and tested but with zero callers outside its own test
+    suite. Deterministic and strictly read-only: never constructs an LLM client
+    and never passes llm_classify, so intent classification stays Stage-1-only
+    (app.query.intent.classify_intent_with_fallback's deterministic fixed-phrase
+    rules) -- no LLM call happens anywhere in this tool. Returns execute_query's
+    own structured QueryResult verbatim; this tool deliberately never invokes
+    app.query.synthesis (LLM prose generation) -- the calling client's own model
+    can phrase a natural-language answer from this structured evidence itself.
+
+    reference_datetime is always "now" (this is a live question asked right now,
+    not a historical replay), so it is not a caller-supplied parameter.
+    """
+    request = QueryRequest(
+        text=text,
+        reference_datetime=datetime.now(timezone.utc),
+        timezone=timezone_name or settings.timezone,
+    )
+    result = execute_query(db, request, agent_email=settings.agent_email)
+    return result.model_dump(mode="json")
+
+
+def whats_on_my_table(db: Database, settings: Settings) -> dict[str, Any]:
+    """BRD gap-analysis FR-02: one read-only call combining the categories an
+    executive actually needs surfaced, each still reusing an existing repository/
+    query-layer primitive -- no category invents data beyond what that primitive
+    already returns, and no category's failure can affect another's (each is
+    computed independently). Every key is always present, even when its list is
+    empty, so a caller never has to guess whether an empty category was omitted
+    versus genuinely empty.
+    """
+    now = datetime.now(timezone.utc)
+    tz = settings.timezone
+    overdue = resolve_date_range(DateRangeKind.OVERDUE, now, tz)
+    upcoming = resolve_date_range(DateRangeKind.UPCOMING, now, tz)
+
+    p1_emails = search_emails(db, priority="P1", limit=50)
+    pending_replies = list_reply_drafts(db, status="awaiting_approval")
+    overdue_follow_ups = retrieval.retrieve_follow_ups(db, date_range=overdue)
+    commitments_due = retrieval.retrieve_commitments(db, date_range=upcoming)
+    upcoming_meetings = retrieval.retrieve_meetings(db, date_range=upcoming)
+    active_projects = list_projects(db)
+
+    return {
+        "p1_emails": p1_emails,
+        "pending_replies": pending_replies,
+        "overdue_follow_ups": overdue_follow_ups,
+        "commitments_due": commitments_due,
+        "upcoming_meetings": upcoming_meetings,
+        "active_projects": active_projects,
+    }

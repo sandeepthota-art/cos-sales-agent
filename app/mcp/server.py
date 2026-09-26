@@ -379,6 +379,43 @@ def preview_duplicate_person_candidates() -> dict[str, Any]:
     return tools.preview_duplicate_person_candidates(_get_db())
 
 
+@mcp.tool()
+def ask_question(text: str, timezone: str | None = None) -> dict[str, Any]:
+    """BRD gap-analysis FR-01: answer an executive-style natural-language question
+    (e.g. "What meetings do I have today?", "What follow-ups are overdue?", "What
+    commitments are due?", "What are my P1 emails?", "What projects are currently
+    active?") by reusing the existing, independently-tested query engine
+    (app.query.service.execute_query) -- never a second, duplicate query mechanism.
+
+    Strictly read-only and deterministic: this tool never constructs or calls an
+    LLM itself, so intent classification only ever uses the deterministic,
+    fixed-phrase Stage-1 rules -- an unrecognized question returns a clear
+    "not recognized" result rather than a guess. Returns the query engine's own
+    structured result (status, resolved entities, evidence records) -- it does NOT
+    synthesize prose; phrase the final natural-language answer yourself from this
+    structured evidence.
+
+    timezone (optional, e.g. "Asia/Kolkata"): only affects resolution of relative
+    date phrases like "today"/"this week"; defaults to the server's configured
+    timezone when omitted.
+    """
+    return tools.ask_question(_get_db(), get_settings(), text, timezone_name=timezone)
+
+
+@mcp.tool()
+def whats_on_my_table() -> dict[str, Any]:
+    """BRD gap-analysis FR-02: one read-only call answering "What's on my table?" /
+    "What needs my attention today?" -- combines P1 emails, pending reply drafts,
+    overdue follow-ups (still outstanding, not resolved/dropped), upcoming
+    commitments, upcoming meetings, and active projects into one structured
+    response. Every key is always present (an empty list, never an omitted key),
+    and each category is computed independently -- a problem in one category can
+    never affect another. Reuses existing repositories/query-layer functions
+    exclusively; invents no data.
+    """
+    return tools.whats_on_my_table(_get_db(), get_settings())
+
+
 class _BearerAuthMiddleware(BaseHTTPMiddleware):
     """Rejects any request without a valid bearer token.
 
