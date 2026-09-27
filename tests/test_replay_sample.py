@@ -157,8 +157,41 @@ def test_replay_runs_the_real_pipeline_and_reports_created_projects(monkeypatch,
     output = capsys.readouterr().out
     assert "completed=1" in output
     assert "goal_pillar='Sales'" in output
+    # The raw LLM analysis for this exact email must be visible, not just the final
+    # persisted counts -- this is what lets a real run be debugged (BRD follow-up:
+    # "why did projects_mentioned come back empty").
+    assert "raw LLM analysis: MSG-1" in output
+    assert "projects_mentioned=[{'name': 'CustomerCo Renewal'" in output
 
-    db = replay_sample.get_client(settings.mongodb_uri)[settings.mongodb_database]
-    projects = list(db.projects.find({}))
-    assert len(projects) == 1
-    assert projects[0]["goal_pillar"] == "Sales"
+
+def test_replay_warns_loudly_when_llm_provider_is_mock(monkeypatch, tmp_path, capsys):
+    settings = _settings(llm_provider="mock")
+    monkeypatch.setattr(replay_sample, "get_settings", lambda: settings)
+    path = _write_sample(tmp_path, [_email_doc()])
+
+    exit_code = replay_sample.main(["--input", path, "--yes"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "WARNING: LLM_PROVIDER='mock'" in output
+    assert "always returns projects_mentioned=[]" in output
+
+
+def test_analysis_logging_provider_passes_through_results_and_delegate_methods_unchanged():
+    from datetime import datetime, timezone
+
+    from app.email.models import Email
+
+    inner = _SalesProjectLLM()
+    wrapped = replay_sample._AnalysisLoggingLLMProvider(inner)
+    email = Email(
+        message_id="MSG-1", **{"from": {"name": "Jane", "email": "jane@customerco.example"}},
+        to=[{"name": "Ashok", "email": "ashok@ourcompany.example"}], subject="Renewal",
+        body="body", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+
+    result = wrapped.analyze_email(email)
+
+    assert result == inner.analyze_email(email)
+    assert wrapped.verify_same_fact("a", "a", "s", "p") is inner.verify_same_fact("a", "a", "s", "p")
+    assert wrapped.draft_reply({}, email) == inner.draft_reply({}, email)

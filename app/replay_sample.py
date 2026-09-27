@@ -26,10 +26,40 @@ from app.config.logging import configure_logging
 from app.config.settings import Settings, get_settings
 from app.database.mongodb import get_client, initialize_database
 from app.database.repositories import CommitmentRepository, ProjectRepository
+from app.email.models import Email
+from app.interfaces.llm_provider import LLMProvider
 from app.pipeline import run_pipeline
 from app.processing.models import PipelineRunSummary
 from app.providers.email.mock import MockEmailProvider
 from app.providers.factory import ProviderFactory
+
+
+class _AnalysisLoggingLLMProvider(LLMProvider):
+    """Wraps the real, configured LLMProvider so every analyze_email() call it makes
+    is also printed -- zero extra LLM calls (this only observes the single call
+    run_pipeline already makes per email), so a "why did projects_mentioned come
+    back empty" question can be answered by reading exactly what the model actually
+    returned, not guessed at."""
+
+    def __init__(self, inner: LLMProvider):
+        self._inner = inner
+
+    def analyze_email(self, email: Email) -> dict[str, Any]:
+        result = self._inner.analyze_email(email)
+        print(f"  --- raw LLM analysis: {email.message_id} ({email.subject!r}) ---")
+        print(f"      goal_pillar={result.get('goal_pillar')!r} intent={result.get('intent')!r}")
+        print(f"      projects_mentioned={result.get('projects_mentioned')!r}")
+        print(f"      commitments_mentioned={result.get('commitments_mentioned')!r}")
+        return result
+
+    def update_context(self, previous_context: dict[str, Any], new_analysis: dict[str, Any]) -> dict[str, Any]:
+        return self._inner.update_context(previous_context, new_analysis)
+
+    def verify_same_fact(self, existing_value: str, new_value: str, subject: str, predicate: str) -> bool:
+        return self._inner.verify_same_fact(existing_value, new_value, subject, predicate)
+
+    def draft_reply(self, context: dict[str, Any], latest_email: Email) -> dict[str, Any]:
+        return self._inner.draft_reply(context, latest_email)
 
 
 def target_database_refusal_reason(database_name: str) -> str | None:
@@ -49,11 +79,21 @@ def run_replay_and_report(db, emails: list[dict[str, Any]], settings: Settings) 
     """Shared by this script's file-based replay and scripts/reingest_historical.py's
     live-source replay: runs the real pipeline (real LLM provider) over already-loaded
     raw email dicts and prints what landed in projects/commitments."""
+    if settings.llm_provider == "mock":
+        print(
+            "WARNING: LLM_PROVIDER='mock' -- MockLLMProvider always returns "
+            "projects_mentioned=[] regardless of email content (it never reads the "
+            "real _ANALYSIS_INSTRUCTIONS prompt at all). If you're trying to verify "
+            "the prompt fix, this run cannot show that -- set LLM_PROVIDER to your "
+            "real provider (e.g. 'openai') before re-running."
+        )
+
     email_provider = MockEmailProvider(payloads=emails)
-    llm_provider = ProviderFactory.create_llm_provider(settings)
+    llm_provider = _AnalysisLoggingLLMProvider(ProviderFactory.create_llm_provider(settings))
     calendar_provider = ProviderFactory.create_calendar_provider(settings)
     replay_settings = settings.model_copy(update={"email_limit": len(emails)})
 
+    print(f"\nProcessing {len(emails)} email(s) -- printing each one's raw LLM analysis as it runs:")
     summary = run_pipeline(db, email_provider, llm_provider, calendar_provider, replay_settings)
     print(
         f"Replay complete: processed={summary.processed} completed={summary.completed} "
