@@ -75,6 +75,26 @@ def test_makes_zero_write_calls_even_if_attempted(db):
     assert stored["goal_pillar"] == "Sales"
 
 
+def test_dump_all_prints_full_untruncated_content_for_every_email(db, capsys):
+    long_body = "x" * 1000  # longer than _BODY_PREVIEW_CHARS, must not be truncated in dump-all mode
+    db["emails"].insert_many(
+        [
+            _email("MSG-A", subject="A", body=long_body, goal_pillar="Sales"),
+            _email("MSG-B", subject="B", body="short body", goal_pillar=""),
+        ]
+    )
+
+    exit_code = baseline.main(["--uri", "mongodb://irrelevant", "--db", "baseline_test", "--dump-all"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "2 document(s)" in output
+    assert long_body in output  # not truncated
+    assert '"message_id": "MSG-A"' in output
+    assert '"message_id": "MSG-B"' in output
+    assert '"_id":' not in output  # projection excludes Mongo's own _id
+
+
 def test_empty_database_reports_zero_without_error(db, capsys):
     exit_code = baseline.main(["--uri", "mongodb://irrelevant", "--db", "baseline_test"])
 

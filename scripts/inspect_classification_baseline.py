@@ -14,8 +14,14 @@ Usage (run from the repo root):
                database user>" \\
         --db cos_sales_production_v1 \\
         --sample-size 3
+
+    # Or, to get full (untruncated) subject/body for every email -- e.g. to
+    # paste the output to a reasoning caller for a classification audit:
+    python -m scripts.inspect_classification_baseline \\
+        --uri "..." --db cos_sales_production_v1 --dump-all
 """
 import argparse
+import json
 from typing import Any
 
 from app.database.mongodb import get_client
@@ -36,6 +42,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uri", required=True, help="MongoDB connection string -- ideally a read-only database user")
     parser.add_argument("--db", required=True, help="Database name to inspect (e.g. cos_sales_production_v1)")
     parser.add_argument("--sample-size", type=int, default=3, help="How many example emails to show per bucket (default 3)")
+    parser.add_argument(
+        "--dump-all", action="store_true",
+        help="Print full (untruncated) message_id/subject/goal_pillar/body for every email as JSON lines, "
+             "instead of the bucketed report -- for handing off to a reasoning caller to classify.",
+    )
     return parser
 
 
@@ -46,6 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     db = _ReadOnlyDatabaseProxy(client[args.db])
 
     projection = {"_id": 0, "message_id": 1, "subject": 1, "goal_pillar": 1, "body": 1}
+
+    if args.dump_all:
+        docs = list(db["emails"].find({}, projection).sort("message_id", 1))
+        print(f"=== Full email dump: db='{args.db}', {len(docs)} document(s) -- read-only, nothing modified ===")
+        for doc in docs:
+            print(json.dumps(doc, default=str))
+        return 0
 
     total_emails = db["emails"].count_documents({})
     sales_count = db["emails"].count_documents({"goal_pillar": "Sales"})
