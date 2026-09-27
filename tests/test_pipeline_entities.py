@@ -11,6 +11,7 @@ from app.database.repositories import (
     FollowUpRepository,
     MeetingRepository,
     PersonRepository,
+    ProjectRepository,
 )
 from app.interfaces.llm_provider import LLMProvider
 from app.pipeline import run_pipeline
@@ -625,6 +626,21 @@ def test_pipeline_links_commitment_to_project_when_counterparty_org_matches(db, 
 
     results = get_commitments_for_project(db, project_id)
     assert [r["id"] for r in results] == [commitment["id"]]
+
+
+def test_pipeline_propagates_goal_pillar_onto_the_resolved_project(db, settings):
+    # Companion to test_pipeline_propagates_goal_pillar_onto_the_resolved_meeting:
+    # end-to-end proof that resolve_project's goal_pillar param (already wired in
+    # app.pipeline._process_entities) actually receives "Sales" when the analysis
+    # genuinely reports a sales deal -- not just at the resolve_project unit level.
+    payloads = [_raw_email("m_project_pillar", "Jane will send the signed SOW for the Acme renewal by Friday.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
+    )
+
+    stored = db.emails.find_one({"message_id": "m_project_pillar"}, {"_id": 0})
+    project = ProjectRepository(db).find_one({"id": stored["entities_referenced"]["projects"][0]})
+    assert project["goal_pillar"] == "Sales"
 
 
 def test_pipeline_commitment_project_id_stays_unset_without_matching_project_evidence(db, settings):

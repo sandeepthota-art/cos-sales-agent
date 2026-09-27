@@ -59,6 +59,30 @@ def test_analysis_instructions_disambiguate_flat_meetings_from_structured_meetin
     assert "never contain these objects" in lowered or "never objects" in lowered
 
 
+def test_analysis_instructions_give_explicit_criteria_for_recognizing_a_sales_project():
+    # Regression: projects_mentioned was previously just a bare field name with no
+    # trigger criteria (unlike meetings_mentioned's explicit rule below it), and the
+    # live projects collection stayed empty in production as a result. The prompt must
+    # now name concrete deal-shaped signals, not just the field name.
+    lowered = _ANALYSIS_INSTRUCTIONS.lower()
+    assert "sales deal" in lowered or "opportunity" in lowered
+    for signal in ["negotiation", "pricing", "proposal", "renewal"]:
+        assert signal in lowered
+
+
+def test_analysis_instructions_require_goal_pillar_sales_to_agree_with_projects_mentioned():
+    # The other half of the same fix: goal_pillar must be tied to genuine deal
+    # recognition, never forced to "Sales" as a blanket default (that would break the
+    # existing multi-pillar Finance/Operations classification used elsewhere).
+    assert "goal_pillar and this projects_mentioned entry must agree" in _ANALYSIS_INSTRUCTIONS
+    assert "never set goal_pillar to 'sales' for an email that reflects no genuine deal activity" in _ANALYSIS_INSTRUCTIONS.lower()
+
+
+def test_analysis_instructions_never_invent_a_project():
+    lowered = _ANALYSIS_INSTRUCTIONS.lower()
+    assert "leave projects_mentioned empty rather than guessing" in lowered
+
+
 def test_update_context_instructions_carve_out_participants_as_plain_strings():
     # Regression: the pre-delta wording ("every list item must be an object with
     # value/basis/source_email_ids") applied to ALL list fields, but ThreadContext.
