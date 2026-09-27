@@ -104,12 +104,27 @@ def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str
     by reading the email yourself. Accepts the exact same EmailAnalysis shape
     process_email's own internal LLM call produces -- see that schema's fields
     (people_mentioned, projects_mentioned, commitments_mentioned, meetings_mentioned,
-    personal_items_mentioned, goal_pillar, label_applied, confidence, etc.). Runs the
-    same deterministic entity/commitment/follow-up/meeting/personal-item/knowledge
-    persistence process_email uses internally, and the same regex-based calendar
-    meeting detection -- assigning the same canonical IDs (PER-/PRJ-/COM-/FU-/MTG-/
-    PSN-) via the same counters. Requires ingest_email to have been called first for
-    this message_id.
+    personal_items_mentioned, goal_pillar, label_applied, confidence, etc.).
+
+    Before constructing `analysis`, explicitly decide whether this email represents
+    a genuine sales opportunity/deal yourself -- never call an LLM API to do this.
+    Classify as Sales (goal_pillar="Sales") only when the email shows concrete
+    activity tied to a specific prospect/customer organization: an active
+    negotiation, pricing/quote discussion, a proposal or contract in progress, a
+    pilot/POC/trial, a renewal, an expansion/upsell, a purchase/order discussion, or
+    an equivalent concrete deal engagement. Do NOT classify as Sales merely because
+    the email mentions a company, product, revenue, or generic sales terminology, or
+    because it's marketing/newsletter/internal content unrelated to a specific deal.
+    When genuinely Sales, populate projects_mentioned only with enough evidence to
+    name the actual engagement -- never invent one. Otherwise leave goal_pillar=""
+    and projects_mentioned=[]. Do not include your reasoning in `analysis` -- only
+    the resulting structured fields.
+
+    Runs the same deterministic entity/commitment/follow-up/meeting/personal-item/
+    knowledge persistence process_email uses internally, and the same regex-based
+    calendar meeting detection -- assigning the same canonical IDs (PER-/PRJ-/COM-/
+    FU-/MTG-/PSN-) via the same counters. Requires ingest_email to have been called
+    first for this message_id.
 
     This tool never calls analyze_email, update_context, draft_reply, or any real LLM
     provider -- it only persists structured data you supply.
