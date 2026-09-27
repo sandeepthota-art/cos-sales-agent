@@ -23,12 +23,57 @@ from pathlib import Path
 from typing import Any
 
 from app.config.logging import configure_logging
-from app.config.settings import get_settings
+from app.config.settings import Settings, get_settings
 from app.database.mongodb import get_client, initialize_database
-from app.database.repositories import ProjectRepository
+from app.database.repositories import CommitmentRepository, ProjectRepository
 from app.pipeline import run_pipeline
+from app.processing.models import PipelineRunSummary
 from app.providers.email.mock import MockEmailProvider
 from app.providers.factory import ProviderFactory
+
+
+def target_database_refusal_reason(database_name: str) -> str | None:
+    """Shared safety guard: both this script and scripts/reingest_historical.py
+    refuse to write into anything whose name suggests it's production, with no
+    override -- returns a printable reason, or None if the name looks safe."""
+    if "production" in database_name.lower():
+        return (
+            f"Refused: target database '{database_name}' looks like a production "
+            "database. This tool is only for a throwaway/local/staging database -- "
+            "point it at a non-production target before running this."
+        )
+    return None
+
+
+def run_replay_and_report(db, emails: list[dict[str, Any]], settings: Settings) -> PipelineRunSummary:
+    """Shared by this script's file-based replay and scripts/reingest_historical.py's
+    live-source replay: runs the real pipeline (real LLM provider) over already-loaded
+    raw email dicts and prints what landed in projects/commitments."""
+    email_provider = MockEmailProvider(payloads=emails)
+    llm_provider = ProviderFactory.create_llm_provider(settings)
+    calendar_provider = ProviderFactory.create_calendar_provider(settings)
+    replay_settings = settings.model_copy(update={"email_limit": len(emails)})
+
+    summary = run_pipeline(db, email_provider, llm_provider, calendar_provider, replay_settings)
+    print(
+        f"Replay complete: processed={summary.processed} completed={summary.completed} "
+        f"failed={summary.failed} skipped={summary.skipped}"
+    )
+    for result in summary.results:
+        if result.final_stage == "FAILED":
+            print(f"  FAILED {result.message_id}: {result.error}")
+
+    projects = ProjectRepository(db).find_many({})
+    print(f"\nprojects collection now has {len(projects)} document(s):")
+    for project in projects:
+        print(f"  {project['id']}: project={project['project']!r} entity={project.get('entity')!r} goal_pillar={project.get('goal_pillar')!r}")
+
+    commitments = CommitmentRepository(db).find_many({})
+    print(f"\ncommitments collection now has {len(commitments)} document(s):")
+    for commitment in commitments:
+        print(f"  {commitment['id']}: what={commitment['what']!r} class={commitment.get('class')!r} goal_pillar={commitment.get('goal_pillar')!r}")
+
+    return summary
 
 
 def _unwrap_extended_json(value: Any) -> Any:
@@ -67,12 +112,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
     configure_logging(settings.log_level, structured=(settings.log_format == "json"))
 
-    if "production" in settings.mongodb_database.lower():
-        print(
-            f"Refused: MONGODB_DATABASE='{settings.mongodb_database}' looks like a production "
-            "database. This tool is only for a throwaway/local/staging database -- point "
-            "MONGODB_URI/MONGODB_DATABASE at a non-production target before running this."
-        )
+    refusal = target_database_refusal_reason(settings.mongodb_database)
+    if refusal:
+        print(refusal)
         return 1
 
     try:
@@ -98,25 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     client = get_client(settings.mongodb_uri)
     db = initialize_database(client, settings.mongodb_database)
 
-    email_provider = MockEmailProvider(payloads=emails)
-    llm_provider = ProviderFactory.create_llm_provider(settings)
-    calendar_provider = ProviderFactory.create_calendar_provider(settings)
-    replay_settings = settings.model_copy(update={"email_limit": len(emails)})
-
-    summary = run_pipeline(db, email_provider, llm_provider, calendar_provider, replay_settings)
-    print(
-        f"Replay complete: processed={summary.processed} completed={summary.completed} "
-        f"failed={summary.failed} skipped={summary.skipped}"
-    )
-    for result in summary.results:
-        if result.final_stage == "FAILED":
-            print(f"  FAILED {result.message_id}: {result.error}")
-
-    projects = ProjectRepository(db).find_many({})
-    print(f"\nprojects collection now has {len(projects)} document(s):")
-    for project in projects:
-        print(f"  {project['id']}: project={project['project']!r} entity={project.get('entity')!r} goal_pillar={project.get('goal_pillar')!r}")
-
+    run_replay_and_report(db, emails, settings)
     return 0
 
 
