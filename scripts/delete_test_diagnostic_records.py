@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             total_affected += len(affected)
 
     if not total_affected:
-        print("Nothing to do -- no document in any collection has a test_diag_* source_record. Exiting.")
+        print("Nothing to do -- no document in any collection has a test_diag_* source_record or thread_id. Exiting.")
         return 0
 
     print(f"Documents matching test_diag_* across all collections: {total_affected}\n")

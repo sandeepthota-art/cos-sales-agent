@@ -113,6 +113,57 @@ def test_rerunning_after_cleanup_is_a_safe_no_op(db, capsys):
     assert "Nothing to do" in capsys.readouterr().out
 
 
+def test_reports_failure_when_documents_remain_after_delete(db, monkeypatch, capsys):
+    """Regression guard: if delete_many reports success but the collection still
+    matches the filter afterward (e.g. a driver-level inconsistency), the script
+    must detect and report it as a failure -- never silently claim success."""
+    db.commitments.insert_one({"id": "CMT-001", "source_record": "test_diag_003"})
+
+    class _FakeResult:
+        deleted_count = 1
+
+    monkeypatch.setattr(db.commitments, "delete_many", lambda filter_, **kwargs: _FakeResult())
+
+    exit_code = cleanup.main(["--uri", "mongodb://irrelevant", "--db", "cleanup_test", "--confirm"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    # The fake delete_many performs no real deletion, so both the "still
+    # matches" check and the total-count check are expected to fire together.
+    assert "1 document(s) still match test_diag_* after the delete" in output
+    assert "document count mismatch: before=1 after=1 expected=0" in output
+    assert "Failures (2):" in output
+    # The document was never actually removed by the fake delete_many.
+    assert db.commitments.count_documents({}) == 1
+
+
+def test_reports_failure_when_total_count_changes_unexpectedly(db, monkeypatch, capsys):
+    """Regression guard: if the collection's total document count doesn't drop
+    by exactly the number deleted, the script must report a count mismatch
+    rather than silently proceeding."""
+    db.commitments.insert_one({"id": "CMT-001", "source_record": "test_diag_003"})
+    db.commitments.insert_one({"id": "CMT-002", "source_record": "18f2a9c0b1e4d7aa"})
+
+    original_count_documents = db.commitments.count_documents
+    empty_filter_calls = {"count": 0}
+
+    def _spying_count_documents(filter_, *args, **kwargs):
+        if filter_ == {}:
+            empty_filter_calls["count"] += 1
+            if empty_filter_calls["count"] == 2:  # the post-delete "total_after" call
+                return 0  # pretend an extra, unrelated document vanished too
+        return original_count_documents(filter_, *args, **kwargs)
+
+    monkeypatch.setattr(db.commitments, "count_documents", _spying_count_documents)
+
+    exit_code = cleanup.main(["--uri", "mongodb://irrelevant", "--db", "cleanup_test", "--confirm"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "document count mismatch: before=2 after=0 expected=1" in output
+    assert "Failures (1):" in output
+
+
 def test_filter_only_ever_targets_source_record_or_thread_id(db, monkeypatch):
     """Regression guard: the delete filter must be exactly
     {"$or": [{"source_record": {"$regex": "^test_diag_"}}, {"thread_id": {"$regex": "^test_diag_"}}]}
