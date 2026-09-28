@@ -80,6 +80,53 @@ class Project(BaseModel):
     source: str = "gmail"
 
 
+class Opportunity(BaseModel):
+    """A confirmed sales deal -- a CRM overlay on top of Project, not a
+    replacement for it. Created only when an email is classified goal_pillar
+    == "Sales" AND names a project/engagement concrete enough for
+    resolve_project to resolve -- never merely because an email is
+    Sales-classified (see app.entities.resolution.resolve_opportunity).
+
+    source_email_ids/project_ids/meeting_ids/person_ids/buying_signals/
+    last_activity_at are exclusively pipeline-derived -- append-only, never
+    set by a human. stage/owner/value/currency/expected_close_date/
+    next_action are exclusively human-managed via the update_opportunity_fields
+    MCP tool -- never inferred from email content, never touched by the
+    pipeline. status defaults to "open" (a structural fact about a
+    newly-created record, not a guess) and is otherwise only ever changed via
+    update_opportunity_fields.
+    """
+
+    id: str
+    name: str
+    # Free-text fallback, mirrors Project.entity exactly -- kept alongside
+    # org_id (the canonical reference) for the same reason Project keeps both.
+    entity: str | None = None
+    org_id: str | None = None
+    description: str | None = None
+    status: Literal["open", "won", "lost"] = "open"
+
+    # Human-managed only (via update_opportunity_fields) -- never set by the
+    # pipeline, never inferred from email content.
+    stage: str | None = None
+    owner: str | None = None
+    value: float | None = None
+    currency: str | None = None
+    expected_close_date: datetime | None = None
+    next_action: str | None = None
+
+    # Pipeline-derived only (via app.pipeline._process_entities) -- append-only.
+    source_email_ids: list[str] = Field(default_factory=list)
+    project_ids: list[str] = Field(default_factory=list)
+    meeting_ids: list[str] = Field(default_factory=list)
+    person_ids: list[str] = Field(default_factory=list)
+    buying_signals: list[str] = Field(default_factory=list)
+    last_activity_at: datetime | None = None
+
+    created_at: datetime
+    updated_at: datetime
+
+
 class Commitment(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

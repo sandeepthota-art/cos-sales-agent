@@ -9,6 +9,7 @@ from app.database.repositories import (
     CommitmentRepository,
     FollowUpRepository,
     MeetingRepository,
+    OpportunityRepository,
     OrganizationRepository,
     PersonalItemRepository,
     PersonRepository,
@@ -18,6 +19,7 @@ from app.entities.resolution import (
     derive_follow_up,
     resolve_commitment,
     resolve_meeting,
+    resolve_opportunity,
     resolve_organization,
     resolve_person,
     resolve_personal_item,
@@ -465,6 +467,82 @@ def test_resolve_project_does_not_introduce_fuzzy_matching(db):
     )
 
     assert first != second
+
+
+def test_resolve_opportunity_creates_a_new_record_linked_to_the_project(db):
+    project_id = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
+
+    opportunity_id = resolve_opportunity(
+        db, {"name": "Renewal", "org": "Acme"}, project_id=project_id, now=_NOW,
+        person_ids=["PER-1"], org_id="ORG-1", source_email_id="MSG-1",
+        meeting_ids=["MTG-1"], buying_signals=["pricing request"],
+    )
+
+    stored = OpportunityRepository(db).find_one({"id": opportunity_id})
+    assert stored["project_ids"] == [project_id]
+    assert stored["person_ids"] == ["PER-1"]
+    assert stored["org_id"] == "ORG-1"
+    assert stored["source_email_ids"] == ["MSG-1"]
+    assert stored["meeting_ids"] == ["MTG-1"]
+    assert stored["buying_signals"] == ["pricing request"]
+    assert stored["status"] == "open"
+    # Manual-only CRM fields are never set by resolve_opportunity itself.
+    assert stored["stage"] is None
+    assert stored["owner"] is None
+    assert stored["value"] is None
+    assert stored["currency"] is None
+    assert stored["expected_close_date"] is None
+    assert stored["next_action"] is None
+
+
+def test_resolve_opportunity_reuses_the_existing_record_for_the_same_project_id(db):
+    project_id = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
+
+    first = resolve_opportunity(
+        db, {"name": "Renewal", "org": "Acme"}, project_id=project_id, now=_NOW,
+        source_email_id="MSG-1", buying_signals=["pricing request"],
+    )
+    second = resolve_opportunity(
+        db, {"name": "Renewal", "org": "Acme"}, project_id=project_id, now=_NOW,
+        source_email_id="MSG-2", buying_signals=["proposal request"],
+    )
+
+    assert first == second
+    stored = OpportunityRepository(db).find_one({"id": first})
+    assert stored["source_email_ids"] == ["MSG-1", "MSG-2"]
+    assert stored["buying_signals"] == ["pricing request", "proposal request"]
+
+
+def test_resolve_opportunity_does_not_duplicate_an_already_linked_source_email(db):
+    project_id = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
+
+    first = resolve_opportunity(db, {"name": "Renewal", "org": "Acme"}, project_id=project_id, now=_NOW, source_email_id="MSG-1")
+    second = resolve_opportunity(db, {"name": "Renewal", "org": "Acme"}, project_id=project_id, now=_NOW, source_email_id="MSG-1")
+
+    assert first == second
+    stored = OpportunityRepository(db).find_one({"id": first})
+    assert stored["source_email_ids"] == ["MSG-1"]
+
+
+def test_resolve_opportunity_for_two_different_projects_creates_two_opportunities(db):
+    project_a = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
+    project_b = resolve_project(db, {"name": "Expansion", "org": "OtherCo"}, goal_pillar="Sales")
+
+    opp_a = resolve_opportunity(db, {"name": "Renewal", "org": "Acme"}, project_id=project_a, now=_NOW)
+    opp_b = resolve_opportunity(db, {"name": "Expansion", "org": "OtherCo"}, project_id=project_b, now=_NOW)
+
+    assert opp_a != opp_b
+
+
+def test_resolve_opportunity_never_invents_org_id_when_none_is_available(db):
+    project_id = resolve_project(db, {"name": "Renewal", "org": None}, goal_pillar="Sales")
+
+    opportunity_id = resolve_opportunity(db, {"name": "Renewal", "org": None}, project_id=project_id, now=_NOW)
+
+    stored = OpportunityRepository(db).find_one({"id": opportunity_id})
+    assert stored["org_id"] is None
+    assert stored["value"] is None
+    assert stored["expected_close_date"] is None
 
 
 def test_resolve_commitment_deduplicates_within_same_thread(db):

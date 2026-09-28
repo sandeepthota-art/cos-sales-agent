@@ -38,6 +38,7 @@ from app.entities.resolution import (
     resolve_commitment,
     resolve_meeting,
     resolve_operator_person,
+    resolve_opportunity,
     resolve_person,
     resolve_personal_item,
     resolve_project,
@@ -200,7 +201,7 @@ def _process_entities(
     # email.timestamp) so a re-run days later resolves the same relative phrase the same way.
     entities_referenced: dict[str, list[str]] = {
         "people": [], "projects": [], "commitments": [],
-        "follow_ups": [], "meetings": [], "personal": [],
+        "follow_ups": [], "meetings": [], "personal": [], "opportunities": [],
     }
 
     envelope = {addr.email.lower(): addr for addr in envelope_people(email)}
@@ -320,6 +321,12 @@ def _process_entities(
     # project with no org_id is never added here, so a commitment can never be linked
     # through a missing key.
     project_ids_by_org_id: dict[str, list[str]] = {}
+    # Opportunity resolution is deferred until after the meetings_mentioned loop
+    # below (see the comment there) -- this just remembers which of THIS email's
+    # resolved projects are Opportunity-eligible (Sales-classified) and with what
+    # linkage evidence, without calling resolve_opportunity yet.
+    sales_opportunity_candidates: list[dict[str, Any]] = []
+    is_sales_email = (analysis.goal_pillar or "").strip().lower() == "sales"
 
     for mention in analysis.projects_mentioned:
         # person_ids/org_id: every Person already resolved for this email whose org
@@ -330,11 +337,12 @@ def _process_entities(
             p for p in resolved_people if entity_normalized and normalize_text(p.get("org") or "") == entity_normalized
         ]
         project_org_id = next((p["org_id"] for p in matching_people if p.get("org_id")), None)
+        project_person_ids = list(dict.fromkeys(p["id"] for p in matching_people))
         project_id = resolve_project(
             db,
             {"name": mention.name, "org": mention.org},
             goal_pillar=analysis.goal_pillar,
-            person_ids=list(dict.fromkeys(p["id"] for p in matching_people)),
+            person_ids=project_person_ids,
             org_id=project_org_id,
         )
         entities_referenced["projects"].append(project_id)
@@ -342,6 +350,17 @@ def _process_entities(
             project_ids_by_org_id.setdefault(project_org_id, [])
             if project_id not in project_ids_by_org_id[project_org_id]:
                 project_ids_by_org_id[project_org_id].append(project_id)
+
+        # BRD Opportunity layer: creating/linking an Opportunity requires BOTH
+        # goal_pillar == "Sales" AND a projects_mentioned entry that actually
+        # resolved to a project_id here -- never merely goal_pillar == "Sales"
+        # (see app.entities.resolution.resolve_opportunity's own docstring). A
+        # Sales email with no projects_mentioned entry never reaches this list,
+        # so no Opportunity is ever invented for it.
+        if is_sales_email:
+            sales_opportunity_candidates.append(
+                {"mention": mention, "project_id": project_id, "org_id": project_org_id, "person_ids": project_person_ids}
+            )
 
     # FollowUps are derived ONLY from a resolved Commitment (spec S5.1.1 correction) --
     # a Meeting or PersonalItem NEVER triggers a FollowUp by itself, no matter how
@@ -449,6 +468,24 @@ def _process_entities(
             project_or_pillar=analysis.goal_pillar,
         )
         entities_referenced["meetings"].append(meeting_id)
+
+    # Deferred from the projects_mentioned loop above so this email's OWN detected
+    # meetings (entities_referenced["meetings"], just populated above) can be linked
+    # onto the Opportunity at creation/update time -- never a retroactive scan of
+    # meetings from other emails.
+    for candidate in sales_opportunity_candidates:
+        opportunity_id = resolve_opportunity(
+            db,
+            {"name": candidate["mention"].name, "org": candidate["mention"].org},
+            project_id=candidate["project_id"],
+            now=reference_now,
+            person_ids=candidate["person_ids"],
+            org_id=candidate["org_id"],
+            source_email_id=email.message_id,
+            meeting_ids=list(entities_referenced["meetings"]),
+            buying_signals=list(analysis.buying_signals),
+        )
+        entities_referenced["opportunities"].append(opportunity_id)
 
     for raw_item in analysis.personal_items_mentioned:
         resolved_date, _ = resolve_date_phrase(raw_item.date_phrase, reference_now)

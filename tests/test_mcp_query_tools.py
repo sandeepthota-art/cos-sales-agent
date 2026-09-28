@@ -10,6 +10,7 @@ from app.database.repositories import (
     EmailRepository,
     FollowUpRepository,
     MeetingRepository,
+    OpportunityRepository,
     PersonRepository,
     ProjectRepository,
     ReplyDraftRepository,
@@ -362,6 +363,95 @@ def test_list_projects_filters_by_goal_pillar(db):
     results = tools.list_projects(db, goal_pillar="Marketing")
 
     assert [p["id"] for p in results] == ["PRJ-002"]
+
+
+# --- list_opportunities / update_opportunity_fields ---
+
+
+def _opportunity(opportunity_id, **overrides):
+    doc = {
+        "id": opportunity_id,
+        "name": "Acme Renewal",
+        "entity": "Acme",
+        "org_id": None,
+        "description": None,
+        "status": "open",
+        "stage": None,
+        "owner": None,
+        "value": None,
+        "currency": None,
+        "expected_close_date": None,
+        "next_action": None,
+        "source_email_ids": [],
+        "project_ids": ["PRJ-001"],
+        "meeting_ids": [],
+        "person_ids": [],
+        "buying_signals": [],
+        "last_activity_at": "2026-09-13T10:30:00Z",
+        "created_at": "2026-09-13T10:30:00Z",
+        "updated_at": "2026-09-13T10:30:00Z",
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_list_opportunities_filters_by_org_id(db):
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-001"}, _opportunity("OPP-001", org_id="ORG-1"))
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-002"}, _opportunity("OPP-002", org_id="ORG-2"))
+
+    results = tools.list_opportunities(db, org_id="ORG-1")
+
+    assert [o["id"] for o in results] == ["OPP-001"]
+
+
+def test_list_opportunities_filters_by_status(db):
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-001"}, _opportunity("OPP-001", status="open"))
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-002"}, _opportunity("OPP-002", status="won"))
+
+    results = tools.list_opportunities(db, status="won")
+
+    assert [o["id"] for o in results] == ["OPP-002"]
+
+
+def test_list_opportunities_filters_by_project_id_membership(db):
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-001"}, _opportunity("OPP-001", project_ids=["PRJ-001", "PRJ-002"]))
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-002"}, _opportunity("OPP-002", project_ids=["PRJ-003"]))
+
+    results = tools.list_opportunities(db, project_id="PRJ-002")
+
+    assert [o["id"] for o in results] == ["OPP-001"]
+
+
+def test_update_opportunity_fields_sets_only_the_manual_crm_fields_supplied(db):
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-001"}, _opportunity("OPP-001"))
+
+    result = tools.update_opportunity_fields(
+        db, "OPP-001", stage="negotiation", value=50000.0, currency="USD"
+    )
+
+    assert result["stage"] == "negotiation"
+    assert result["value"] == 50000.0
+    assert result["currency"] == "USD"
+    # Untouched fields stay exactly as they were.
+    assert result["owner"] is None
+    assert result["next_action"] is None
+    assert result["expected_close_date"] is None
+    # Pipeline-derived fields are never touched by this tool.
+    assert result["project_ids"] == ["PRJ-001"]
+
+
+def test_update_opportunity_fields_does_not_reset_an_already_set_field_when_omitted(db):
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-001"}, _opportunity("OPP-001", stage="prospecting"))
+
+    result = tools.update_opportunity_fields(db, "OPP-001", owner="Sandeep")
+
+    assert result["stage"] == "prospecting"  # untouched, not reset to null
+    assert result["owner"] == "Sandeep"
+
+
+def test_update_opportunity_fields_raises_for_an_unknown_opportunity_id(db):
+    with pytest.raises(ValueError, match="no opportunity found"):
+        tools.update_opportunity_fields(db, "OPP-DOES-NOT-EXIST", stage="negotiation")
 
 
 # --- list_commitments ---

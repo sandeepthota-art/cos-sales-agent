@@ -48,6 +48,8 @@ def initialize_indexes(db: Database) -> None:
     db.meetings.create_index("id", unique=True)
     db.meetings.create_index("thread_id")
 
+    db.opportunities.create_index("id", unique=True)
+
     db.personal_items.create_index("id", unique=True)
 
     db.ingested_files.create_index("filename", unique=True)

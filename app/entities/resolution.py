@@ -11,6 +11,7 @@ from app.database.repositories import (
     CommitmentRepository,
     FollowUpRepository,
     MeetingRepository,
+    OpportunityRepository,
     OrganizationRepository,
     PersonalItemRepository,
     PersonRepository,
@@ -18,7 +19,7 @@ from app.database.repositories import (
 )
 from app.entities.ids import next_id
 from app.entities.lifecycle import is_person_active, resolve_canonical_person_id
-from app.entities.models import Commitment, FollowUp, Meeting, Organization, Person, PersonalItem, Project
+from app.entities.models import Commitment, FollowUp, Meeting, Opportunity, Organization, Person, PersonalItem, Project
 from app.knowledge.normalize import normalize_text
 
 # Serializes a datetime exactly the way Person.model_dump(mode="json") would (e.g. a
@@ -509,6 +510,86 @@ def resolve_project(
     )
     repo.upsert_by_key({"id": project_id}, project.model_dump(mode="json"))
     return project_id
+
+
+def resolve_opportunity(
+    db: Database,
+    mention: dict[str, Any],
+    project_id: str,
+    now: datetime,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+    source_email_id: str | None = None,
+    meeting_ids: list[str] | None = None,
+    buying_signals: list[str] | None = None,
+) -> str:
+    """Called only for a Sales-classified email whose projects_mentioned entry
+    already resolved to a real project_id (see app.pipeline._process_entities --
+    this is never called on its own, independently of a resolved Project).
+
+    Dedup key is exclusively "does an existing Opportunity already reference
+    this project_id" -- not a second, independent name/entity text comparison.
+    This deliberately inherits resolve_project's own dedup guarantee rather
+    than re-deriving one: two Sales emails whose projects_mentioned entries
+    both resolve (via resolve_project) to the same project_id always resolve
+    to the same Opportunity, with no fuzzy/embedding matching of its own.
+    Known V1 limitation: two textually-distinct Projects for what a human
+    would call the same deal do not auto-merge into one Opportunity.
+
+    All fields set/updated here are exclusively pipeline-derived (append-only,
+    never overwritten) -- stage/owner/value/currency/expected_close_date/
+    next_action are never touched here; those are exclusively human-managed
+    via app.mcp.tools.update_opportunity_fields.
+    """
+    repo = OpportunityRepository(db)
+
+    existing = repo.find_one({"project_ids": project_id})
+    if existing is not None:
+        update: dict[str, Any] = {}
+
+        new_person_ids = list(dict.fromkeys([*existing.get("person_ids", []), *(person_ids or [])]))
+        if new_person_ids != existing.get("person_ids", []):
+            update["person_ids"] = new_person_ids
+
+        if org_id and not existing.get("org_id"):
+            update["org_id"] = org_id
+
+        if source_email_id:
+            existing_email_ids = existing.get("source_email_ids", [])
+            if source_email_id not in existing_email_ids:
+                update["source_email_ids"] = [*existing_email_ids, source_email_id]
+
+        new_meeting_ids = list(dict.fromkeys([*existing.get("meeting_ids", []), *(meeting_ids or [])]))
+        if new_meeting_ids != existing.get("meeting_ids", []):
+            update["meeting_ids"] = new_meeting_ids
+
+        new_buying_signals = list(dict.fromkeys([*existing.get("buying_signals", []), *(buying_signals or [])]))
+        if new_buying_signals != existing.get("buying_signals", []):
+            update["buying_signals"] = new_buying_signals
+
+        update["last_activity_at"] = _DATETIME_JSON.dump_python(now, mode="json")
+        update["updated_at"] = _DATETIME_JSON.dump_python(now, mode="json")
+
+        repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
+        return existing["id"]
+
+    opportunity_id = next_id(db, "OPP-")
+    opportunity = Opportunity(
+        id=opportunity_id,
+        name=mention["name"],
+        entity=mention.get("org"),
+        org_id=org_id,
+        person_ids=person_ids or [],
+        project_ids=[project_id],
+        source_email_ids=[source_email_id] if source_email_id else [],
+        meeting_ids=meeting_ids or [],
+        buying_signals=buying_signals or [],
+        last_activity_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    repo.upsert_by_key({"id": opportunity_id}, opportunity.model_dump(mode="json"))
+    return opportunity_id
 
 
 def _commitment_dates_match(

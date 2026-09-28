@@ -10,6 +10,7 @@ from app.database.repositories import (
     CommitmentRepository,
     FollowUpRepository,
     MeetingRepository,
+    OpportunityRepository,
     PersonRepository,
     ProjectRepository,
 )
@@ -641,6 +642,117 @@ def test_pipeline_propagates_goal_pillar_onto_the_resolved_project(db, settings)
     stored = db.emails.find_one({"message_id": "m_project_pillar"}, {"_id": 0})
     project = ProjectRepository(db).find_one({"id": stored["entities_referenced"]["projects"][0]})
     assert project["goal_pillar"] == "Sales"
+
+
+class _SalesProjectAndMeetingLLM(_NoPeopleLLM):
+    """Sales-classified, names a concrete project, AND proposes a meeting in the
+    SAME email -- for verifying an Opportunity picks up that email's own
+    meeting via entities_referenced, never a retroactive scan."""
+
+    def analyze_email(self, email):
+        result = super().analyze_email(email)
+        result["buying_signals"] = ["pricing request"]
+        result["projects_mentioned"] = [{"name": "Acme Renewal", "org": "Acme", "objective_hint": None}]
+        result["meetings_mentioned"] = [
+            {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []}
+        ]
+        return result
+
+
+class _NonSalesWithProjectEvidenceLLM(_CommitmentWithProjectEvidenceLLM):
+    """Same project/commitment evidence as _CommitmentWithProjectEvidenceLLM, but
+    NOT Sales-classified -- proves a resolved Project alone is never enough to
+    create an Opportunity without goal_pillar == 'Sales' too."""
+
+    def analyze_email(self, email):
+        result = super().analyze_email(email)
+        result["goal_pillar"] = "Finance"
+        return result
+
+
+def test_pipeline_creates_opportunity_for_sales_email_with_resolved_project(db, settings):
+    payloads = [_raw_email("m_opp_create", "Jane will send the signed SOW for the Acme renewal by Friday.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
+    )
+
+    stored = db.emails.find_one({"message_id": "m_opp_create"}, {"_id": 0})
+    project_id = stored["entities_referenced"]["projects"][0]
+    assert len(stored["entities_referenced"]["opportunities"]) == 1
+    opportunity = OpportunityRepository(db).find_one({"id": stored["entities_referenced"]["opportunities"][0]})
+    assert opportunity["project_ids"] == [project_id]
+    assert opportunity["source_email_ids"] == ["m_opp_create"]
+    assert opportunity["status"] == "open"
+    # Manual-only CRM fields are never auto-populated by the pipeline.
+    assert opportunity["stage"] is None
+    assert opportunity["value"] is None
+    assert opportunity["owner"] is None
+    assert opportunity["expected_close_date"] is None
+
+
+def test_pipeline_reuses_the_same_opportunity_across_two_sales_emails_for_the_same_project(db, settings):
+    first_payload = [_raw_email("m_opp_1", "Jane will send the signed SOW for the Acme renewal by Friday.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=first_payload), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
+    )
+    second_payload = [_raw_email("m_opp_2", "Following up: Jane will send the signed SOW for the Acme renewal by Friday.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=second_payload), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
+    )
+
+    first_stored = db.emails.find_one({"message_id": "m_opp_1"}, {"_id": 0})
+    second_stored = db.emails.find_one({"message_id": "m_opp_2"}, {"_id": 0})
+    first_opp_id = first_stored["entities_referenced"]["opportunities"][0]
+    second_opp_id = second_stored["entities_referenced"]["opportunities"][0]
+
+    assert first_opp_id == second_opp_id
+    assert OpportunityRepository(db).find_many({}).__len__() == 1
+    opportunity = OpportunityRepository(db).find_one({"id": first_opp_id})
+    assert opportunity["source_email_ids"] == ["m_opp_1", "m_opp_2"]
+
+
+def test_pipeline_does_not_create_opportunity_for_sales_email_without_project_evidence(db, settings):
+    # _NoPeopleLLM is goal_pillar="Sales" but projects_mentioned=[] -- simulates
+    # what Claude Desktop would send for a Sales-flavored email where no
+    # specific engagement could be confidently identified (the "cannot invent
+    # one" case).
+    payloads = [_raw_email("m_opp_no_project", "Thanks for the update, we'll keep this in mind.")]
+    run_pipeline(db, MockEmailProvider(payloads=payloads), _NoPeopleLLM(), MockCalendarProvider(), settings)
+
+    stored = db.emails.find_one({"message_id": "m_opp_no_project"}, {"_id": 0})
+    assert stored["goal_pillar"] == "Sales"
+    assert stored["entities_referenced"]["opportunities"] == []
+    assert OpportunityRepository(db).find_many({}) == []
+
+
+def test_pipeline_does_not_create_opportunity_for_non_sales_email_with_project_evidence(db, settings):
+    # Same project/commitment evidence as the Sales case above, but goal_pillar
+    # is "Finance" -- simulates a newsletter/internal/other-pillar email that
+    # nonetheless names something project-shaped. A Project may still be
+    # created (pillar-agnostic, existing behavior), but no Opportunity may.
+    payloads = [_raw_email("m_opp_non_sales", "Jane will send the signed SOW for the Acme renewal by Friday.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _NonSalesWithProjectEvidenceLLM(), MockCalendarProvider(), settings
+    )
+
+    stored = db.emails.find_one({"message_id": "m_opp_non_sales"}, {"_id": 0})
+    assert stored["goal_pillar"] == "Finance"
+    assert len(stored["entities_referenced"]["projects"]) == 1  # Project still created, pillar-agnostic
+    assert stored["entities_referenced"]["opportunities"] == []
+    assert OpportunityRepository(db).find_many({}) == []
+
+
+def test_pipeline_links_opportunity_to_this_emails_own_meeting(db, settings):
+    payloads = [_raw_email("m_opp_meeting", "Let's set up a call for Friday about the Acme renewal.")]
+    run_pipeline(
+        db, MockEmailProvider(payloads=payloads), _SalesProjectAndMeetingLLM(), MockCalendarProvider(), settings
+    )
+
+    stored = db.emails.find_one({"message_id": "m_opp_meeting"}, {"_id": 0})
+    meeting_id = stored["entities_referenced"]["meetings"][0]
+    opportunity = OpportunityRepository(db).find_one({"id": stored["entities_referenced"]["opportunities"][0]})
+    assert opportunity["meeting_ids"] == [meeting_id]
+    assert opportunity["buying_signals"] == ["pricing request"]
 
 
 def test_pipeline_commitment_project_id_stays_unset_without_matching_project_evidence(db, settings):

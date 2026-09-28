@@ -32,6 +32,20 @@ def test_initialize_indexes_creates_expected_unique_indexes():
     assert index_keys("ingested_files") == {(("filename", 1),): True}
 
 
+def test_initialize_indexes_creates_opportunities_unique_id_index():
+    client = mongomock.MongoClient()
+    db = client["cos_sales_test"]
+
+    initialize_indexes(db)
+
+    unique_keys = {
+        tuple(spec["key"]): spec.get("unique", False)
+        for spec in db["opportunities"].index_information().values()
+        if spec["key"] != [("_id", 1)] and spec.get("unique", False)
+    }
+    assert unique_keys == {(("id", 1),): True}
+
+
 def test_initialize_indexes_creates_people_open_threads_index():
     # Supports resolve_person's no-email thread-scoped lookup
     # (db.people.find({"open_threads": thread_id})) -- non-unique, since many People can

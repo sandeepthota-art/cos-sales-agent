@@ -82,6 +82,18 @@ def test_list_reply_drafts_tool_is_registered():
     assert "list_reply_drafts" in names
 
 
+def test_list_opportunities_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "list_opportunities" in names
+
+
+def test_update_opportunity_fields_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "update_opportunity_fields" in names
+
+
 def test_ask_question_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]

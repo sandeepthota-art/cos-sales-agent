@@ -20,6 +20,7 @@ from app.database.repositories import (
     FollowUpRepository,
     KnowledgeRepository,
     MeetingRepository,
+    OpportunityRepository,
     PersonalItemRepository,
     PersonRepository,
     ProjectRepository,
@@ -697,6 +698,82 @@ def list_projects(
         query["goal_pillar"] = goal_pillar
 
     return ProjectRepository(db).find_many(query)[: _clamp_limit(limit)]
+
+
+def list_opportunities(
+    db: Database,
+    org_id: str | None = None,
+    status: str | None = None,
+    project_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Read-only listing over the existing `opportunities` collection. Optional
+    filters (all exact match): org_id, status ("open"/"won"/"lost"), project_id
+    (matches any Opportunity whose project_ids includes it -- an array-membership
+    query, not a text search). Never creates, resolves, or modifies anything.
+    """
+    query: dict[str, Any] = {}
+    if org_id:
+        query["org_id"] = org_id
+    if status:
+        query["status"] = status
+    if project_id:
+        query["project_ids"] = project_id
+
+    return OpportunityRepository(db).find_many(query)[: _clamp_limit(limit)]
+
+
+def update_opportunity_fields(
+    db: Database,
+    opportunity_id: str,
+    stage: str | None = None,
+    owner: str | None = None,
+    value: float | None = None,
+    currency: str | None = None,
+    expected_close_date: str | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    """The ONLY mechanism for setting an Opportunity's manually-managed CRM
+    fields (stage, owner, value, currency, expected_close_date, next_action).
+    Nothing in the pipeline ever infers or writes these -- see
+    app.entities.resolution.resolve_opportunity's own docstring. Deterministic,
+    LLM-free: this tool never reasons about the email content itself, it only
+    persists whatever explicit values the caller supplies.
+
+    Only fields you actually pass (non-None) are updated -- an omitted field is
+    left exactly as it was, never reset to null. There is currently no way to
+    clear an already-set field back to null through this tool (a known V1
+    limitation, not an oversight).
+
+    Never touches source_email_ids/project_ids/meeting_ids/person_ids/
+    buying_signals/last_activity_at -- those remain exclusively pipeline-derived.
+
+    expected_close_date, if given, must be an ISO 8601 date/datetime string.
+    """
+    repo = OpportunityRepository(db)
+    existing = repo.find_one({"id": opportunity_id})
+    if existing is None:
+        raise ValueError(f"no opportunity found for id={opportunity_id!r}")
+
+    update: dict[str, Any] = {}
+    if stage is not None:
+        update["stage"] = stage
+    if owner is not None:
+        update["owner"] = owner
+    if value is not None:
+        update["value"] = value
+    if currency is not None:
+        update["currency"] = currency
+    if expected_close_date is not None:
+        update["expected_close_date"] = expected_close_date
+    if next_action is not None:
+        update["next_action"] = next_action
+
+    if update:
+        update["updated_at"] = datetime.now(timezone.utc).isoformat()
+        repo.upsert_by_key({"id": opportunity_id}, {**existing, **update})
+
+    return repo.find_one({"id": opportunity_id})
 
 
 def list_commitments(

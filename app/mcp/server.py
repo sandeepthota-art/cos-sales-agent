@@ -248,6 +248,50 @@ def list_projects(
 
 
 @mcp.tool()
+def list_opportunities(
+    org_id: str | None = None, status: str | None = None, project_id: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """List canonical Opportunities (OPP-xxx) from the `opportunities` collection.
+    Optional filters: org_id (exact), status (exact -- "open"/"won"/"lost"),
+    project_id (matches any Opportunity whose project_ids includes it). Read-only
+    -- never creates, resolves, or modifies anything. Opportunities are created
+    only by the pipeline itself (a Sales-classified email whose projects_mentioned
+    entry resolved to a real project) -- there is no create_opportunity tool.
+    """
+    return tools.list_opportunities(_get_db(), org_id, status, project_id, limit)
+
+
+@mcp.tool()
+def update_opportunity_fields(
+    opportunity_id: str,
+    stage: str | None = None,
+    owner: str | None = None,
+    value: float | None = None,
+    currency: str | None = None,
+    expected_close_date: str | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    """The ONLY way to set an Opportunity's manually-managed CRM fields: stage,
+    owner, value, currency, expected_close_date, next_action. Use this only when
+    the user (or you, on their explicit instruction) is providing this
+    information directly -- never infer any of these from email content
+    yourself. This tool is deterministic and calls no LLM/API; it only persists
+    exactly what you pass it.
+
+    Only fields you actually supply (non-None) are changed -- an omitted field
+    is left untouched, never reset to null. expected_close_date, if given, must
+    be an ISO 8601 date/datetime string. Never touches source_email_ids/
+    project_ids/meeting_ids/person_ids/buying_signals/last_activity_at -- those
+    remain exclusively pipeline-derived and are not settable through this tool.
+
+    Raises ValueError if opportunity_id doesn't exist.
+    """
+    return tools.update_opportunity_fields(
+        _get_db(), opportunity_id, stage, owner, value, currency, expected_close_date, next_action
+    )
+
+
+@mcp.tool()
 def list_commitments(
     thread_id: str | None = None,
     class_: str | None = None,

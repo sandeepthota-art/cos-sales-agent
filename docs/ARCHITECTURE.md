@@ -131,7 +131,8 @@ knowledge item — see §3, "Prompt engineering guardrails."
 | `context_snapshots` | Cumulative, versioned per-thread summary (16-field `ThreadContext`) plus a diff (`changes_from_previous_context`) for every new email | One per `(thread_id, context_version)` |
 | `people` | Canonical Person records — real contacts **and** the operator's own dedicated profile (`type: "operator"`) | `org_id`, `open_threads`, `merged_into` (soft-merge trail) |
 | `organizations` | Canonical Organization records, resolved by email domain only | Referenced by `people.org_id` |
-| `projects` | Named projects/opportunities | Linked to people via matching `org_id` |
+| `projects` | Named projects/engagements mentioned in an email — pillar-agnostic (Sales, Finance, Operations, ...), LLM-extracted | Linked to people via matching `org_id` |
+| `opportunities` | Confirmed **sales** deals — a CRM overlay on top of `projects`, created only for `goal_pillar == "Sales"` (see §3.1) | `project_ids`, `org_id`, `person_ids`, `meeting_ids`, `source_email_ids` |
 | `commitments` | Promises made in email (`mine` / `owed_to_me` / `theirs` / `recap`) | `person_id`, `thread_id` |
 | `follow_ups` | Derived from chased commitments, with computed timing windows and escalation state | `commitment_id`, `thread_id` |
 | `meetings` | Detected meeting proposals, each classified (`app/query/meetings.py::classify_meeting`) as `INTERNAL`/`CUSTOMER` (attendee domain vs. `AGENT_EMAIL` domain), `SALES`/`FINANCE` (only on an exact, case-insensitive match of the meeting's own stored `project_or_pillar` — never keyword-guessed independently of it), or `UNKNOWN` | `person_ids`, linked `calendar_actions` |
@@ -139,6 +140,82 @@ knowledge item — see §3, "Prompt engineering guardrails."
 | `reply_drafts` | One per email that needed a reply, `status` machine (`awaiting_approval → approved/rejected/edited → simulated_sent`) | `source_email_id`, `person_id`, `org_id` |
 | `calendar_actions` | Proposed (never auto-created) calendar events | `thread_id`, `meeting_fingerprint`, `person_id`, `meeting_id` |
 | `processing_runs` | Per-batch pipeline run summaries | — |
+
+### Opportunity vs Project vs Email
+
+**Email** carries the raw classification signal: `goal_pillar` (a free-text
+field, e.g. `"Sales"`, `"Finance"`, `""`) is set per-email by whoever is doing
+the reasoning (Claude Desktop, via the granular tools, or the internal LLM
+call inside `process_email` — see "Prompt engineering guardrails" below for
+the criteria either path uses).
+
+**Project** is a lightweight, pillar-agnostic "named engagement" extracted
+directly from `EmailAnalysis.projects_mentioned` — created for *any*
+`goal_pillar` value, not just Sales, whenever the reasoning caller identifies
+enough evidence to name one (`app.entities.resolution.resolve_project`).
+
+**Opportunity** is a CRM overlay, *not* a replacement for Project — it exists
+only for confirmed **Sales** deals, and references one or more Project records
+via `project_ids` rather than duplicating their fields. It is created only
+when **both** conditions hold on the same email: `goal_pillar == "Sales"` AND
+a `projects_mentioned` entry that actually resolved to a real `project_id`. A
+Sales-classified email with no nameable project creates no Opportunity — the
+system never invents one to fill the gap.
+
+**Field ownership** — every Opportunity field is either pipeline-derived or
+human-managed, never both:
+
+| Pipeline-derived (append-only, automatic) | Human-managed only (`update_opportunity_fields`) |
+|---|---|
+| `source_email_ids`, `project_ids`, `meeting_ids`, `person_ids`, `buying_signals`, `last_activity_at` | `stage`, `owner`, `value`, `currency`, `expected_close_date`, `next_action` |
+
+`status` (`"open"`/`"won"`/`"lost"`) defaults to `"open"` at creation — a
+structural fact about a brand-new record, not a guess — and is otherwise only
+ever changed via `update_opportunity_fields`.
+
+**Resolution/deduplication** (`app.entities.resolution.resolve_opportunity`):
+the dedup key is exclusively *"does an existing Opportunity already reference
+this exact `project_id`?"* — no independent name/entity text comparison, no
+fuzzy matching, no embeddings. This deliberately inherits Project's own
+existing deterministic dedup (normalized entity + name + `goal_pillar`) rather
+than re-deriving one: two Sales emails whose `projects_mentioned` entries both
+resolve to the same `project_id` always resolve to the same Opportunity.
+**Known V1 limitation**: two textually-distinct Projects a human would
+recognize as the same deal do not auto-merge into one Opportunity.
+
+**Data flow:**
+
+```
+Gmail
+  ↓
+Claude Desktop reads the email
+  ↓
+Claude determines Sales / Not Sales (goal_pillar)
+  ↓
+ingest_email                          (raw persistence, no LLM)
+  ↓
+persist_email_analysis                (deterministic, LLM-free)
+  ├─ if NOT Sales → persisted as a normal email; no Opportunity, ever
+  └─ if Sales:
+        ↓
+     resolve/create Project (existing logic, pillar-agnostic)
+        ↓
+     resolve/create Opportunity (only if a project_id was resolved)
+        ↓
+     link email ↔ Opportunity (entities_referenced["opportunities"])
+  ↓
+persist_context_delta / create_reply_draft (unchanged, as warranted)
+  ↓
+mark_email_completed
+```
+
+The MCP server never decides Sales/Not-Sales and never decides whether an
+Opportunity should exist — both are downstream, deterministic consequences of
+what the reasoning caller already put in `EmailAnalysis`. The only place a
+human (or Claude Desktop, on explicit instruction) can set `stage`/`owner`/
+`value`/`currency`/`expected_close_date`/`next_action` is the
+`update_opportunity_fields` MCP tool — nothing infers these from email
+content, ever.
 
 ---
 
@@ -157,7 +234,7 @@ Tool *definitions* here are thin wrappers; the actual logic lives in
 `app/mcp/tools.py`, kept separate so the server file stays a pure protocol
 boundary.
 
-### Implemented tools (22)
+### Implemented tools (24)
 
 *(Corrected from an earlier draft of this document, which miscounted this
 list as 19 — independently re-verified twice by direct runtime introspection
@@ -173,6 +250,15 @@ of `mcp.list_tools()`.)*
   closing FR-04's integration gap — see §2's `meetings` collection row),
   `list_reply_drafts`, `get_reply_draft`,
   `get_project_summary`, `get_company_summary`, `lookup_knowledge`.
+- **Opportunity tools**: `list_opportunities` — read-only, filters by
+  `org_id`/`status`/`project_id` (array-membership) — and
+  `update_opportunity_fields` — the *only* mechanism for setting an
+  Opportunity's human-managed CRM fields (`stage`/`owner`/`value`/`currency`/
+  `expected_close_date`/`next_action`); deterministic, LLM-free, never touches
+  the pipeline-derived fields. There is no `create_opportunity`/
+  `resolve_opportunity` tool — creation/resolution happens automatically
+  inside `persist_email_analysis`/`process_email` (see "Opportunity vs
+  Project vs Email" above).
 - **Safety-net tool**: `preview_duplicate_person_candidates` — strictly
   read-only; classifies possible duplicate Person records and reports them
   for human review. Never merges anything itself.
