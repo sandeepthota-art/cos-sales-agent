@@ -36,6 +36,11 @@ from app.database.repositories import CalendarActionRepository, ReplyDraftReposi
 from app.providers.factory import ProviderFactory
 from app.replies.approval import approve, edit, reject, simulate_send
 from app.replies.models import ReplyDraft
+from app.ui.column_descriptions import (
+    DASHBOARD_METRIC_DESCRIPTIONS,
+    column_config_for,
+    field_help,
+)
 from app.ui.data import (
     dashboard_metrics,
     list_calendar_actions,
@@ -75,39 +80,39 @@ def _render_dashboard_tab(db) -> None:
         ("Failures", "failures"),
     ]
     for col, (label, key) in zip(cols, labels):
-        col.metric(label, metrics[key])
+        col.metric(label, metrics[key], help=DASHBOARD_METRIC_DESCRIPTIONS.get(key))
 
 
 def _render_emails_tab(db) -> None:
-    st.dataframe(list_emails(db))
+    st.dataframe(list_emails(db), column_config=column_config_for("emails"))
 
 
 def _render_people_tab(db) -> None:
-    st.dataframe(list_people(db))
+    st.dataframe(list_people(db), column_config=column_config_for("people"))
 
 
 def _render_organizations_tab(db) -> None:
-    st.dataframe(list_organizations(db))
+    st.dataframe(list_organizations(db), column_config=column_config_for("organizations"))
 
 
 def _render_projects_tab(db) -> None:
-    st.dataframe(list_projects(db))
+    st.dataframe(list_projects(db), column_config=column_config_for("projects"))
 
 
 def _render_commitments_tab(db) -> None:
-    st.dataframe(list_commitments(db))
+    st.dataframe(list_commitments(db), column_config=column_config_for("commitments"))
 
 
 def _render_follow_ups_tab(db) -> None:
-    st.dataframe(list_follow_ups(db))
+    st.dataframe(list_follow_ups(db), column_config=column_config_for("follow_ups"))
 
 
 def _render_meetings_tab(db) -> None:
-    st.dataframe(list_meetings(db))
+    st.dataframe(list_meetings(db), column_config=column_config_for("meetings"))
 
 
 def _render_personal_items_tab(db) -> None:
-    st.dataframe(list_personal_items(db))
+    st.dataframe(list_personal_items(db), column_config=column_config_for("personal_items"))
 
 
 def _render_thread_explorer_tab(db) -> None:
@@ -116,11 +121,12 @@ def _render_thread_explorer_tab(db) -> None:
     if not thread_ids:
         st.info("No threads yet.")
         return
-    selected = st.selectbox("Thread", thread_ids)
+    selected = st.selectbox("Thread", thread_ids, help=field_help("context_snapshots", "thread_id"))
     for snapshot in thread_context_versions(db, selected):
         with st.expander(f"Context V{snapshot['context_version']} (triggered by {snapshot['triggering_email_id']})"):
+            st.caption("Context", help=field_help("context_snapshots", "context"))
             st.json(snapshot["context"])
-            st.write("Changes:")
+            st.caption("Changes", help=field_help("context_snapshots", "changes_from_previous_context"))
             for change in snapshot.get("changes_from_previous_context", []):
                 st.write(f"{change['type']}: {change['field']} -> {change['detail']}")
 
@@ -131,9 +137,16 @@ def _render_context_evolution_tab(db) -> None:
     if not thread_ids:
         st.info("No threads yet.")
         return
-    selected = st.selectbox("Thread ", thread_ids, key="context_evolution_thread")
+    selected = st.selectbox(
+        "Thread ", thread_ids, key="context_evolution_thread",
+        help=field_help("context_snapshots", "thread_id"),
+    )
     versions = thread_context_versions(db, selected)
-    st.write(" -> ".join(f"V{v['context_version']}" for v in versions))
+    st.markdown(
+        " -> ".join(f"V{v['context_version']}" for v in versions),
+        help=field_help("context_snapshots", "context_version"),
+    )
+    st.caption("Latest changes", help=field_help("context_snapshots", "changes_from_previous_context"))
     for change in versions[-1]["changes_from_previous_context"] if versions else []:
         st.write(f"{change['type']}: {change['field']} -> {change['detail']}")
 
@@ -141,11 +154,14 @@ def _render_context_evolution_tab(db) -> None:
 def _render_knowledge_tab(db) -> None:
     for item in list_knowledge(db):
         basis_label = "STATED" if item["basis"] == "stated" else "AI INFERENCE"
-        st.write(
+        fact_help = f"{field_help('knowledge_items', 'basis')} {field_help('knowledge_items', 'confidence')}"
+        st.markdown(
             f"**{item['subject_key']} {item['predicate']} = {item['current_value']}** "
-            f"[{basis_label}] (confidence {item['confidence']:.2f})"
+            f"[{basis_label}] (confidence {item['confidence']:.2f})",
+            help=fact_help,
         )
         with st.expander("History"):
+            st.caption("History", help=field_help("knowledge_items", "history"))
             for entry in item["history"]:
                 st.write(f"{entry['recorded_at']}: {entry['value']} (source {entry['source_email_id']})")
 
@@ -154,8 +170,8 @@ def _render_reply_approval_tab(db, settings) -> None:
     repo = ReplyDraftRepository(db)
     for doc in list_reply_drafts(db, status="awaiting_approval"):
         draft = ReplyDraft.model_validate(doc)
-        st.write(f"**{draft.draft.subject}**")
-        st.write(draft.draft.body)
+        st.markdown(f"**{draft.draft.subject}**", help=field_help("reply_drafts", "draft.subject"))
+        st.markdown(draft.draft.body, help=field_help("reply_drafts", "draft.body"))
         if settings.dashboard_read_only:
             st.caption("Read-only view -- approval actions disabled.")
             continue
@@ -169,7 +185,10 @@ def _render_reply_approval_tab(db, settings) -> None:
             rejected = reject(draft)
             repo.upsert_by_key({"source_email_id": rejected.source_email_id}, rejected.model_dump(mode="json"))
             st.rerun()
-        new_body = col3.text_area("Edit body", value=draft.draft.body, key=f"edit_{draft.reply_id}")
+        new_body = col3.text_area(
+            "Edit body", value=draft.draft.body, key=f"edit_{draft.reply_id}",
+            help=field_help("reply_drafts", "draft.body"),
+        )
         if col3.button("Save edit", key=f"save_edit_{draft.reply_id}"):
             edited = edit(draft, new_subject=draft.draft.subject, new_body=new_body)
             repo.upsert_by_key({"source_email_id": edited.source_email_id}, edited.model_dump(mode="json"))
@@ -184,9 +203,19 @@ def _render_calendar_approval_tab(db, settings) -> None:
         db, status="needs_clarification"
     ):
         action = CalendarAction.model_validate(doc)
-        st.write(f"**{action.event.title}**")
-        st.write(f"{action.event.start} - {action.event.end} ({action.event.timezone})")
-        st.write("Attendees: Authenticated user only")
+        st.markdown(f"**{action.event.title}**", help=field_help("calendar_actions", "event.title"))
+        st.markdown(
+            f"{action.event.start} - {action.event.end} ({action.event.timezone})",
+            help=field_help("calendar_actions", "event.time"),
+        )
+        st.caption(
+            "Attendees: Authenticated user only",
+            help=(
+                "UI-only text, not read from any database field. Real attendees "
+                "(event.attendees) are always empty by design -- external attendees "
+                "are never permitted."
+            ),
+        )
         if action.status == "needs_clarification":
             st.warning(f"Needs clarification: {action.reason}")
             continue
