@@ -73,14 +73,10 @@ def _set_entity_metadata(repo, message_id, label_applied="Needs reply"):
     repo.set_entity_metadata(
         message_id=message_id,
         record_id=message_id,
-        source_type="gmail",
-        source_link=None,
         date="2026-09-13",
         entities_referenced={},
         goal_pillar="Sales",
         label_applied=label_applied,
-        confidence=0.9,
-        priority="P2",
     )
 
 

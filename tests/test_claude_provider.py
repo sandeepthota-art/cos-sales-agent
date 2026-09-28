@@ -203,23 +203,6 @@ def test_draft_reply_system_prompt_unchanged_when_no_recipient_preferences(monke
     assert "preferences" not in captured["system"].lower()
 
 
-def test_draft_reply_injects_recipient_preferences_into_the_system_prompt(monkeypatch):
-    provider = ClaudeProvider(api_key="fake-key", model="claude-sonnet-5")
-    captured = {}
-
-    def fake_create(**kwargs):
-        captured["system"] = kwargs["system"]
-        return _fake_response('{"subject": "Re: Enterprise pricing", "body": "ok"}')
-
-    monkeypatch.setattr(provider._client.messages, "create", fake_create)
-
-    context = {"recipient_preferences": {"voice_signature": "short and concise", "remove_long_dash": True}}
-    provider.draft_reply(context, _email())
-
-    assert "short and concise" in captured["system"]
-    assert "remove_long_dash" in captured["system"]
-
-
 # --- Extraction prompt boundary: ignore meta-instructions / engineering specs --------
 # Regression coverage for a real incident: an internal "Minutes of the meeting on COS
 # Agent" email (engineering requirements about the AI system itself -- "labelling
@@ -227,9 +210,9 @@ def test_draft_reply_injects_recipient_preferences_into_the_system_prompt(monkey
 # 23 knowledge_items as if they were business facts about a person/company. Fixed by
 # adding a strict boundary to _ANALYSIS_INSTRUCTIONS. This is a prompt-content test, not
 # a live-model behavioral test -- consistent with this suite's own convention of never
-# making a real LLM API call (see test_complete_json_explicitly_disables_extended_thinking
-# and the recipient_preferences tests above, which likewise assert on constructed
-# prompt/request content rather than a live response). _ANALYSIS_INSTRUCTIONS is shared
+# making a real LLM API call (see test_complete_json_explicitly_disables_extended_thinking,
+# which likewise asserts on constructed prompt/request content rather than a live
+# response). _ANALYSIS_INSTRUCTIONS is shared
 # by both ClaudeProvider and OpenAIProvider (app/providers/llm/openai.py imports it
 # directly), so this single test covers both real-LLM code paths.
 

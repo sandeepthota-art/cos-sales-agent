@@ -126,7 +126,7 @@ knowledge item — see §3, "Prompt engineering guardrails."
 
 | Collection | Holds | Key relationships |
 |---|---|---|
-| `emails` | One document per processed message — raw content, `processing_status`, `label_applied` (6-way triage), `priority` (P1/P2), `entities_referenced` | Links out to every entity type below via `entities_referenced` |
+| `emails` | One document per processed message — raw content, `processing_status`, `label_applied` (6-way triage), `entities_referenced` | Links out to every entity type below via `entities_referenced` |
 | `threads` | Resolved conversation threads | `message_ids`, `participant_emails`, canonical `person_ids`/`org_ids` |
 | `context_snapshots` | Cumulative, versioned per-thread summary (16-field `ThreadContext`) plus a diff (`changes_from_previous_context`) for every new email | One per `(thread_id, context_version)` |
 | `people` | Canonical Person records — real contacts **and** the operator's own dedicated profile (`type: "operator"`) | `org_id`, `open_threads`, `merged_into` (soft-merge trail) |
@@ -266,8 +266,8 @@ of `mcp.list_tools()`.)*
   `ask_question` — exposes the previously-unreachable `app.query.service.execute_query`
   engine (intent classification, entity resolution, evidence assembly) over
   MCP, deterministically (no LLM call inside the tool) — and
-  `whats_on_my_table` — one call combining P1 emails, pending replies,
-  overdue follow-ups, upcoming commitments/meetings, and active projects.
+  `whats_on_my_table` — one call combining pending replies, overdue
+  follow-ups, upcoming commitments/meetings, and active projects.
 
 ### Ingestion pipeline (`app/pipeline.py::run_pipeline`)
 
@@ -282,26 +282,23 @@ ENTITIES_PROCESSED → REPLY_PROCESSED → MEETING_PROCESSED → COMPLETED
 
 - **Email triage**: a single LLM call classifies every message into exactly
   one of six labels (`Needs reply: ASAP`, `Needs reply`,
-  `Needs reply: mention`, `Read only`, `Delete`, `Undecided`) plus a
-  `P1`/`P2` business-priority axis — two independent, orthogonal
-  classifications from the same call.
+  `Needs reply: mention`, `Read only`, `Delete`, `Undecided`). (A separate
+  `P1`/`P2` business-priority field and a `confidence` score were extracted
+  and stored alongside this label in an earlier version; both were
+  deliberately removed, along with `search_emails`'s `priority` filter and
+  `whats_on_my_table`'s `p1_emails` category — see `docs/DATA_DICTIONARY.md`.)
 - **Identity resolution / merging** (`app/entities/resolution.py`): a
   strict, tiered rule set that **never merges two people on name alone**.
   An email address is the only fully-trusted signal; a no-email mention
   either matches an existing person already resolved from this same
   email's envelope (fixing a real duplicate-creation bug from calendar
-  invites) or falls through to a flagged, no-email record for manual
-  review. Actual duplicate consolidation is a separate, human-approved,
+  invites) or falls through to a lower-confidence, no-email record.
+  Actual duplicate consolidation is a separate, human-approved,
   snapshot-and-rollback-capable batch process (`app/duplicate_consolidation.py`)
   — never automatic.
 - **Operator Profile**: the operator (`AGENT_EMAIL`/`AGENT_NAME`) is tracked
   via one dedicated Person record (`type: "operator"`), distinct from an
   external lead, instead of being silently skipped or duplicated.
-- **Voice-signature injection**: a Person's own `preferences` dict (e.g.
-  `voice_signature`, `remove_long_dash`) is looked up for the reply
-  recipient and folded into the reply-drafting LLM call's **system
-  instructions** (not just contextual data) — so drafts addressed to a
-  specific person can honor their standing preferences.
 - **Meeting category propagation**: `resolve_meeting` (`app/entities/resolution.py`)
   now accepts `project_or_pillar`, set from the email analysis's own
   `goal_pillar` field at the `app/pipeline.py` call site, stored on

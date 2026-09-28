@@ -62,13 +62,13 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
 
     stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
     assert stored["record_id"] == "1a08090646ebaa45"
-    assert stored["source_type"] == "gmail"
-    assert stored["source_link"] == "https://mail.google.com/mail/u/0/#all/1a08090646ebaa45"
     assert stored["date"] == "2026-09-13"
     assert stored["goal_pillar"] == "Sales"
     assert stored["label_applied"] in {"Needs reply: ASAP", "Read only"}
-    assert stored["priority"] in {"P1", "P2"}
-    assert isinstance(stored["confidence"], float)
+    assert "priority" not in stored
+    assert "confidence" not in stored
+    assert "source_type" not in stored
+    assert "source_link" not in stored
 
     entities_referenced = stored["entities_referenced"]
     # John (sender) + the operator's own dedicated profile (Ashok, the default "to"
@@ -114,14 +114,6 @@ def test_follow_up_derived_from_commitment_carries_the_commitment_thread_id(db, 
     assert follow_up["commitment_id"] == commitment["id"]
     assert follow_up["thread_id"] == thread["thread_id"]
     assert commitment["thread_id"] == thread["thread_id"]
-
-
-def test_pipeline_sets_source_link_to_none_for_non_gmail_shaped_message_id(db, settings):
-    payloads = [_raw_email("not-a-gmail-hex-id", "Just checking in.")]
-    run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
-
-    stored = db.emails.find_one({"message_id": "not-a-gmail-hex-id"}, {"_id": 0})
-    assert stored["source_link"] is None
 
 
 def test_pipeline_reuses_same_person_across_two_emails_in_same_thread(db, settings):
@@ -1133,7 +1125,6 @@ def test_pipeline_calendar_invite_body_mention_reuses_the_envelope_person_not_a_
     vijender_docs = PersonRepository(db).find_many({"name": "Vijender Reddy Pochampally"})
     assert len(vijender_docs) == 1
     assert vijender_docs[0]["email"] == "vijender@example.com"
-    assert vijender_docs[0]["review_flag"] is False
 
 
 class _NoPeopleLLMWithMention(_NoPeopleLLM):
@@ -1149,7 +1140,7 @@ class _NoPeopleLLMWithMention(_NoPeopleLLM):
 def test_pipeline_no_email_mention_with_no_same_email_match_still_creates_a_flagged_record(db, settings):
     # Regression guard: the fix must not become a global fuzzy-name search. A no-email
     # mention naming someone who is NOT already resolved on this same email still goes
-    # through the existing (unchanged) no-email tier -- new record, review_flag=True.
+    # through the existing (unchanged) no-email tier -- new record.
     payloads = [_raw_email("m_novel_mention", "Please loop in Priya on this.")]
     run_pipeline(
         db, MockEmailProvider(payloads=payloads), _NoPeopleLLMWithMention("Priya"), MockCalendarProvider(), settings,
@@ -1160,7 +1151,6 @@ def test_pipeline_no_email_mention_with_no_same_email_match_still_creates_a_flag
     # The no-email tier deliberately OMITS the email key entirely (not a stored null)
     # -- see app.entities.resolution.resolve_person's sparse-index comment.
     assert "email" not in priya
-    assert priya["review_flag"] is True
 
 
 def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tier(db, settings):
@@ -1185,7 +1175,6 @@ def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tie
     bare_reddy = PersonRepository(db).find_one({"name": "Reddy"})
     assert bare_reddy is not None
     assert "email" not in bare_reddy
-    assert bare_reddy["review_flag"] is True
     # The two real, distinct people must remain untouched and separate.
     assert PersonRepository(db).find_one({"email": "anil@example.com"}) is not None
     assert PersonRepository(db).find_one({"email": "sunil@example.com"}) is not None
@@ -1205,8 +1194,8 @@ def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tie
 class _CalendarInviteBodyMentionsOperatorByNameLLM(_NoPeopleLLM):
     """Simulates a Google Calendar invite whose body text lists the operator himself
     as an attendee, with no email of his own -- the exact shape that created a real
-    production shadow Person for the operator (no email, null org_id, review_flag
-    True) before the Operator Profile fix."""
+    production shadow Person for the operator (no email, null org_id) before the
+    Operator Profile fix."""
 
     def __init__(self, name):
         self._name = name
@@ -1296,7 +1285,6 @@ def test_pipeline_body_mention_of_unrelated_name_unaffected_by_agent_name(db, se
 
     priya = PersonRepository(db).find_one({"name": "Priya"})
     assert priya is not None
-    assert priya["review_flag"] is True
     assert priya.get("type") != "operator"
 
 
@@ -1320,5 +1308,4 @@ def test_pipeline_body_mention_of_operators_name_still_creates_shadow_person_whe
     shadow = PersonRepository(db).find_one({"name": "Ashok Kumar"})
     assert shadow is not None
     assert "email" not in shadow
-    assert shadow["review_flag"] is True
     assert shadow.get("type") != "operator"

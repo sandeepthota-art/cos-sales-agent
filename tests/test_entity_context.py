@@ -450,8 +450,7 @@ def test_get_person_context_never_copies_related_content_into_the_person_documen
     stored = PersonRepository(db).find_one({"id": person_id})
     assert set(stored.keys()) == {
         "id", "name", "email", "aliases", "org", "org_id", "type", "goal_pillar",
-        "role_in_pillar", "tier", "voice_register", "preferences", "last_inbound", "last_outbound",
-        "reports_to", "open_threads", "note_link", "review_flag", "source",
+        "last_inbound", "last_outbound", "open_threads", "note_link", "source",
         "status", "merged_into",
     }
 

@@ -30,20 +30,6 @@ def test_email_analysis_entity_signal_defaults():
     assert analysis.personal_items_mentioned == []
     assert analysis.goal_pillar == ""
     assert analysis.label_applied == "Undecided"
-    assert analysis.priority == "P2"
-    assert analysis.confidence == 0.0
-
-
-@pytest.mark.parametrize("priority", ["P1", "P2"])
-def test_email_analysis_accepts_p1_and_p2(priority):
-    analysis = EmailAnalysis(email_id="msg_001", summary="s", intent="evaluation", priority=priority)
-    assert analysis.priority == priority
-
-
-@pytest.mark.parametrize("priority", ["P0", "P3", "High", "Medium", "Low", "p1"])
-def test_email_analysis_rejects_any_priority_other_than_p1_or_p2(priority):
-    with pytest.raises(ValidationError):
-        EmailAnalysis(email_id="msg_001", summary="s", intent="evaluation", priority=priority)
 
 
 @pytest.mark.parametrize(

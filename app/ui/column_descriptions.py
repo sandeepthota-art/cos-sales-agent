@@ -6,9 +6,8 @@ module restates it concisely for on-screen display, it does not redefine
 anything). Keyed by collection first, then field name, because several field
 names (`status`, `stage`, `owner`, `goal_pillar`, `confidence`, ...) mean
 different things in different collections -- see DATA_DICTIONARY.md's
-"Distinguishing `goal_pillar`, `label_applied`, and `confidence`" section and
-its per-collection tables for the full explanation each string here
-summarizes.
+"Distinguishing `goal_pillar` and `label_applied`" section and its
+per-collection tables for the full explanation each string here summarizes.
 
 Only fields actually rendered somewhere in `app/ui/dashboard.py` need an
 entry here. A field declared in a model but never observed to be set by any
@@ -45,8 +44,6 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "labels": "Gmail label ids, plus the applied triage label (label_applied) once analysis completes.",
         "processing_status": "Current pipeline stage (e.g. COMPLETED, FAILED), plus any error.",
         "record_id": "Bookkeeping id; currently always identical to message_id.",
-        "source_type": 'Where this email came from -- currently always "gmail".',
-        "source_link": "Gmail web link to the message, when derivable from its id.",
         "date": "The email's timestamp, date component only (YYYY-MM-DD).",
         "entities_referenced": "IDs of every Person/Project/Commitment/Meeting/etc. this email produced.",
         "goal_pillar": (
@@ -59,12 +56,6 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "Independent of goal_pillar -- an email can be Sales-classified and Read-only "
             "at the same time."
         ),
-        "confidence": (
-            "Confidence score set at analysis time. The code does not define what this "
-            "measures or what scale it is on, never compares it to a threshold, and no "
-            "downstream logic reads it back -- display only, not a calibrated probability."
-        ),
-        "priority": "Business priority: P1 (higher) or P2.",
     },
     "people": {
         "id": "Canonical person id (PER-###).",
@@ -75,20 +66,11 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "org_id": "Canonical Organization this person belongs to, resolved by email domain.",
         "type": 'Set to "operator" for the configured mailbox owner; otherwise unset.',
         "goal_pillar": _NOT_SET,
-        "role_in_pillar": _NOT_SET,
-        "tier": _NOT_SET,
-        "voice_register": _NOT_SET,
         "last_inbound": "Most recent email known received FROM this person (only ever moves forward in time).",
         "last_outbound": "Most recent email known sent TO this person (only ever moves forward in time).",
-        "reports_to": _NOT_SET,
         "open_threads": "Every conversation thread this person has been part of.",
         "note_link": _NOT_SET,
-        "review_flag": "True for a person created with no email at all (a lower-confidence identity match).",
         "source": 'Where this record originated -- currently always "gmail".',
-        "preferences": (
-            "Per-person drafting preferences (e.g. voice signature). Set manually only -- "
-            "no extraction path writes this."
-        ),
         "status": '"active", or "merged" if retired into another canonical person by an admin duplicate-consolidation run.',
         "merged_into": 'If status is "merged", the canonical person id this record now points to.',
     },
@@ -106,13 +88,13 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "entity": "Free-text company name associated with this project.",
         "goal_pillar": (
             "Copied from the triggering email's goal_pillar. Combined with a resolved "
-            'project mention, "Sales" is what creates an Opportunity record (a separate '
-            "collection, not currently shown on this dashboard)."
+            'project mention, "Sales" is what creates an Opportunity record on the '
+            "Opportunities tab (a separate collection)."
         ),
         "objective": _NOT_SET,
         "target": _NOT_SET,
         "status": _NOT_SET,
-        "owner": _NOT_SET + " (Different field from the human-managed opportunities.owner, not shown here.)",
+        "owner": _NOT_SET + " (Different field from the human-managed opportunities.owner on the Opportunities tab.)",
         "collaborators": _NOT_SET,
         "person_ids": "People already resolved for the same email whose company matches this project's entity.",
         "org_id": "Organization matched to this project.",
@@ -122,6 +104,35 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "last_movement": _NOT_SET,
         "note_link": _NOT_SET,
         "source": 'Where this record originated -- currently always "gmail".',
+    },
+    "opportunities": {
+        "id": "Canonical opportunity id (OPP-###).",
+        "name": "Deal name, copied from the resolving project mention.",
+        "entity": "Free-text company name, mirrors the linked project's entity.",
+        "org_id": "Canonical Organization for this deal.",
+        "description": _NOT_SET,
+        "status": (
+            '"open", "won", or "lost". Only "open" is ever set today -- there is currently '
+            "no way to set it to \"won\"/\"lost\" (update_opportunity_fields doesn't accept "
+            "a status parameter)."
+        ),
+        "stage": "Free-text sales-pipeline stage (e.g. \"Discovery\"). Human-managed only -- never inferred from email content.",
+        "owner": "Free-text CRM owner. Human-managed only.",
+        "value": "Deal value. Human-managed only.",
+        "currency": "Human-managed only.",
+        "expected_close_date": "Human-managed only.",
+        "next_action": "Human-managed only.",
+        "source_email_ids": "Every email that has touched this deal -- append-only.",
+        "project_ids": (
+            "The Project(s) this deal is linked to -- also the sole dedup key: a second "
+            "Sales email resolving to the same project is always the same Opportunity."
+        ),
+        "meeting_ids": "Meetings detected alongside this deal -- append-only.",
+        "person_ids": "People resolved alongside this deal -- append-only.",
+        "buying_signals": "Plain-text buying-signal strings copied from analysis -- append-only.",
+        "last_activity_at": "Bumped automatically every time a new email/meeting touches this deal.",
+        "created_at": "When this Opportunity was first created.",
+        "updated_at": "When this Opportunity was last changed, automatically or by a human.",
     },
     "commitments": {
         "id": "Canonical commitment id (CMT-###).",
@@ -209,8 +220,7 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "basis": 'Whether the fact was directly stated ("STATED") or inferred by the model ("AI INFERENCE").',
         "confidence": (
             "Starts at 0.75 and increases by 0.01 (capped at 0.99) each time this fact is "
-            "re-confirmed by a later email. Distinct from emails.confidence, which has no "
-            "defined scale."
+            "re-confirmed by a later email."
         ),
         "history": "Every prior value this fact has had, oldest first.",
     },

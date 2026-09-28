@@ -1,4 +1,3 @@
-import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -52,8 +51,6 @@ from app.knowledge.normalize import normalize_text
 from app.processing.models import EmailResult, PipelineRunSummary, ProcessingStage
 from app.replies.drafter import draft_reply, needs_reply
 from app.replies.models import ReplyDraft
-
-_GMAIL_INTERNAL_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 
 _FACT_FIELD_PREDICATES = {
     "requirements": "requires",
@@ -687,22 +684,13 @@ def run_pipeline(
             # KNOWLEDGE_PROCESSED/ENTITIES_PROCESSED stage sequence above.
             _link_knowledge_to_entities(db, thread_id, email.message_id)
             _link_thread_to_entities(db, thread_id)
-            source_link = (
-                f"https://mail.google.com/mail/u/0/#all/{email.message_id}"
-                if _GMAIL_INTERNAL_ID_PATTERN.match(email.message_id)
-                else None
-            )
             email_repo.set_entity_metadata(
                 message_id=email.message_id,
                 record_id=email.message_id,
-                source_type="gmail",
-                source_link=source_link,
                 date=email.timestamp.date().isoformat(),
                 entities_referenced=entities_referenced,
                 goal_pillar=analysis.goal_pillar,
                 label_applied=analysis.label_applied,
-                confidence=analysis.confidence,
-                priority=analysis.priority,
             )
             email_repo.set_stage(email.message_id, ProcessingStage.ENTITIES_PROCESSED.value)
 
@@ -727,14 +715,7 @@ def run_pipeline(
                 # already approved/edited/sent it after an earlier partial run).
                 # Never blind-overwrite it -- only create it the first time.
                 if reply_repo.find_one(reply_key) is None:
-                    # The reply's recipient IS this email's sender -- sender_person,
-                    # already resolved above, is the exact same Person whose
-                    # preferences (voice_signature, remove_long_dash, ...) should
-                    # shape how we write back to them.
-                    recipient_preferences = sender_person.get("preferences") if sender_person else None
-                    draft_content = draft_reply(
-                        llm_provider, next_context, email, recipient_preferences=recipient_preferences
-                    )
+                    draft_content = draft_reply(llm_provider, next_context, email)
                     draft = ReplyDraft(
                         reply_id=f"reply_{email.message_id}",
                         thread_id=thread_id,

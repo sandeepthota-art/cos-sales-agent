@@ -200,16 +200,6 @@ def test_search_emails_filters_by_label_applied(db):
     assert [r["message_id"] for r in results] == ["m1"]
 
 
-def test_search_emails_filters_by_priority(db):
-    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1", priority="P1"))
-    EmailRepository(db).upsert_by_key({"message_id": "m2"}, _email("m2", priority="P2"))
-
-    results = tools.search_emails(db, priority="P1")
-
-    assert [r["message_id"] for r in results] == ["m1"]
-    assert results[0]["priority"] == "P1"
-
-
 def test_search_emails_combines_filters(db):
     EmailRepository(db).upsert_by_key(
         {"message_id": "m1"}, _email("m1", subject="Renewal", label_applied="Read only")
@@ -1035,7 +1025,7 @@ def test_whats_on_my_table_includes_every_category_key_even_when_empty(db, setti
     result = tools.whats_on_my_table(db, settings)
 
     assert set(result.keys()) == {
-        "p1_emails", "pending_replies", "overdue_follow_ups",
+        "pending_replies", "overdue_follow_ups",
         "commitments_due", "upcoming_meetings", "active_projects",
     }
     for value in result.values():
@@ -1044,7 +1034,7 @@ def test_whats_on_my_table_includes_every_category_key_even_when_empty(db, setti
 
 def test_whats_on_my_table_aggregates_real_data_per_category(db, settings):
     EmailRepository(db).upsert_by_key(
-        {"message_id": "m1"}, _email("m1", priority="P1", label_applied="Needs reply: ASAP")
+        {"message_id": "m1"}, _email("m1", label_applied="Needs reply: ASAP")
     )
     ReplyDraftRepository(db).upsert_by_key(
         {"source_email_id": "m1"},
@@ -1061,7 +1051,6 @@ def test_whats_on_my_table_aggregates_real_data_per_category(db, settings):
 
     result = tools.whats_on_my_table(db, settings)
 
-    assert [e["message_id"] for e in result["p1_emails"]] == ["m1"]
     assert [d["reply_id"] for d in result["pending_replies"]] == ["reply_m1"]
     assert [f["id"] for f in result["overdue_follow_ups"]] == ["FU-1"]
     assert [p["id"] for p in result["active_projects"]] == ["PRJ-1"]

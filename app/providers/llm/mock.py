@@ -136,10 +136,6 @@ class MockLLMProvider(LLMProvider):
         ]
 
         label_applied = "Needs reply: ASAP" if buying_signals else "Read only"
-        # BRD gives no finer-grained P1/P2 rule than "business priority" -- this reuses
-        # the SAME buying_signals signal label_applied already keys off, rather than
-        # inventing a second, unrelated heuristic. Deterministic, no wall-clock use.
-        priority = "P1" if buying_signals else "P2"
 
         return {
             "email_id": email.message_id,
@@ -166,8 +162,6 @@ class MockLLMProvider(LLMProvider):
             "personal_items_mentioned": [],
             "goal_pillar": "Sales",
             "label_applied": label_applied,
-            "priority": priority,
-            "confidence": 0.8,
         }
 
     def update_context(self, previous_context: dict[str, Any], new_analysis: dict[str, Any]) -> dict[str, Any]:
@@ -213,19 +207,12 @@ class MockLLMProvider(LLMProvider):
     def draft_reply(self, context: dict[str, Any], latest_email: Email) -> dict[str, Any]:
         company = context.get("company", {}).get("name", "there")
         greeting_name = latest_email.from_.name or latest_email.from_.email
-        # recipient_preferences (app.entities.models.Person.preferences, folded in by
-        # app.replies.drafter.draft_reply) -- absent/empty leaves this byte-identical
-        # to the prior hardcoded signature, so every pre-existing test is unaffected.
-        preferences = context.get("recipient_preferences") or {}
-        signature = preferences.get("voice_signature") or "Best regards,\nSales Team"
         body = (
             f"Hi {greeting_name},\n\n"
             f"Thank you for your note regarding {company or 'your evaluation'}. "
             "We appreciate the additional detail and will follow up shortly with the "
-            f"information you requested.\n\n{signature}"
+            "information you requested.\n\nBest regards,\nSales Team"
         )
-        if preferences.get("remove_long_dash"):
-            body = body.replace("—", "-").replace("–", "-")
         return {
             "subject": f"Re: {latest_email.subject}",
             "body": body,

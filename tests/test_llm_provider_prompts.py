@@ -33,14 +33,11 @@ def test_analysis_instructions_mention_all_six_brd_labels_with_semantics():
     assert "by name" in _ANALYSIS_INSTRUCTIONS
 
 
-def test_analysis_instructions_mention_p1_p2_priority_guidance():
-    assert "'P1'" in _ANALYSIS_INSTRUCTIONS
-    assert "'P2'" in _ANALYSIS_INSTRUCTIONS
-    assert "business priority" in _ANALYSIS_INSTRUCTIONS
-    # No finer-grained criteria exist in the BRD than "business priority" -- the prompt
-    # must not claim otherwise by inventing e.g. tier/urgency thresholds here.
-    assert "P0" not in _ANALYSIS_INSTRUCTIONS
-    assert "P3" not in _ANALYSIS_INSTRUCTIONS
+def test_analysis_instructions_do_not_ask_for_priority_or_confidence():
+    # priority and confidence were removed from EmailAnalysis entirely -- the prompt
+    # must never ask the LLM to produce either.
+    assert "priority" not in _ANALYSIS_INSTRUCTIONS.lower()
+    assert "confidence (" not in _ANALYSIS_INSTRUCTIONS
 
 
 def test_analysis_instructions_do_not_ask_the_llm_for_canonical_ids():

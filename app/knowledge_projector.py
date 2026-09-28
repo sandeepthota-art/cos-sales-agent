@@ -17,8 +17,8 @@ exact-matching those free-text strings -- the same join logic app.mcp.tools'
 get_company_summary already uses. Every organization .md file says so explicitly.
 
 Relationships: most of this schema has no direct FK between entity types (confirmed
-elsewhere in this project: Commitment.project_id, Project.owner/collaborators,
-Person.reports_to are schema fields the live pipeline never populates;
+elsewhere in this project: Commitment.project_id, Project.owner/collaborators are
+schema fields the live pipeline never populates;
 Commitment.owed_by/owed_to and Meeting.attendees are free text, not ids). The one
 rich, fully real relationship source is email["entities_referenced"] -- every
 processed email already lists exactly which people/projects/commitments/follow_ups/

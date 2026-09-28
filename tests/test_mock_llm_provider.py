@@ -123,26 +123,6 @@ def test_draft_reply_uses_default_signature_when_no_recipient_preferences():
     assert draft["body"].endswith("Best regards,\nSales Team")
 
 
-def test_draft_reply_applies_recipient_voice_signature_preference():
-    provider = MockLLMProvider()
-    email = _email("Can you send pricing?")
-    context = {"recipient_preferences": {"voice_signature": "Thanks,\nAshok"}}
-    draft = provider.draft_reply(context, email)
-    assert draft["body"].endswith("Thanks,\nAshok")
-    assert "Best regards" not in draft["body"]
-
-
-def test_draft_reply_applies_recipient_remove_long_dash_preference():
-    provider = MockLLMProvider()
-    email = _email("Can you send pricing?")
-    context = {
-        "recipient_preferences": {"voice_signature": "— sent from a dash – signature", "remove_long_dash": True}
-    }
-    draft = provider.draft_reply(context, email)
-    assert "—" not in draft["body"]
-    assert "–" not in draft["body"]
-
-
 def test_mock_llm_includes_sender_as_mentioned_person():
     provider = MockLLMProvider()
     email = _email("Just checking in.")
@@ -178,16 +158,6 @@ def test_mock_llm_classification_fields_are_deterministic():
     assert with_signal["goal_pillar"] == "Sales"
     assert with_signal["label_applied"] == "Needs reply: ASAP"
     assert without_signal["label_applied"] == "Read only"
-    assert with_signal["confidence"] == 0.8
-
-
-def test_mock_llm_priority_is_deterministic_and_valid():
-    provider = MockLLMProvider()
-    with_signal = provider.analyze_email(_email("Can you send pricing for the enterprise plan?"))
-    without_signal = provider.analyze_email(_email("Just an FYI, no action needed."))
-
-    assert with_signal["priority"] == "P1"
-    assert without_signal["priority"] == "P2"
     # EmailAnalysis.model_validate must accept both -- proves the mock's output is
     # actually schema-valid, not just internally consistent with itself.
     from app.analysis.schemas import EmailAnalysis

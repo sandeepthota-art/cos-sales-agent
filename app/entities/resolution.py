@@ -293,7 +293,6 @@ def resolve_person(
             email=email,
             org=mention.get("org"),
             org_id=resolve_organization(db, email, mention.get("org")),
-            review_flag=False,
             last_inbound=now if is_sender is True else None,
             last_outbound=now if is_sender is False else None,
             open_threads=[thread_id],
@@ -364,7 +363,6 @@ def resolve_person(
         name=name,
         email=None,
         org=org,
-        review_flag=True,
         open_threads=[thread_id],
     )
     # exclude={"email"}: MongoDB's sparse unique index on people.email (Task 3) only
@@ -426,7 +424,6 @@ def resolve_operator_person(
         org=None,
         org_id=None,
         type="operator",
-        review_flag=False,
         last_inbound=now if is_sender is True else None,
         last_outbound=now if is_sender is False else None,
         open_threads=[thread_id],

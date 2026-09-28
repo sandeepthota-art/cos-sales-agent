@@ -199,19 +199,16 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
 
     entry = results[0]
     assert entry["record_id"] == "1a08090646ebaa45"
-    assert entry["source_type"] == "gmail"
-    assert entry["source_link"] == "https://mail.google.com/mail/u/0/#all/1a08090646ebaa45"
     assert entry["date"] == "2026-09-13"
     assert entry["goal_pillar"] == "Sales"
     assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
-    assert isinstance(entry["confidence"], float)
     # John (sender) + the operator's own dedicated profile (Ashok, settings.agent_email).
     assert len(entry["entities_referenced"]["people"]) == 2
 
 
 def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_that_stage(db, settings):
     # An email that fails before ENTITIES_PROCESSED (or any pre-existing email document
-    # from before this feature existed) has none of the 8 entity-metadata keys. Direct
+    # from before this feature existed) has none of the 4 entity-metadata keys. Direct
     # key access on any of them would raise KeyError and crash the whole tool call,
     # hiding every email, not just the broken one.
     process_email(
@@ -229,12 +226,9 @@ def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_t
     assert entry["message_id"] == "msg_001"
     assert entry["processing_status"]["stage"] == "FAILED"
     assert entry["record_id"] is None
-    assert entry["source_type"] is None
-    assert entry["source_link"] is None
     assert entry["date"] is None
     assert entry["goal_pillar"] is None
     assert entry["label_applied"] is None
-    assert entry["confidence"] is None
     assert entry["entities_referenced"] == {
         "people": [],
         "projects": [],
@@ -252,7 +246,7 @@ def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_t
 def _raw_only_email(message_id, **overrides):
     # Shape mirrors what app.raw_ingestion.run_raw_file_ingestion actually stores:
     # a plain Email.model_dump() with no processing_status, no entities_referenced,
-    # no record_id/source_type/etc.
+    # no record_id/date/etc.
     doc = {
         "message_id": message_id,
         "thread_id": message_id,

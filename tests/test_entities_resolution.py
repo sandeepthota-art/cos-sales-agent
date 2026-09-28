@@ -56,7 +56,6 @@ def test_resolve_person_same_name_no_email_same_thread_reuses_person(db):
     assert first == second
     people = PersonRepository(db).find_many({})
     assert len(people) == 1
-    assert people[0]["review_flag"] is True
     # The "email" key must be OMITTED (not stored as null) for a no-email Person -- a
     # sparse unique index on real MongoDB only excludes a document where the field is
     # entirely missing, not one where it is present with value null. Storing "email": null
@@ -75,7 +74,6 @@ def test_resolve_person_same_name_no_email_different_thread_does_not_merge(db):
     assert first != second
     people = PersonRepository(db).find_many({})
     assert len(people) == 2
-    assert all(p["review_flag"] is True for p in people)
 
 
 def test_resolve_person_same_name_different_emails_creates_different_people(db):
@@ -114,7 +112,7 @@ def test_resolve_person_ambiguous_same_thread_candidates_are_never_silently_merg
         repo.upsert_by_key(
             {"id": existing_id},
             {
-                "id": existing_id, "name": "Sam Lee", "aliases": [], "org": None, "review_flag": True,
+                "id": existing_id, "name": "Sam Lee", "aliases": [], "org": None,
                 "source": "gmail", "open_threads": ["thread_1"],
             },
         )
@@ -830,8 +828,6 @@ def test_no_email_bare_nickname_is_not_sufficient_evidence_alone(db):
     assert new_id != anchor_id
     people = PersonRepository(db).find_many({})
     assert len(people) == 2
-    ash_record = next(p for p in people if p["id"] == new_id)
-    assert ash_record["review_flag"] is True
 
 
 def test_once_a_short_form_is_a_recorded_alias_a_repeat_mention_is_recognized(db):
@@ -961,8 +957,7 @@ def test_ambiguous_tier_2_match_never_guesses(db):
 
     people = PersonRepository(db).find_many({})
     assert len(people) == 3
-    new_record = next(p for p in people if p["id"] == ambiguous_id)
-    assert new_record["review_flag"] is True
+    assert ambiguous_id in {p["id"] for p in people}
 
 
 def test_resolve_organization_creates_one_canonical_org_per_domain(db):
@@ -1139,7 +1134,7 @@ def test_H_name_only_matching_remains_conservative_even_near_a_merged_person(db)
     # A brand-new, unrelated thread with no org and no shared thread evidence must
     # create its own record, never guess between the two "Sam"s.
     stored = PersonRepository(db).find_one({"id": orphan_id})
-    assert stored["review_flag"] is True
+    assert "email" not in stored
     assert PersonRepository(db).find_many({}).__len__() == 3
 
 
@@ -1194,4 +1189,4 @@ def test_ingestion_simulation_ambiguous_identity_takes_review_path(db):
     new_id = resolve_person(db, {"name": "Ambi Guous", "email": None, "org": "Shared Co"}, is_sender=None, now=_NOW, thread_id="t3")
 
     stored = PersonRepository(db).find_one({"id": new_id})
-    assert stored["review_flag"] is True
+    assert "email" not in stored

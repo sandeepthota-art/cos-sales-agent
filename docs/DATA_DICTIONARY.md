@@ -77,11 +77,25 @@ processing state, and its post-analysis classification.
 
 There is a Pydantic model for the raw side (`app.email.models.Email`), but the
 document actually stored in MongoDB has more fields than that model: `processing_status`,
-`record_id`, `source_type`, `source_link`, `date`, `entities_referenced`, `goal_pillar`,
-`label_applied`, `confidence`, and `priority` are all added later, by
+`record_id`, `date`, `entities_referenced`, `goal_pillar`,
+and `label_applied` are all added later, by
 `EmailRepository.set_stage`/`set_entity_metadata` (`app/database/repositories.py`), and
 appear in no single Pydantic model — `emails` is a composite of the `Email` model plus
 these repository-written fields.
+
+**Removed fields:** `confidence` and `priority` were removed from `EmailAnalysis`,
+`EmailRepository.set_entity_metadata`, and the `emails` document entirely (no longer
+extracted, computed, or persisted). This also removed the `priority` filter parameter
+from the `search_emails` MCP tool and the `"p1_emails"` category from the
+`whats_on_my_table` MCP tool's response. `source_type` and `source_link` were removed
+the same way (along with the now-unused `_GMAIL_INTERNAL_ID_PATTERN` regex that only
+ever existed to compute `source_link`) — nothing builds a Gmail web link or a
+`source_type` value anywhere in this codebase anymore. If you find any of these four
+fields in an older document in a live database, it is leftover from before these
+changes, not something current code still writes — see
+`scripts/remove_email_confidence_priority_fields.py` and
+`scripts/remove_email_source_type_and_link_fields.py` for the cleanup scripts that
+strip them from existing documents.
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
@@ -99,14 +113,10 @@ these repository-written fields.
 | `labels` | list[string] | No (defaults to `[]`) | Gmail label ids, plus (via `$addToSet`) the applied `label_applied` triage value once analysis completes | Gmail/source ingestion, then deterministic pipeline (appends `label_applied`) | `["INBOX", "Needs reply"]` |
 | `processing_status` | object `{stage, error, failed_stage, updated_at}` | Always present after first ingest | Current pipeline stage (see `ProcessingStage` enum: RECEIVED → VALIDATED → THREADED → ANALYZED → CONTEXT_BUILT → KNOWLEDGE_PROCESSED → ENTITIES_PROCESSED → REPLY_PROCESSED → MEETING_PROCESSED → COMPLETED, or FAILED at any point) plus the error if one occurred | Deterministic pipeline (`EmailRepository.set_stage`) | `{"stage": "COMPLETED", "error": null, "failed_stage": null, "updated_at": "2026-03-04T14:02:31Z"}` |
 | `record_id` | string | Set only once analysis completes | Currently always identical to `message_id` | Deterministic pipeline | `"18f2a9b1c3d4e5f6"` |
-| `source_type` | string | Set only once analysis completes | Currently always the literal string `"gmail"` — the only source type this codebase produces | Deterministic pipeline | `"gmail"` |
-| `source_link` | string \| null | Set only once analysis completes | A Gmail web link, built only when `message_id` matches a 16-hex-character pattern (a real Gmail internal id); `null` for anything else (e.g. test fixtures, non-Gmail ids) | Deterministic pipeline | `"https://mail.google.com/mail/u/0/#all/18f2a9b1c3d4e5f6"` |
 | `date` | string (date only, `YYYY-MM-DD`) | Set only once analysis completes | `timestamp`'s date component | Deterministic pipeline | `"2026-03-04"` |
 | `entities_referenced` | object, keys: `people`, `projects`, `commitments`, `follow_ups`, `meetings`, `personal`, `opportunities` | Set only once analysis completes | Canonical IDs of every record this email caused to be created or updated — the audit trail from an email back to everything it produced | Entity resolution | `{"people": ["PER-004"], "projects": ["PRJ-002"], "commitments": [], "follow_ups": [], "meetings": [], "personal": [], "opportunities": ["OPP-001"]}` |
-| `goal_pillar` | string (free text; only `"Sales"` has defined behavior) | Set only once analysis completes | Business category assigned to the email — see "Distinguishing `goal_pillar`, `label_applied`, and `confidence`" below | Claude Desktop analysis / internal LLM call | `"Sales"` |
+| `goal_pillar` | string (free text; only `"Sales"` has defined behavior) | Set only once analysis completes | Business category assigned to the email — see "Distinguishing `goal_pillar` and `label_applied`" below | Claude Desktop analysis / internal LLM call | `"Sales"` |
 | `label_applied` | string, one of: `"Needs reply: ASAP"`, `"Needs reply"`, `"Needs reply: mention"`, `"Read only"`, `"Delete"`, `"Undecided"` | Set only once analysis completes (defaults to `"Undecided"` in the schema if analysis omits it) | Six-way triage label — independent of `goal_pillar` (see below) | Claude Desktop analysis / internal LLM call | `"Needs reply"` |
-| `confidence` | float | Set only once analysis completes (defaults to `0.0`) | **The current code does not define what this number measures or what scale it is on, never compares it to a threshold anywhere, and no downstream code path reads this value back to make any decision.** See "Distinguishing `goal_pillar`, `label_applied`, and `confidence`" below | Claude Desktop analysis / internal LLM call | `0.85` |
-| `priority` | string, one of: `"P1"`, `"P2"` | Set only once analysis completes (defaults to `"P2"`) | Business priority; BRD gives no finer-grained rule than this two-way split | Claude Desktop analysis / internal LLM call | `"P2"` |
 
 ### Relationships
 
@@ -116,9 +126,9 @@ these repository-written fields.
 
 ---
 
-## Distinguishing `goal_pillar`, `label_applied`, and `confidence`
+## Distinguishing `goal_pillar` and `label_applied`
 
-These three fields all live on `emails` (and `goal_pillar` also appears on `people`,
+These two fields both live on `emails` (and `goal_pillar` also appears on `people`,
 `projects`, and `commitments`), get set at the same time by the same analysis step,
 and are easy to conflate. They are independent of one another:
 
@@ -132,14 +142,12 @@ and are easy to conflate. They are independent of one another:
   `"Needs reply"`, `"Needs reply: mention"`, `"Read only"`, `"Delete"`, `"Undecided"`).
   It is completely independent of `goal_pillar` — an email can be
   `goal_pillar="Sales"` and `label_applied="Read only"` at the same time.
-- **`confidence`** (on `emails`) — a float, default `0.0`. **The current code does not
-  define what this number measures, assigns it no semantic scale (it is never
-  documented as a probability, a percentage, or any calibrated unit), never compares
-  it to a threshold anywhere in this codebase, and no code path reads this value back
-  to make any downstream decision.** It is written once at analysis time and only
-  ever displayed afterward. This is a distinct field from `knowledge_items.confidence`,
-  which does have a code-defined update rule (starts at `0.75`, +0.01 per
-  re-confirmation, capped at `0.99`) — see the `knowledge_items` section below.
+
+`emails` no longer has a `confidence` or `priority` field at all (removed; see the
+note at the top of the `emails` section above). `knowledge_items.confidence` is an
+unrelated field on a different collection, with its own code-defined update rule
+(starts at `0.75`, +0.01 per re-confirmation, capped at `0.99`) — see the
+`knowledge_items` section below.
 
 **Also worth separating:** `context_snapshots.context.opportunity` (a free-form dict
 of deal notes on one thread, no fixed schema) is a completely different thing from the
@@ -207,8 +215,7 @@ Backend-only.
 deal notes on one thread** (e.g. `{"stage": "negotiating"}` — whatever the LLM/analysis
 puts there; the code does not constrain its shape). It is a **different thing** from
 the `opportunities` collection below, which is a structured, dedicated CRM record. See
-"Distinguishing `goal_pillar`, `label_applied`, and `confidence`" above for the full
-explanation.
+"Distinguishing `goal_pillar` and `label_applied`" above for the full explanation.
 
 ### Relationships
 
@@ -242,7 +249,7 @@ score and a full edit history, deduplicated per thread.
 | `basis` | string, one of: `"stated"`, `"inferred"` | Yes | Whether the fact was directly stated or inferred | Claude Desktop analysis / internal LLM call | `"stated"` |
 | `first_seen_at` | string (ISO datetime) | Yes | When this fact was first extracted | System-generated | `"2026-03-01T09:00:00Z"` |
 | `last_confirmed_at` | string (ISO datetime) | Yes | Most recent email that re-confirmed or updated this fact | Deterministic pipeline | `"2026-03-04T14:02:00Z"` |
-| `confidence` | float | Yes | **Code-defined scale, unlike `emails.confidence`:** starts at `0.75` on creation, and increases by `+0.01` (capped at `0.99`) every time the same fact is re-confirmed by a later email (`app.knowledge.deduplication._apply_update`). Never decreases | Deterministic pipeline | `0.78` |
+| `confidence` | float | Yes | **Code-defined scale:** starts at `0.75` on creation, and increases by `+0.01` (capped at `0.99`) every time the same fact is re-confirmed by a later email (`app.knowledge.deduplication._apply_update`). Never decreases | Deterministic pipeline | `0.78` |
 | `status` | string, declared as one of: `"active"`, `"contradicted"`, `"retracted"` | No (defaults to `"active"`) | **`"contradicted"` and `"retracted"` are declared in the model but no code path in this repository ever sets them — every `knowledge_items.status` in practice is `"active"`.** | (declared only; never set to anything but the default) | `"active"` |
 
 ### Relationships
@@ -327,6 +334,19 @@ persisted exactly as modeled.
 **Dashboard visibility:** every field in this table is shown on the People tab
 (`app/ui/dashboard.py:_render_people_tab`) — an unfiltered raw dump of the document.
 
+**Removed fields:** `reports_to`, `review_flag`, `role_in_pillar`, `tier`,
+`voice_register`, and `preferences` were removed from `Person` entirely. Four of
+these (`reports_to`, `role_in_pillar`, `tier`, `voice_register`) had never been
+written by any code path. `review_flag` was written (on a no-email Person) but
+never read back anywhere — removing it changes no behavior. `preferences` was
+genuinely load-bearing: it powered a per-person reply-drafting customization
+(`voice_signature`, `remove_long_dash`) read by `app.pipeline.run_pipeline`,
+`app.replies.drafter.draft_reply`, and both `ClaudeProvider.draft_reply` and
+`MockLLMProvider.draft_reply` — all of that plumbing was removed alongside the
+field, so reply drafts are no longer customizable per recipient. If you find any
+of these six fields in an older document in a live database, it is leftover from
+before this change — see `scripts/remove_people_legacy_fields.py`.
+
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
 | `id` | string | Yes | `PER-###` | System-generated (`app.entities.ids.next_id`) | `"PER-004"` |
@@ -337,17 +357,11 @@ persisted exactly as modeled.
 | `org_id` | string \| null | No | Canonical Organization, resolved by email domain only — never by company-name similarity | Entity resolution | `"ORG-002"` |
 | `type` | string \| null | No | Set to `"operator"` for the system's own configured mailbox; otherwise unset | Entity resolution | `"operator"` |
 | `goal_pillar` | string \| null | No | Not observed to be set by any current code path (field exists on the model; nothing in `app/pipeline.py` or `app/entities/resolution.py` writes it for a Person) | — | `null` |
-| `role_in_pillar` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `tier` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `voice_register` | string \| null | No | Not observed to be set by any current code path | — | `null` |
 | `last_inbound` | string (ISO datetime) \| null | No | Latest email known received FROM this person. Forward-only (never moves backward, regardless of processing order) | Entity resolution | `"2026-03-04T14:02:00Z"` |
 | `last_outbound` | string (ISO datetime) \| null | No | Latest email known sent TO this person. Forward-only | Entity resolution | `null` |
-| `reports_to` | string \| null | No | Not observed to be set by any current code path | — | `null` |
 | `open_threads` | list[string] | No (defaults to `[]`) | Every `thread_id` this person has been part of — append-only | Entity resolution | `["thread_18f2a9b1c3d4e5f6"]` |
 | `note_link` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `review_flag` | boolean | No (defaults to `false`) | `true` for a person created with no email at all (a lower-confidence identity resolution) | Entity resolution | `true` |
 | `source` | string | No (defaults to `"gmail"`) | Not observed to be set to anything else | System-generated | `"gmail"` |
-| `preferences` | object (free-form dict) | No (defaults to `{}`) | Per-person drafting preferences (e.g. `voice_signature`). **No extraction path writes this today — it is set manually only**, and is read by `app.replies.drafter.draft_reply` when generating a reply | Human-managed (no MCP tool exists to set it; would require direct database access) | `{}` |
 | `status` | string, values actually used: `"active"`, `"merged"` | No (defaults to `"active"`) | `"merged"` is set only by the (separately invoked, admin-only) duplicate-consolidation CLI (`app/duplicate_consolidation.py`), never by the live pipeline | Deterministic pipeline (admin CLI only) | `"active"` |
 | `merged_into` | string \| null | No | Set together with `status="merged"` — the canonical Person's id this record was consolidated into | Deterministic pipeline (admin CLI only) | `null` |
 
@@ -395,7 +409,7 @@ an unfiltered raw dump.
 | `project` | string | Yes | Project/deal name, as mentioned | Claude Desktop analysis / internal LLM call | `"DataBeat Q3 Rollout"` |
 | `cluster` | string \| null | No | Not observed to be set by any current code path | — | `null` |
 | `entity` | string \| null | No | Free-text company name (mirrors the LLM's `org` hint) | Claude Desktop analysis / internal LLM call | `"DataBeat"` |
-| `goal_pillar` | string \| null | No | Copied from the triggering email's `goal_pillar` — this is the field that (combined with a resolved project mention) gates Opportunity creation; see "Distinguishing `goal_pillar`, `label_applied`, and `confidence`" above | Claude Desktop analysis / internal LLM call | `"Sales"` |
+| `goal_pillar` | string \| null | No | Copied from the triggering email's `goal_pillar` — this is the field that (combined with a resolved project mention) gates Opportunity creation; see "Distinguishing `goal_pillar` and `label_applied`" above | Claude Desktop analysis / internal LLM call | `"Sales"` |
 | `objective` | string \| null | No | Not observed to be set by any current code path (the schema that feeds project creation, `MentionedProject`, has no `objective` field — only `objective_hint`, which is never copied across) | — | `null` |
 | `target` | string \| null | No | Not observed to be set by any current code path | — | `null` |
 | `status` | string \| null | No | Not observed to be set by any current code path | — | `null` |
@@ -431,9 +445,10 @@ merely because an email is Sales-classified.
 
 `Opportunity` (`app.entities.models.Opportunity`) is a full Pydantic model.
 
-**Dashboard visibility:** none. This entire collection is Backend-only — no tab in
-`app/ui/dashboard.py` reads it. It is reachable only through the `list_opportunities`/
-`update_opportunity_fields` MCP tools.
+**Dashboard visibility:** every field in this table is shown on the Opportunities tab
+(`app/ui/dashboard.py:_render_opportunities_tab`) — an unfiltered raw dump, read-only
+(no edit controls; the human-managed fields below are still settable only through the
+`update_opportunity_fields` MCP tool, never from the dashboard itself).
 
 **Automatic (pipeline-derived) fields** — written and updated exclusively by
 `app.entities.resolution.resolve_opportunity`, append-only, never touched by a human:

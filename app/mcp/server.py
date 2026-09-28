@@ -104,7 +104,7 @@ def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str
     by reading the email yourself. Accepts the exact same EmailAnalysis shape
     process_email's own internal LLM call produces -- see that schema's fields
     (people_mentioned, projects_mentioned, commitments_mentioned, meetings_mentioned,
-    personal_items_mentioned, goal_pillar, label_applied, confidence, etc.).
+    personal_items_mentioned, goal_pillar, label_applied, etc.).
 
     Before constructing `analysis`, explicitly decide whether this email represents
     a genuine sales opportunity/deal yourself -- never call an LLM API to do this.
@@ -185,11 +185,11 @@ def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
     timestamp, processing_status, the thread's current summary, and a body_preview
     truncated to about 150 characters. The full email body is never returned.
 
-    Each entry also includes record_id, source_type, source_link, date, goal_pillar,
-    label_applied, priority ("P1"/"P2"), confidence, and entities_referenced (a dict of
-    people/projects/commitments/follow_ups/meetings/personal id lists) -- these are
-    populated once the email reaches the ENTITIES_PROCESSED stage, and are None (or
-    empty lists, for entities_referenced) for an email that hasn't gotten there yet.
+    Each entry also includes record_id, date, goal_pillar, label_applied, and
+    entities_referenced (a dict of people/projects/commitments/
+    follow_ups/meetings/personal id lists) -- these are populated once the email
+    reaches the ENTITIES_PROCESSED stage, and are None (or empty lists, for
+    entities_referenced) for an email that hasn't gotten there yet.
     """
     return tools.list_processed_emails(_get_db(), limit)
 
@@ -199,17 +199,15 @@ def search_emails(
     from_email: str | None = None,
     subject_contains: str | None = None,
     label_applied: str | None = None,
-    priority: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """Search raw emails in the `emails` collection -- read-only, no LLM processing.
 
     Filters (all optional, AND-combined): from_email (exact sender address, case
     insensitive), subject_contains (case-insensitive substring), label_applied (exact
-    match), priority (exact match, "P1" or "P2"). Returns full email bodies, most
-    recent first, capped at `limit` (max 500).
+    match). Returns full email bodies, most recent first, capped at `limit` (max 500).
     """
-    return tools.search_emails(_get_db(), from_email, subject_contains, label_applied, priority, limit)
+    return tools.search_emails(_get_db(), from_email, subject_contains, label_applied, limit)
 
 
 @mcp.tool()
@@ -479,10 +477,10 @@ def ask_question(text: str, timezone: str | None = None) -> dict[str, Any]:
 @mcp.tool()
 def whats_on_my_table() -> dict[str, Any]:
     """BRD gap-analysis FR-02: one read-only call answering "What's on my table?" /
-    "What needs my attention today?" -- combines P1 emails, pending reply drafts,
-    overdue follow-ups (still outstanding, not resolved/dropped), upcoming
-    commitments, upcoming meetings, and active projects into one structured
-    response. Every key is always present (an empty list, never an omitted key),
+    "What needs my attention today?" -- combines pending reply drafts, overdue
+    follow-ups (still outstanding, not resolved/dropped), upcoming commitments,
+    upcoming meetings, and active projects into one structured response. Every key
+    is always present (an empty list, never an omitted key),
     and each category is computed independently -- a problem in one category can
     never affect another. Reuses existing repositories/query-layer functions
     exclusively; invents no data.

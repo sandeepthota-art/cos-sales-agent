@@ -79,28 +79,20 @@ class EmailRepository(_BaseRepository):
         self,
         message_id: str,
         record_id: str,
-        source_type: str,
-        source_link: str | None,
         date: str,
         entities_referenced: dict[str, list[str]],
         goal_pillar: str,
         label_applied: str,
-        confidence: float,
-        priority: str,
     ) -> None:
         self._collection.update_one(
             {"message_id": message_id},
             {
                 "$set": {
                     "record_id": record_id,
-                    "source_type": source_type,
-                    "source_link": source_link,
                     "date": date,
                     "entities_referenced": entities_referenced,
                     "goal_pillar": goal_pillar,
                     "label_applied": label_applied,
-                    "confidence": confidence,
-                    "priority": priority,
                 },
                 # `labels` (from the Email model) carries raw Gmail label IDs when
                 # ingestion supplies them (see providers.email.file.convert_gmail_message)

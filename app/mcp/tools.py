@@ -38,7 +38,6 @@ from app.interfaces.calendar_provider import CalendarProvider
 from app.interfaces.llm_provider import LLMProvider
 from app.knowledge_lookup import KnowledgeLookup
 from app.pipeline import (
-    _GMAIL_INTERNAL_ID_PATTERN,
     _link_knowledge_to_entities,
     _link_thread_to_entities,
     _process_entities,
@@ -328,22 +327,13 @@ def persist_email_analysis(
     entities_referenced = _process_entities(
         db, thread_id, email, analysis, reference_now, settings.agent_email, settings.agent_name
     )
-    source_link = (
-        f"https://mail.google.com/mail/u/0/#all/{message_id}"
-        if _GMAIL_INTERNAL_ID_PATTERN.match(message_id)
-        else None
-    )
     email_repo.set_entity_metadata(
         message_id=message_id,
         record_id=message_id,
-        source_type="gmail",
-        source_link=source_link,
         date=email.timestamp.date().isoformat(),
         entities_referenced=entities_referenced,
         goal_pillar=analysis.goal_pillar,
         label_applied=analysis.label_applied,
-        confidence=analysis.confidence,
-        priority=analysis.priority,
     )
     email_repo.set_stage(message_id, ProcessingStage.ENTITIES_PROCESSED.value)
 
@@ -551,8 +541,6 @@ def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]
                 "summary": summary_by_thread_id.get(thread_id),
                 "body_preview": email["body"][:_BODY_PREVIEW_LENGTH],
                 "record_id": email.get("record_id"),
-                "source_type": email.get("source_type"),
-                "source_link": email.get("source_link"),
                 "date": email.get("date"),
                 "entities_referenced": email.get(
                     "entities_referenced",
@@ -567,8 +555,6 @@ def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]
                 ),
                 "goal_pillar": email.get("goal_pillar"),
                 "label_applied": email.get("label_applied"),
-                "priority": email.get("priority"),
-                "confidence": email.get("confidence"),
             }
         )
 
@@ -580,7 +566,6 @@ def search_emails(
     from_email: str | None = None,
     subject_contains: str | None = None,
     label_applied: str | None = None,
-    priority: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """Read-only search over the `emails` collection. Never calls an LLM, never writes
@@ -596,8 +581,6 @@ def search_emails(
         query["subject"] = {"$regex": re.escape(subject_contains), "$options": "i"}
     if label_applied:
         query["label_applied"] = label_applied
-    if priority:
-        query["priority"] = priority
 
     emails = sorted(
         EmailRepository(db).find_many(query), key=lambda e: e["timestamp"], reverse=True
@@ -618,7 +601,6 @@ def search_emails(
             "body": e["body"],
             "processing_status": _safe_processing_status(e),
             "label_applied": e.get("label_applied"),
-            "priority": e.get("priority"),
         }
         for e in emails
     ]
@@ -1134,7 +1116,6 @@ def whats_on_my_table(db: Database, settings: Settings) -> dict[str, Any]:
     overdue = resolve_date_range(DateRangeKind.OVERDUE, now, tz)
     upcoming = resolve_date_range(DateRangeKind.UPCOMING, now, tz)
 
-    p1_emails = search_emails(db, priority="P1", limit=50)
     pending_replies = list_reply_drafts(db, status="awaiting_approval")
     overdue_follow_ups = retrieval.retrieve_follow_ups(db, date_range=overdue)
     commitments_due = retrieval.retrieve_commitments(db, date_range=upcoming)
@@ -1142,7 +1123,6 @@ def whats_on_my_table(db: Database, settings: Settings) -> dict[str, Any]:
     active_projects = list_projects(db)
 
     return {
-        "p1_emails": p1_emails,
         "pending_replies": pending_replies,
         "overdue_follow_ups": overdue_follow_ups,
         "commitments_due": commitments_due,

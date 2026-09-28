@@ -76,12 +76,3 @@ class EmailAnalysis(BaseModel):
     label_applied: Literal[
         "Needs reply: ASAP", "Needs reply", "Needs reply: mention", "Read only", "Delete", "Undecided"
     ] = "Undecided"
-    # BRD 6.1: "each message is tagged P1 or P2 for business priority." The BRD gives
-    # no finer-grained criteria than that (Section 12's own open-items list even names
-    # "whether P1/P2 replaces the six-label scheme or sits alongside it" as unresolved)
-    # -- no more specific rule is invented here. Defaults to "P2" (the lower-urgency
-    # value) rather than "P1", so an unclassified/failed-analysis email fails safe by
-    # under-flagging rather than over-flagging, matching "Undecided"'s own safe-default
-    # role for label_applied.
-    priority: Literal["P1", "P2"] = "P2"
-    confidence: float = 0.0
