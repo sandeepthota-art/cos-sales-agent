@@ -12,6 +12,7 @@ from app.database.repositories import (
     FollowUpRepository,
     KnowledgeRepository,
     MeetingRepository,
+    OpportunityRepository,
     OrganizationRepository,
     PersonalItemRepository,
     PersonRepository,
@@ -78,6 +79,10 @@ def list_organizations(db) -> list[dict]:
 
 def list_projects(db) -> list[dict]:
     return ProjectRepository(db).find_many({})
+
+
+def list_opportunities(db) -> list[dict]:
+    return OpportunityRepository(db).find_many({})
 
 
 def list_commitments(db) -> list[dict]:

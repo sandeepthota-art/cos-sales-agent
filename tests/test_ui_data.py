@@ -11,6 +11,7 @@ from app.database.repositories import (
     FollowUpRepository,
     KnowledgeRepository,
     MeetingRepository,
+    OpportunityRepository,
     OrganizationRepository,
     PersonalItemRepository,
     PersonRepository,
@@ -26,6 +27,7 @@ from app.ui.data import (
     list_follow_ups,
     list_knowledge,
     list_meetings,
+    list_opportunities,
     list_organizations,
     list_people,
     list_personal_items,
@@ -140,6 +142,12 @@ def test_list_projects_returns_stored_documents():
     db = _db()
     ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, {"id": "PRJ-001", "project": "Renewal Q4"})
     assert list_projects(db)[0]["project"] == "Renewal Q4"
+
+
+def test_list_opportunities_returns_stored_documents():
+    db = _db()
+    OpportunityRepository(db).upsert_by_key({"id": "OPP-001"}, {"id": "OPP-001", "name": "Renewal Q4 deal"})
+    assert list_opportunities(db)[0]["name"] == "Renewal Q4 deal"
 
 
 def test_list_commitments_returns_stored_documents():

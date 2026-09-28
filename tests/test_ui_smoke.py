@@ -62,6 +62,32 @@ def test_dashboard_app_runs_without_exceptions(monkeypatch):
     assert not at.exception
 
 
+def test_dashboard_shows_opportunities_tab_with_real_data(monkeypatch):
+    fake_client = mongomock.MongoClient()
+    db = fake_client["cos_sales_test"]
+    initialize_indexes(db)
+    db.opportunities.insert_one(
+        {
+            "id": "OPP-001", "name": "DataBeat Q3 Rollout", "entity": "DataBeat", "org_id": "ORG-001",
+            "description": None, "status": "open", "stage": None, "owner": None, "value": None,
+            "currency": None, "expected_close_date": None, "next_action": None,
+            "source_email_ids": [], "project_ids": ["PRJ-001"], "meeting_ids": [], "person_ids": [],
+            "buying_signals": [], "last_activity_at": "2026-09-13T10:00:00Z",
+            "created_at": "2026-09-13T10:00:00Z", "updated_at": "2026-09-13T10:00:00Z",
+        }
+    )
+
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+
+    assert not at.exception
+    opportunity_frames = [df.value for df in at.dataframe if "DataBeat Q3 Rollout" in df.value.to_string()]
+    assert len(opportunity_frames) == 1
+
+
 def test_dashboard_read_only_mode_hides_approval_buttons(monkeypatch):
     # Regression coverage for the public, friend-facing deployment: with
     # DASHBOARD_READ_ONLY=true, a real pending reply draft and a real pending

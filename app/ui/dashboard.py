@@ -49,6 +49,7 @@ from app.ui.data import (
     list_follow_ups,
     list_knowledge,
     list_meetings,
+    list_opportunities,
     list_organizations,
     list_people,
     list_personal_items,
@@ -97,6 +98,10 @@ def _render_organizations_tab(db) -> None:
 
 def _render_projects_tab(db) -> None:
     st.dataframe(list_projects(db), column_config=column_config_for("projects"))
+
+
+def _render_opportunities_tab(db) -> None:
+    st.dataframe(list_opportunities(db), column_config=column_config_for("opportunities"))
 
 
 def _render_commitments_tab(db) -> None:
@@ -276,6 +281,7 @@ def main() -> None:
             "People",
             "Organizations",
             "Projects",
+            "Opportunities",
             "Commitments",
             "Follow-ups",
             "Meetings",
@@ -298,22 +304,24 @@ def main() -> None:
     with tabs[4]:
         _render_projects_tab(db)
     with tabs[5]:
-        _render_commitments_tab(db)
+        _render_opportunities_tab(db)
     with tabs[6]:
-        _render_follow_ups_tab(db)
+        _render_commitments_tab(db)
     with tabs[7]:
-        _render_meetings_tab(db)
+        _render_follow_ups_tab(db)
     with tabs[8]:
-        _render_personal_items_tab(db)
+        _render_meetings_tab(db)
     with tabs[9]:
-        _render_thread_explorer_tab(db)
+        _render_personal_items_tab(db)
     with tabs[10]:
-        _render_context_evolution_tab(db)
+        _render_thread_explorer_tab(db)
     with tabs[11]:
-        _render_knowledge_tab(db)
+        _render_context_evolution_tab(db)
     with tabs[12]:
-        _render_reply_approval_tab(db, settings)
+        _render_knowledge_tab(db)
     with tabs[13]:
+        _render_reply_approval_tab(db, settings)
+    with tabs[14]:
         _render_calendar_approval_tab(db, settings)
 
 
