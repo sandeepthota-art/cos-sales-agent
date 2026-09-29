@@ -25,7 +25,7 @@ def _raw_email(message_id, body, subject="Enterprise CRM Proposal", **overrides)
 
 
 class _AlwaysBrokenLLM(LLMProvider):
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return {"summary": "not enough fields"}
 
     def update_context(self, previous_context, new_analysis):

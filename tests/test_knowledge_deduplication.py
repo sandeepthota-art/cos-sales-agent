@@ -21,7 +21,7 @@ class _StubLLM(LLMProvider):
     def __init__(self, verify_result: bool):
         self._verify_result = verify_result
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         raise NotImplementedError
 
     def update_context(self, previous_context, new_analysis):

@@ -182,7 +182,7 @@ class _NoPeopleLLM(LLMProvider):
     envelope-based resolution works entirely independently of what the LLM chooses to
     report."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return {
             "email_id": email.message_id, "summary": email.body[:200], "intent": "evaluation",
             "entities": [], "facts": [], "requirements": [], "pain_points": [],
@@ -210,7 +210,7 @@ class _MentionsSenderLLM(_NoPeopleLLM):
     envelope resolution independently resolves -- to prove the two paths converge on
     one Person, never two."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "John Explicit", "email": email.from_.email, "org": None, "role_hint": None}
@@ -366,7 +366,7 @@ class _SingleCommitmentLLM(_NoPeopleLLM):
     def __init__(self, commitment_class):
         self._commitment_class = commitment_class
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["commitments_mentioned"] = [
             {
@@ -484,7 +484,7 @@ class _ThirdPersonCommitmentLLM(_NoPeopleLLM):
     different name than _raw_email's default sender ("John") so the two never collide
     into an ambiguous same-name match (see match_resolved_person_by_name)."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Priya", "email": "priya@example.com", "org": None, "role_hint": None}
@@ -526,7 +526,7 @@ class _TwoDistinctCommitmentsLLM(_NoPeopleLLM):
     """Two commitments with different `what` text in one email -- must resolve to two
     distinct Commitment records, never merged into one."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["commitments_mentioned"] = [
             {
@@ -587,7 +587,7 @@ class _CommitmentWithProjectEvidenceLLM(_NoPeopleLLM):
     org matches that project's org -- the only evidence app.pipeline is allowed to use
     to link Commitment.project_id (never a fresh/guessed scan)."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Jane", "email": "jane@acme.com", "org": "Acme", "role_hint": None}
@@ -641,7 +641,7 @@ class _SalesProjectAndMeetingLLM(_NoPeopleLLM):
     SAME email -- for verifying an Opportunity picks up that email's own
     meeting via entities_referenced, never a retroactive scan."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["buying_signals"] = ["pricing request"]
         result["projects_mentioned"] = [{"name": "Acme Renewal", "org": "Acme", "objective_hint": None}]
@@ -656,7 +656,7 @@ class _NonSalesWithProjectEvidenceLLM(_CommitmentWithProjectEvidenceLLM):
     NOT Sales-classified -- proves a resolved Project alone is never enough to
     create an Opportunity without goal_pillar == 'Sales' too."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["goal_pillar"] = "Finance"
         return result
@@ -765,7 +765,7 @@ class _CommitmentWithAmbiguousProjectEvidenceLLM(_NoPeopleLLM):
     project-specific reference of its own, so nothing distinguishes which of the two
     the commitment actually belongs to."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Jane", "email": "jane@acme.com", "org": "Acme", "role_hint": None}
@@ -829,7 +829,7 @@ class _UnresolvedDatePhraseLLM(_NoPeopleLLM):
     """A commitment whose date phrase carries no recognizable date signal at all --
     the phrase itself is still preserved as evidence, but no date may be invented."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["commitments_mentioned"] = [
             {
@@ -888,7 +888,7 @@ class _OwedToMeFromLLM(_NoPeopleLLM):
         self._counterparty_email = counterparty_email
         self._date_phrase = date_phrase
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Counterparty", "email": self._counterparty_email, "org": None, "role_hint": None}
@@ -993,7 +993,7 @@ def test_pipeline_mine_commitment_never_gets_audience_or_timing(db, settings):
 
 
 class _SingleMeetingLLM(_NoPeopleLLM):
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["meetings_mentioned"] = [
             {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []}
@@ -1018,7 +1018,7 @@ class _TwoMeetingsOneMatchingDetectedDateLLM(_NoPeopleLLM):
     """Two meetings mentioned with different dates -- Friday (matching the real,
     regex-detected calendar action) and next Monday (which doesn't)."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["meetings_mentioned"] = [
             {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []},
@@ -1053,7 +1053,7 @@ class _TwoMeetingsAmbiguousLLM(_NoPeopleLLM):
     detect_meeting to pin down a real date/time (needs_clarification) -- there is no
     real detected date to match either candidate against."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["meetings_mentioned"] = [
             {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []},
@@ -1095,7 +1095,7 @@ class _CalendarInviteBodyRepeatsAttendeeNameLLM(_NoPeopleLLM):
     Vijender Reddy Pochampally"), with no email of its own -- exactly the shape a
     calendar invite's body produces."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Vijender Reddy Pochampally", "email": None, "org": None, "role_hint": None}
@@ -1131,7 +1131,7 @@ class _NoPeopleLLMWithMention(_NoPeopleLLM):
     def __init__(self, name):
         self._name = name
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [{"name": self._name, "email": None, "org": None, "role_hint": None}]
         return result
@@ -1160,7 +1160,7 @@ def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tie
     # for >1 candidate, so this must behave exactly as before the fix (new flagged
     # record), not silently attach to either.
     class _TwoRedditsLLM(_NoPeopleLLM):
-        def analyze_email(self, email):
+        def analyze_email(self, email, thread_history=None):
             result = super().analyze_email(email)
             result["people_mentioned"] = [
                 {"name": "Anil Reddy", "email": "anil@example.com", "org": None, "role_hint": None},
@@ -1200,7 +1200,7 @@ class _CalendarInviteBodyMentionsOperatorByNameLLM(_NoPeopleLLM):
     def __init__(self, name):
         self._name = name
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [{"name": self._name, "email": None, "org": None, "role_hint": None}]
         return result
@@ -1252,7 +1252,7 @@ def test_pipeline_mention_with_agent_email_links_to_operator_profile_regardless_
     # display name (e.g. a signature block) -- must still tie to the operator
     # profile by email, with no dependence on agent_name being configured at all.
     class _MentionsAgentEmailUnderOtherNameLLM(_NoPeopleLLM):
-        def analyze_email(self, email):
+        def analyze_email(self, email, thread_history=None):
             result = super().analyze_email(email)
             result["people_mentioned"] = [
                 {"name": "Ashok Ganapam Kumar", "email": "ashok@example.com", "org": None, "role_hint": None}

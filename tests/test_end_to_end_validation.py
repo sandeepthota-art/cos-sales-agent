@@ -73,7 +73,7 @@ class _ThirdPersonCommitmentLLM(LLMProvider):
     (resolve_commitment, not extraction) handles it correctly once given a properly
     shaped mention."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return {
             "email_id": email.message_id,
             "summary": email.body[:200],

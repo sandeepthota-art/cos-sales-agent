@@ -30,8 +30,9 @@ _NOT_SET = "Declared on the model; not currently set by any current code path."
 # that collection's documents.
 COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "emails": {
-        "message_id": "Unique id of the email (MongoDB dedup key).",
-        "thread_id": "Conversation thread this email belongs to.",
+        "id": "Internal human-readable email identifier (EML-nnn). Additive only -- never used for deduplication; message_id remains the canonical dedup key.",
+        "message_id": "Original source/Gmail message identifier. Used for deduplication and source traceability (MongoDB dedup key).",
+        "thread_id": "Existing resolved thread identifier this email belongs to. May be a source Gmail thread id, an inherited resolved id, or the application's synthetic fallback -- see the threads collection's own thread_id tooltip.",
         "from": "Sender name and email address.",
         "to": "Recipient name(s) and email address(es).",
         "cc": "CC'd recipient name(s) and email address(es).",

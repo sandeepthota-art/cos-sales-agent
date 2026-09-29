@@ -20,6 +20,7 @@ from app.database.repositories import (
     ThreadRepository,
 )
 from app.ui.data import (
+    _thread_display_label,
     dashboard_metrics,
     list_calendar_actions,
     list_commitments,
@@ -76,6 +77,35 @@ def test_list_emails_and_threads_return_stored_documents():
 
     assert list_emails(db)[0]["subject"] == "Hi"
     assert list_threads(db)[0]["thread_id"] == "t1"
+
+
+def test_list_emails_puts_id_message_id_thread_id_first_for_display():
+    db = _db()
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "msg_001"},
+        {"message_id": "msg_001", "subject": "Hi", "thread_id": "t1", "id": "EML-001"},
+    )
+
+    keys = list(list_emails(db)[0].keys())
+    assert keys[:3] == ["id", "message_id", "thread_id"]
+    assert "subject" in keys  # every other field still present, just not first
+
+
+def test_list_emails_handles_a_document_with_no_internal_id_yet():
+    db = _db()
+    EmailRepository(db).upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "subject": "Hi"})
+
+    email = list_emails(db)[0]
+    assert "id" not in email
+    assert list(email.keys())[0] == "message_id"
+
+
+def test_thread_display_label_shows_internal_id_with_source_id_alongside():
+    assert _thread_display_label({"id": "THR-001", "thread_id": "thread_msg_001"}) == "THR-001 (thread_msg_001)"
+
+
+def test_thread_display_label_falls_back_to_source_id_when_not_yet_backfilled():
+    assert _thread_display_label({"thread_id": "thread_msg_002"}) == "thread_msg_002"
 
 
 def test_thread_context_versions_ordered_ascending():

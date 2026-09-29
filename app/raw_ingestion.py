@@ -5,6 +5,7 @@ from app.database.repositories import EmailRepository, ThreadRepository
 from app.email.models import parse_email
 from app.email.normalizer import normalize_email
 from app.email.threading import resolve_thread_id
+from app.entities.ids import next_id
 from app.pipeline import _load_thread_candidates, _upsert_thread
 from app.providers.email.file import FileEmailProvider
 
@@ -68,14 +69,18 @@ def run_raw_file_ingestion(db: Database, input_path: str) -> RawIngestionSummary
             already_existed += 1
             continue
 
-        email_repo.upsert_by_key(
-            {"message_id": email.message_id}, email.model_dump(mode="json", by_alias=True)
-        )
+        document = email.model_dump(mode="json", by_alias=True)
+        # Guarded above (`if email_repo.find_one(...) is not None: continue`) --
+        # every email reaching this point is genuinely new, so an EML- id is always
+        # generated here, exactly once, via the same atomic next_id counter the
+        # AI-enriched pipeline uses.
+        document["id"] = next_id(db, "EML-")
+        email_repo.upsert_by_key({"message_id": email.message_id}, document)
         inserted += 1
 
         candidates = _load_thread_candidates(thread_repo)
         thread_id = resolve_thread_id(email, candidates)
-        _upsert_thread(thread_repo, thread_id, email)
+        _upsert_thread(thread_repo, thread_id, email, db)
         touched_thread_ids.add(thread_id)
 
     return RawIngestionSummary(

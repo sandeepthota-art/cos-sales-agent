@@ -118,7 +118,7 @@ class _SalesProjectLLM(LLMProvider):
     so it can't exercise this path; this double stands in for it, the same pattern
     tests/test_end_to_end_validation.py already uses."""
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return {
             "email_id": email.message_id, "summary": email.body[:200], "intent": "buying_signal",
             "entities": [], "facts": [], "requirements": [], "pain_points": [],

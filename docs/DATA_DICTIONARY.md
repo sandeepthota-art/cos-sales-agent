@@ -99,7 +99,8 @@ strip them from existing documents.
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
-| `message_id` | string | Yes | Unique id of the email (the Mongo dedup/upsert key; unique index) | Gmail/source ingestion | `"18f2a9b1c3d4e5f6"` |
+| `id` | string \| absent | Set for every email ingested after this field was introduced; absent on older documents until `scripts/backfill_email_thread_internal_ids.py` runs | **Internal, user-facing** human-readable email identifier (`EML-nnn`). Assigned exactly once, atomically, via the same `next_id()` counter every other internal id (`PER-nnn`, `PRJ-nnn`, ...) uses. Purely additive — never replaces `message_id`, never used for deduplication or as a foreign key anywhere else in the system | Deterministic pipeline (`app.pipeline.ingest_raw_email`) | `"EML-001"` |
+| `message_id` | string | Yes | **Original source/Gmail message identifier.** System-facing: the Mongo dedup/upsert key (unique index), and the value every other collection's reference/derived-id (`reply_drafts.reply_id`, `knowledge_items.source_emails`, `commitments.source_record`, etc.) is built from. Used for deduplication and source traceability back to the original Gmail message. Never renamed, replaced, or rewritten | Gmail/source ingestion | `"18f2a9b1c3d4e5f6"` |
 | `thread_id` | string \| null | No | Conversation thread id, if the source already supplied one (usually null on first ingest — see `threads` below for how it's actually resolved) | Gmail/source ingestion | `null` |
 | `from` | object `{name, email}` | Yes | Sender | Gmail/source ingestion | `{"name": "Ashok Ganapam", "email": "ashok@databeat.io"}` |
 | `to` | list[object] | Yes (list, may be empty) | Recipients | Gmail/source ingestion | `[{"name": null, "email": "me@company.com"}]` |
@@ -122,7 +123,8 @@ strip them from existing documents.
 
 - `entities_referenced.people/projects/commitments/follow_ups/meetings/personal/opportunities` → the `id` field of documents in `people`, `projects`, `commitments`, `follow_ups`, `meetings`, `personal_items`, `opportunities` respectively.
 - `message_id` is referenced by `threads.message_ids`, `context_snapshots.triggering_email_id`, `reply_drafts.source_email_id`, `knowledge_items.source_emails`, `commitments.source_record`.
-- Indexes: unique on `message_id`; non-unique on `processing_status.stage`.
+- `id` is never referenced by any other collection — it exists purely for human-facing display/traceability, not as a foreign key.
+- Indexes: unique on `message_id`; unique + sparse on `id` (sparse because a not-yet-backfilled document simply lacks the field); non-unique on `processing_status.stage`.
 
 ---
 
@@ -162,8 +164,9 @@ code links one to the other.
 **Purpose:** One row per resolved conversation thread — the grouping unit for
 context, knowledge, commitments, meetings, and canonical people/orgs.
 
-**Dashboard visibility:** only `thread_id` appears on the dashboard, as the entries
-of the Thread Explorer / Context Evolution thread-selector dropdown. `normalized_subject`,
+**Dashboard visibility:** `id` and `thread_id` both appear on the dashboard, as the
+entries of the Thread Explorer / Context Evolution thread-selector dropdown (shown
+together, e.g. `"THR-001 (thread_18f2a9b1c3d4e5f6)"`). `normalized_subject`,
 `participant_emails`, `message_ids`, `last_message_at`, `person_ids`, and `org_ids` are
 Backend-only — never displayed as values anywhere in `app/ui/dashboard.py`.
 
@@ -174,7 +177,8 @@ persisted.
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
-| `thread_id` | string | Yes | Unique thread id. Either copied from the email's own `thread_id` (if the source supplied one), matched from `in_reply_to`/`references`/subject+participants/participant+14-day-window heuristics, or synthesized as `thread_{message_id}` for the first email in a new thread | Deterministic pipeline (`app.email.threading.resolve_thread_id`) | `"thread_18f2a9b1c3d4e5f6"` |
+| `id` | string \| absent | Set for every thread created after this field was introduced; absent on older documents until `scripts/backfill_email_thread_internal_ids.py` runs | **Internal, user-facing** human-readable thread identifier (`THR-nnn`). Assigned exactly once, atomically, the moment a genuinely new thread is first created — never regenerated when a later message is added to an existing thread. Purely additive — never replaces `thread_id`, never used for deduplication or as a foreign key anywhere else | Deterministic pipeline (`app.pipeline._upsert_thread`) | `"THR-001"` |
+| `thread_id` | string | Yes | **Existing resolved thread identifier.** System-facing: the unique upsert key, and the value every other collection's `thread_id` field/derived-id (`knowledge_items.knowledge_id`, `calendar_actions.meeting_fingerprint`'s ambiguous fallback, etc.) is built from. May be a genuine source/Gmail thread id (if the source supplied one), a value inherited via `in_reply_to`/`references`/subject+participants/participant+14-day-window matching against an existing thread, **or the application's own synthetic fallback** `thread_{message_id}` when none of the above resolve anything — i.e. this field is not guaranteed to be an externally-traceable Gmail id even though it often is. Never renamed, replaced, or rewritten | Deterministic pipeline (`app.email.threading.resolve_thread_id`) | `"thread_18f2a9b1c3d4e5f6"` |
 | `normalized_subject` | string | Yes | De-duplicated subject line (case/prefix-normalized), used only for thread matching | Deterministic pipeline | `"pricing for q3"` |
 | `participant_emails` | list[string] (sorted) | Yes | Every email address that has posted (From/To/CC) in this thread | Deterministic pipeline | `["ashok@databeat.io", "me@company.com"]` |
 | `message_ids` | list[string] (sorted) | Yes | Every `message_id` in this thread | Deterministic pipeline | `["18f2a9b1c3d4e5f6"]` |
@@ -186,7 +190,8 @@ persisted.
 
 - `thread_id` is referenced by `emails.thread_id`, `context_snapshots.thread_id`, `knowledge_items.thread_id`, `commitments.thread_id`, `follow_ups.thread_id`, `meetings.thread_id`, `reply_drafts.thread_id`, `calendar_actions.thread_id`.
 - `person_ids`/`org_ids` → `people.id` / `organizations.id`.
-- Index: unique on `thread_id`. (`entity_migration.py`'s optional, never-auto-run "indexes" stage additionally recommends non-unique indexes on `person_ids`/`org_ids` — not created by default; see `migration_runs` below.)
+- `id` is never referenced by any other collection — purely for human-facing display/traceability.
+- Index: unique on `thread_id`; unique + sparse on `id`. (`entity_migration.py`'s optional, never-auto-run "indexes" stage additionally recommends non-unique indexes on `person_ids`/`org_ids` — not created by default; see `migration_runs` below.)
 
 ---
 

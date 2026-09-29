@@ -113,6 +113,27 @@ def test_ingest_email_persists_raw_email_and_resolves_thread(db):
     assert "msg_001" in thread["message_ids"]
 
 
+def test_ingest_email_returns_human_readable_internal_ids_for_a_new_email(db):
+    result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+
+    assert result["email_internal_id"] == "EML-001"
+    assert result["thread_internal_id"] == "THR-001"
+    # Source/dedup identifiers stay exactly as returned before this feature existed.
+    assert result["message_id"] == "msg_001"
+    assert result["thread_id"] == "thread_msg_001"
+
+
+def test_ingest_email_returns_internal_ids_for_an_already_completed_email_too(db, settings):
+    raw = _raw_email("msg_001", "We currently use Salesforce.")
+    tools.process_email(db, parse_email(raw), MockLLMProvider(), MockCalendarProvider(), settings)
+
+    result = tools.ingest_email(db, parse_email(raw))
+
+    assert result["already_completed"] is True
+    assert result["email_internal_id"] is not None
+    assert result["thread_internal_id"] is not None
+
+
 def test_ingest_email_never_calls_llm(db, no_llm_construction):
     # No settings/llm_provider parameter even exists on this tool -- this proves it
     # regardless, using the same proof mechanism as the other tools' tests.
@@ -132,6 +153,26 @@ def test_ingest_email_skips_an_already_completed_email_without_reprocessing(db, 
     assert after_count == before_count  # no duplicate email document created
     stored = EmailRepository(db).find_one({"message_id": "msg_001"})
     assert stored["processing_status"]["stage"] == "COMPLETED"  # not reset/downgraded
+
+
+def test_ingest_email_returns_empty_thread_timeline_for_a_threads_first_message(db):
+    result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+
+    assert result["thread_timeline"] == []
+
+
+def test_ingest_email_returns_prior_messages_in_thread_timeline_excluding_itself(db, settings):
+    first = _raw_email("msg_001", "We currently use Salesforce.")
+    tools.process_email(db, parse_email(first), MockLLMProvider(), MockCalendarProvider(), settings)
+
+    second = _raw_email(
+        "msg_002", "Following up on Salesforce pricing.", timestamp="2026-09-14T10:30:00Z",
+        in_reply_to="msg_001", references=["msg_001"],
+    )
+    result = tools.ingest_email(db, parse_email(second))
+
+    assert [m["message_id"] for m in result["thread_timeline"]] == ["msg_001"]
+    assert result["thread_timeline"][0]["body"] == "We currently use Salesforce."
 
 
 def test_ingest_email_returns_previous_context_for_an_existing_thread(db, settings):

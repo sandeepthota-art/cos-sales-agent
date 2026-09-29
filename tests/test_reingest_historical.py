@@ -186,7 +186,7 @@ def test_main_refuses_without_yes(monkeypatch):
 
 
 class _SalesProjectLLM(LLMProvider):
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return {
             "email_id": email.message_id, "summary": email.body[:200], "intent": "buying_signal",
             "entities": [], "facts": [], "requirements": [], "pain_points": [],

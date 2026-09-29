@@ -39,7 +39,7 @@ class _ListEmailProvider(EmailProvider):
 
 
 class _AlwaysBrokenLLM(LLMProvider):
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return {"summary": "not enough fields"}
 
     def update_context(self, previous_context, new_analysis):
@@ -61,7 +61,7 @@ class _RaisesOnUpdateContextForLLM(LLMProvider):
         self._base = MockLLMProvider()
         self._failing_email_id = failing_email_id
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return self._base.analyze_email(email)
 
     def update_context(self, previous_context, new_analysis):
@@ -85,7 +85,7 @@ class _CompanyRevealingLLM(LLMProvider):
         self._base = MockLLMProvider()
         self._call_count = 0
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         return self._base.analyze_email(email)
 
     def update_context(self, previous_context, new_analysis):

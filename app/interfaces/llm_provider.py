@@ -6,7 +6,12 @@ from app.email.models import Email
 
 class LLMProvider(ABC):
     @abstractmethod
-    def analyze_email(self, email: Email) -> dict[str, Any]:
+    def analyze_email(self, email: Email, thread_history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """thread_history (optional): every prior message in this email's thread,
+        oldest first, capped to the most recent 20 (see app.pipeline.build_thread_timeline)
+        -- purely additive context so the model understands what the newest message
+        is replying to. None/empty for a thread's first message. A provider that has
+        no use for it (e.g. a pure-regex mock) may simply ignore the parameter."""
         ...
 
     @abstractmethod

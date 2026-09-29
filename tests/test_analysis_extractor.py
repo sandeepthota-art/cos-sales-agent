@@ -10,7 +10,7 @@ class _BrokenLLM(LLMProvider):
         self._payloads = bad_payloads
         self._calls = 0
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         payload = self._payloads[min(self._calls, len(self._payloads) - 1)]
         self._calls += 1
         return payload
@@ -36,7 +36,7 @@ class _JSONFailingLLM(LLMProvider):
         self._outcomes = outcomes
         self.call_count = 0
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         outcome = self._outcomes[min(self.call_count, len(self._outcomes) - 1)]
         self.call_count += 1
         if outcome == "raise":

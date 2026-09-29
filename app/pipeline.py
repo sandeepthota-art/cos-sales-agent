@@ -30,6 +30,7 @@ from app.email.normalizer import normalize_email, normalize_subject
 from app.email.threading import ThreadCandidate, resolve_thread_id
 from app.entities.dates import classify_follow_up_timing, resolve_date_phrase
 from app.entities.extraction import envelope_people
+from app.entities.ids import next_id
 from app.entities.resolution import (
     derive_follow_up,
     match_resolved_person_by_name,
@@ -82,7 +83,13 @@ def _load_thread_candidates(thread_repo: ThreadRepository) -> list[ThreadCandida
     return candidates
 
 
-def _upsert_thread(thread_repo: ThreadRepository, thread_id: str, email: Email) -> None:
+def _upsert_thread(thread_repo: ThreadRepository, thread_id: str, email: Email, db: Database) -> None:
+    """Human-readable internal id (`THR-nnn`): assigned exactly once, only when this
+    thread doc doesn't exist yet -- generated via the existing atomic next_id counter,
+    never regenerated on a later message added to the same thread. This is purely
+    additive: `thread_id` (the resolved/source/synthetic thread identifier -- see
+    app.email.threading.resolve_thread_id) is never renamed, replaced, or rewritten.
+    """
     existing = thread_repo.find_one({"thread_id": thread_id})
     participant_emails = set(existing["participant_emails"]) if existing else set()
     message_ids = set(existing["message_ids"]) if existing else set()
@@ -95,19 +102,19 @@ def _upsert_thread(thread_repo: ThreadRepository, thread_id: str, email: Email) 
         existing_last = datetime.fromisoformat(existing["last_message_at"])
         last_message_at = max(last_message_at, existing_last)
 
-    thread_repo.upsert_by_key(
-        {"thread_id": thread_id},
-        {
-            "thread_id": thread_id,
-            "normalized_subject": existing["normalized_subject"] if existing else normalize_subject(email.subject),
-            "participant_emails": sorted(participant_emails),
-            "message_ids": sorted(message_ids),
-            "last_message_at": last_message_at.isoformat(),
-        },
-    )
+    document = {
+        "thread_id": thread_id,
+        "normalized_subject": existing["normalized_subject"] if existing else normalize_subject(email.subject),
+        "participant_emails": sorted(participant_emails),
+        "message_ids": sorted(message_ids),
+        "last_message_at": last_message_at.isoformat(),
+    }
+    if existing is None:
+        document["id"] = next_id(db, "THR-")
+    thread_repo.upsert_by_key({"thread_id": thread_id}, document)
 
 
-def ingest_raw_email(email_repo: EmailRepository, email: Email) -> tuple[Email, bool]:
+def ingest_raw_email(email_repo: EmailRepository, email: Email, db: Database) -> tuple[Email, bool]:
     """Normalizes the email and applies the existing message_id + COMPLETED duplicate
     guard; if not a duplicate, persists the raw email and advances it through
     RECEIVED/VALIDATED. Returns (normalized_email, already_completed).
@@ -115,6 +122,12 @@ def ingest_raw_email(email_repo: EmailRepository, email: Email) -> tuple[Email, 
     Shared by run_pipeline's per-email loop and app.mcp.tools.ingest_email, so the
     exact same duplicate-detection/raw-persistence behavior is never duplicated
     between the two entry points.
+
+    Human-readable internal id (`EML-nnn`): assigned exactly once, only for a
+    document that doesn't exist yet -- generated via the existing atomic next_id
+    counter, never regenerated on a retry of a not-yet-completed email. Purely
+    additive: `message_id` (the source/Gmail id, the canonical dedup key) is never
+    renamed, replaced, or rewritten.
     """
     email = normalize_email(email)
 
@@ -122,24 +135,74 @@ def ingest_raw_email(email_repo: EmailRepository, email: Email) -> tuple[Email, 
     if existing and existing.get("processing_status", {}).get("stage") == ProcessingStage.COMPLETED.value:
         return email, True
 
-    email_repo.upsert_by_key(
-        {"message_id": email.message_id}, email.model_dump(mode="json", by_alias=True)
-    )
+    document = email.model_dump(mode="json", by_alias=True)
+    if existing is None:
+        document["id"] = next_id(db, "EML-")
+    email_repo.upsert_by_key({"message_id": email.message_id}, document)
     email_repo.set_stage(email.message_id, ProcessingStage.RECEIVED.value)
     email_repo.set_stage(email.message_id, ProcessingStage.VALIDATED.value)
     return email, False
 
 
-def resolve_and_persist_thread(thread_repo: ThreadRepository, email_repo: EmailRepository, email: Email) -> str:
+def resolve_and_persist_thread(
+    thread_repo: ThreadRepository, email_repo: EmailRepository, email: Email, db: Database
+) -> str:
     """Resolves/upserts the thread this email belongs to and advances it to THREADED.
 
     Shared by run_pipeline and app.mcp.tools.ingest_email.
     """
     candidates = _load_thread_candidates(thread_repo)
     thread_id = resolve_thread_id(email, candidates)
-    _upsert_thread(thread_repo, thread_id, email)
+    _upsert_thread(thread_repo, thread_id, email, db)
     email_repo.set_stage(email.message_id, ProcessingStage.THREADED.value)
     return thread_id
+
+
+_THREAD_TIMELINE_LIMIT = 20
+
+
+def build_thread_timeline(
+    email_repo: EmailRepository,
+    thread_repo: ThreadRepository,
+    thread_id: str,
+    exclude_message_id: str | None = None,
+    limit: int = _THREAD_TIMELINE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Every OTHER message in this thread (i.e. excluding exclude_message_id, the
+    triggering email itself), chronologically ordered (oldest first), capped to
+    the most recent `limit`. Purely additive context for the classification step
+    -- separate from, and never a replacement for, the existing rolling
+    context_snapshot, which continues to work unchanged.
+
+    exclude_message_id must be the triggering email's own message_id -- passing it
+    is what keeps the returned history strictly PRIOR messages, never duplicating
+    the same email the caller is about to show the model separately as
+    Subject/Body. Returns [] for a thread's first message (nothing prior exists).
+
+    Reuses the same message_ids -> emails lookup app.mcp.tools.get_thread already
+    performs, just without that tool's context_snapshot/labels enrichment (not
+    needed for a prompt-input timeline).
+    """
+    thread = thread_repo.find_one({"thread_id": thread_id})
+    if thread is None:
+        return []
+
+    other_message_ids = [m for m in thread["message_ids"] if m != exclude_message_id]
+    emails = sorted(
+        email_repo.find_many({"message_id": {"$in": other_message_ids}}),
+        key=lambda e: e["timestamp"],
+    )
+    capped = emails[-limit:] if limit else emails
+    return [
+        {
+            "message_id": e["message_id"],
+            "from": e["from"],
+            "timestamp": e["timestamp"],
+            "subject": e["subject"],
+            "body": e["body"],
+        }
+        for e in capped
+    ]
 
 
 def _process_knowledge(
@@ -597,7 +660,7 @@ def run_pipeline(
                 )
             continue
 
-        email, already_completed = ingest_raw_email(email_repo, email)
+        email, already_completed = ingest_raw_email(email_repo, email, db)
         if already_completed:
             results.append(EmailResult(message_id=email.message_id, final_stage="SKIPPED"))
             continue
@@ -614,11 +677,14 @@ def run_pipeline(
         stage_started = time.perf_counter()
         thread_id_for_logging: str | None = None
         try:
-            thread_id = resolve_and_persist_thread(thread_repo, email_repo, email)
+            thread_id = resolve_and_persist_thread(thread_repo, email_repo, email, db)
             thread_id_for_logging = thread_id
+            thread_timeline = build_thread_timeline(
+                email_repo, thread_repo, thread_id, exclude_message_id=email.message_id
+            )
 
             current_stage = ProcessingStage.ANALYZED
-            outcome = analyze_email_with_validation(llm_provider, email)
+            outcome = analyze_email_with_validation(llm_provider, email, thread_history=thread_timeline)
             if not outcome.success:
                 email_repo.set_stage(
                     email.message_id,

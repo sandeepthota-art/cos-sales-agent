@@ -36,12 +36,37 @@ def dashboard_metrics(db) -> dict:
     }
 
 
+def _with_priority_keys_first(doc: dict, priority_keys: tuple[str, ...]) -> dict:
+    """Reorders a dict so `priority_keys` (that exist in `doc`) come first, with
+    every other key following in its original order. Streamlit's dataframe column
+    order follows the underlying data's own key order (see column_descriptions.py's
+    column_config_for docstring) -- this is how the dashboard's Emails tab shows the
+    human-readable `id` as the primary, leftmost identifier while still displaying
+    every other field unchanged, rather than hiding anything via column_order.
+    """
+    ordered = {key: doc[key] for key in priority_keys if key in doc}
+    ordered.update(doc)
+    return ordered
+
+
 def list_emails(db) -> list[dict]:
-    return EmailRepository(db).find_many({})
+    return [
+        _with_priority_keys_first(doc, ("id", "message_id", "thread_id"))
+        for doc in EmailRepository(db).find_many({})
+    ]
 
 
 def list_threads(db) -> list[dict]:
     return ThreadRepository(db).find_many({})
+
+
+def _thread_display_label(thread: dict) -> str:
+    """THR-xxx is the primary, human-readable label; the raw thread_id (a source
+    Gmail thread id, an inherited resolved id, or the application's synthetic
+    fallback -- see docs/DATA_DICTIONARY.md) stays visible alongside it for
+    traceability, never removed. Falls back to the raw id alone for a thread that
+    predates this feature and hasn't been backfilled with an `id` yet."""
+    return f"{thread['id']} ({thread['thread_id']})" if thread.get("id") else thread["thread_id"]
 
 
 def thread_context_versions(db, thread_id: str) -> list[dict]:

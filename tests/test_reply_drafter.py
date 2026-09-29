@@ -22,7 +22,7 @@ class _JSONFailingLLM(LLMProvider):
         self._outcomes = outcomes
         self.call_count = 0
 
-    def analyze_email(self, email):
+    def analyze_email(self, email, thread_history=None):
         raise NotImplementedError
 
     def update_context(self, previous_context, new_analysis):

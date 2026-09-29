@@ -4,8 +4,14 @@ from pymongo.database import Database
 def initialize_indexes(db: Database) -> None:
     db.emails.create_index("message_id", unique=True)
     db.emails.create_index("processing_status.stage")
+    # Sparse: a pre-existing document that hasn't been backfilled with the new
+    # human-readable EML- id yet (see scripts/backfill_email_thread_internal_ids.py)
+    # simply lacks the field -- a sparse unique index lets any number of documents
+    # omit it, while still enforcing uniqueness among documents that do have it.
+    db.emails.create_index("id", unique=True, sparse=True)
 
     db.threads.create_index("thread_id", unique=True)
+    db.threads.create_index("id", unique=True, sparse=True)
 
     db.context_snapshots.create_index(
         [("thread_id", 1), ("triggering_email_id", 1)], unique=True

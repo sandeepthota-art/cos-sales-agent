@@ -42,6 +42,7 @@ from app.pipeline import (
     _link_thread_to_entities,
     _process_entities,
     _process_knowledge,
+    build_thread_timeline,
     ingest_raw_email,
     resolve_and_persist_thread,
     run_pipeline,
@@ -246,30 +247,54 @@ def ingest_email(db: Database, email: Email) -> dict[str, Any]:
     bother reasoning about this email at all: if already_completed is true, the
     662-historical-email baseline (and any other previously completed email) is
     reported back untouched rather than reprocessed.
+
+    email_internal_id/thread_internal_id are the human-readable EML-nnn/THR-nnn ids
+    (None only for a thread/email that predates this feature and hasn't been
+    backfilled yet) -- purely additive traceability alongside message_id/thread_id,
+    which remain the canonical source/dedup identifiers and are never replaced.
+
+    thread_timeline (only present when already_completed is False) is every PRIOR
+    message in this thread, oldest first, capped to the most recent 20 -- read this
+    before reasoning about the new email so the classification reflects what it's
+    actually replying to, not just its own isolated content. Empty for a thread's
+    first message. Separate from, and in addition to, previous_context (the
+    existing compressed rolling summary) -- neither replaces the other.
     """
     email_repo = EmailRepository(db)
     thread_repo = ThreadRepository(db)
     context_repo = ContextSnapshotRepository(db)
 
-    normalized, already_completed = ingest_raw_email(email_repo, email)
+    normalized, already_completed = ingest_raw_email(email_repo, email, db)
 
     if already_completed:
         thread_id = _thread_id_index(db).get(normalized.message_id)
         snapshot = context_repo.latest_for_thread(thread_id) if thread_id else None
+        stored_email = email_repo.find_one({"message_id": normalized.message_id})
+        stored_thread = thread_repo.find_one({"thread_id": thread_id}) if thread_id else None
         return {
             "message_id": normalized.message_id,
             "thread_id": thread_id,
             "already_completed": True,
             "previous_context": snapshot["context"] if snapshot else None,
+            "email_internal_id": stored_email.get("id") if stored_email else None,
+            "thread_internal_id": stored_thread.get("id") if stored_thread else None,
         }
 
-    thread_id = resolve_and_persist_thread(thread_repo, email_repo, normalized)
+    thread_id = resolve_and_persist_thread(thread_repo, email_repo, normalized, db)
     snapshot = context_repo.latest_for_thread(thread_id)
+    stored_email = email_repo.find_one({"message_id": normalized.message_id})
+    stored_thread = thread_repo.find_one({"thread_id": thread_id})
+    thread_timeline = build_thread_timeline(
+        email_repo, thread_repo, thread_id, exclude_message_id=normalized.message_id
+    )
     return {
         "message_id": normalized.message_id,
         "thread_id": thread_id,
         "already_completed": False,
         "previous_context": snapshot["context"] if snapshot else None,
+        "thread_timeline": thread_timeline,
+        "email_internal_id": stored_email.get("id") if stored_email else None,
+        "thread_internal_id": stored_thread.get("id") if stored_thread else None,
     }
 
 

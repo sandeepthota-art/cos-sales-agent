@@ -6,6 +6,7 @@ import anthropic
 
 from app.email.models import Email
 from app.interfaces.llm_provider import LLMProvider
+from app.providers.llm.thread_history import format_thread_history
 
 # Claude sometimes wraps its JSON reply in a markdown code fence (```json ... ``` or
 # plain ``` ... ```) even when told "JSON only" -- this pattern strips that fence, if
@@ -151,10 +152,10 @@ class ClaudeProvider(LLMProvider):
         text = "".join(block.text for block in response.content if hasattr(block, "text"))
         return _extract_json(text)
 
-    def analyze_email(self, email: Email) -> dict[str, Any]:
+    def analyze_email(self, email: Email, thread_history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         result = self._complete_json(
             _ANALYSIS_INSTRUCTIONS,
-            f"Subject: {email.subject}\n\nBody:\n{email.body}",
+            f"{format_thread_history(thread_history)}Subject: {email.subject}\n\nBody:\n{email.body}",
         )
         result.setdefault("email_id", email.message_id)
         return result

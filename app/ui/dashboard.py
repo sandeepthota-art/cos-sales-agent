@@ -42,6 +42,7 @@ from app.ui.column_descriptions import (
     field_help,
 )
 from app.ui.data import (
+    _thread_display_label,
     dashboard_metrics,
     list_calendar_actions,
     list_commitments,
@@ -122,11 +123,14 @@ def _render_personal_items_tab(db) -> None:
 
 def _render_thread_explorer_tab(db) -> None:
     threads = list_threads(db)
-    thread_ids = [t["thread_id"] for t in threads]
-    if not thread_ids:
+    if not threads:
         st.info("No threads yet.")
         return
-    selected = st.selectbox("Thread", thread_ids, help=field_help("context_snapshots", "thread_id"))
+    label_to_thread_id = {_thread_display_label(t): t["thread_id"] for t in threads}
+    selected_label = st.selectbox(
+        "Thread", list(label_to_thread_id.keys()), help=field_help("context_snapshots", "thread_id")
+    )
+    selected = label_to_thread_id[selected_label]
     for snapshot in thread_context_versions(db, selected):
         with st.expander(f"Context V{snapshot['context_version']} (triggered by {snapshot['triggering_email_id']})"):
             st.caption("Context", help=field_help("context_snapshots", "context"))
@@ -138,14 +142,15 @@ def _render_thread_explorer_tab(db) -> None:
 
 def _render_context_evolution_tab(db) -> None:
     threads = list_threads(db)
-    thread_ids = [t["thread_id"] for t in threads]
-    if not thread_ids:
+    if not threads:
         st.info("No threads yet.")
         return
-    selected = st.selectbox(
-        "Thread ", thread_ids, key="context_evolution_thread",
+    label_to_thread_id = {_thread_display_label(t): t["thread_id"] for t in threads}
+    selected_label = st.selectbox(
+        "Thread ", list(label_to_thread_id.keys()), key="context_evolution_thread",
         help=field_help("context_snapshots", "thread_id"),
     )
+    selected = label_to_thread_id[selected_label]
     versions = thread_context_versions(db, selected)
     st.markdown(
         " -> ".join(f"V{v['context_version']}" for v in versions),

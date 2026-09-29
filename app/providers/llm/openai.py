@@ -6,6 +6,7 @@ from openai import OpenAI
 from app.email.models import Email
 from app.interfaces.llm_provider import LLMProvider
 from app.providers.llm.claude import _ANALYSIS_INSTRUCTIONS, _UPDATE_CONTEXT_INSTRUCTIONS
+from app.providers.llm.thread_history import format_thread_history
 
 
 class OpenAIProvider(LLMProvider):
@@ -25,9 +26,10 @@ class OpenAIProvider(LLMProvider):
         )
         return json.loads(response.choices[0].message.content)
 
-    def analyze_email(self, email: Email) -> dict[str, Any]:
+    def analyze_email(self, email: Email, thread_history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         result = self._complete_json(
-            _ANALYSIS_INSTRUCTIONS, f"Subject: {email.subject}\n\nBody:\n{email.body}"
+            _ANALYSIS_INSTRUCTIONS,
+            f"{format_thread_history(thread_history)}Subject: {email.subject}\n\nBody:\n{email.body}",
         )
         result.setdefault("email_id", email.message_id)
         return result

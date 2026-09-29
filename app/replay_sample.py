@@ -44,8 +44,8 @@ class _AnalysisLoggingLLMProvider(LLMProvider):
     def __init__(self, inner: LLMProvider):
         self._inner = inner
 
-    def analyze_email(self, email: Email) -> dict[str, Any]:
-        result = self._inner.analyze_email(email)
+    def analyze_email(self, email: Email, thread_history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        result = self._inner.analyze_email(email, thread_history=thread_history)
         print(f"  --- raw LLM analysis: {email.message_id} ({email.subject!r}) ---")
         print(f"      goal_pillar={result.get('goal_pillar')!r} intent={result.get('intent')!r}")
         print(f"      projects_mentioned={result.get('projects_mentioned')!r}")

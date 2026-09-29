@@ -84,6 +84,44 @@ def test_complete_json_still_parses_unfenced_response(monkeypatch):
     assert result == {"summary": "ok"}
 
 
+def test_analyze_email_with_no_thread_history_omits_prior_messages_block(monkeypatch):
+    provider = ClaudeProvider(api_key="fake-key", model="claude-sonnet-5")
+    captured_kwargs = {}
+
+    def fake_create(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _fake_response('{"summary": "ok"}')
+
+    monkeypatch.setattr(provider._client.messages, "create", fake_create)
+
+    provider.analyze_email(_email())
+
+    user_content = captured_kwargs["messages"][0]["content"]
+    assert "Prior messages" not in user_content
+    assert user_content.startswith("Subject: Enterprise pricing")
+
+
+def test_analyze_email_with_thread_history_prepends_it_before_subject_body(monkeypatch):
+    provider = ClaudeProvider(api_key="fake-key", model="claude-sonnet-5")
+    captured_kwargs = {}
+
+    def fake_create(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _fake_response('{"summary": "ok"}')
+
+    monkeypatch.setattr(provider._client.messages, "create", fake_create)
+
+    thread_history = [
+        {"from": {"name": "Jane"}, "timestamp": "2026-09-12T10:00:00Z", "subject": "Enterprise pricing", "body": "We currently use Salesforce."}
+    ]
+    provider.analyze_email(_email(), thread_history=thread_history)
+
+    user_content = captured_kwargs["messages"][0]["content"]
+    assert "Prior messages in this thread" in user_content
+    assert "We currently use Salesforce." in user_content
+    assert user_content.index("We currently use Salesforce.") < user_content.index("Subject: Enterprise pricing")
+
+
 def test_complete_json_explicitly_disables_extended_thinking(monkeypatch):
     # Regression test: claude-sonnet-5 enables extended thinking by default even when
     # the caller never asks for it, and thinking tokens count against max_tokens --
