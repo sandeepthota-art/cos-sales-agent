@@ -39,7 +39,7 @@ class _ListEmailProvider(EmailProvider):
 
 
 class _AlwaysBrokenLLM(LLMProvider):
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return {"summary": "not enough fields"}
 
     def update_context(self, previous_context, new_analysis):
@@ -61,7 +61,7 @@ class _RaisesOnUpdateContextForLLM(LLMProvider):
         self._base = MockLLMProvider()
         self._failing_email_id = failing_email_id
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return self._base.analyze_email(email)
 
     def update_context(self, previous_context, new_analysis):
@@ -85,7 +85,7 @@ class _CompanyRevealingLLM(LLMProvider):
         self._base = MockLLMProvider()
         self._call_count = 0
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return self._base.analyze_email(email)
 
     def update_context(self, previous_context, new_analysis):
@@ -139,7 +139,7 @@ def test_pipeline_processes_valid_emails_to_completion(db, settings):
     assert db.context_snapshots.count_documents({}) == 2
     assert db.knowledge_items.count_documents({}) >= 1
 
-    stored_email = db.emails.find_one({"message_id": "msg_001"})
+    stored_email = db.emails.find_one({"source_message_id": "msg_001"})
     assert stored_email["processing_status"]["stage"] == "COMPLETED"
     # The full email content must be persisted, not just the message_id
     # (Task 17's Email Explorer reads this collection expecting real content).
@@ -186,7 +186,7 @@ def test_pipeline_marks_analysis_failure_without_completing(db, settings):
 
     assert summary.failed == 1
     assert summary.completed == 0
-    stored_email = db.emails.find_one({"message_id": "msg_001"})
+    stored_email = db.emails.find_one({"source_message_id": "msg_001"})
     assert stored_email["processing_status"]["stage"] == "FAILED"
     assert stored_email["processing_status"]["failed_stage"] == "ANALYZED"
     assert db.context_snapshots.count_documents({}) == 0
@@ -200,7 +200,7 @@ def test_pipeline_continues_batch_and_records_failure_after_unexpected_exception
     summary = run_pipeline(
         db,
         _ListEmailProvider(payloads),
-        _RaisesOnUpdateContextForLLM(failing_email_id="msg_001"),
+        _RaisesOnUpdateContextForLLM(failing_email_id="EML-001"),
         MockCalendarProvider(),
         settings,
     )
@@ -211,12 +211,12 @@ def test_pipeline_continues_batch_and_records_failure_after_unexpected_exception
     assert summary.completed == 1
     assert summary.failed == 1
 
-    failed_email = db.emails.find_one({"message_id": "msg_001"})
+    failed_email = db.emails.find_one({"source_message_id": "msg_001"})
     assert failed_email["processing_status"]["stage"] == "FAILED"
     assert failed_email["processing_status"]["failed_stage"] == "CONTEXT_BUILT"
     assert "simulated transport error" in failed_email["processing_status"]["error"]
 
-    completed_email = db.emails.find_one({"message_id": "msg_002"})
+    completed_email = db.emails.find_one({"source_message_id": "msg_002"})
     assert completed_email["processing_status"]["stage"] == "COMPLETED"
 
     # The run summary must exist and record both outcomes, even though one
@@ -224,17 +224,21 @@ def test_pipeline_continues_batch_and_records_failure_after_unexpected_exception
     run_doc = db.processing_runs.find_one({"run_id": summary.run_id})
     assert run_doc is not None
     result_by_id = {r["message_id"]: r["final_stage"] for r in run_doc["results"]}
-    assert result_by_id == {"msg_001": "FAILED", "msg_002": "COMPLETED"}
+    assert result_by_id == {"EML-001": "FAILED", "EML-002": "COMPLETED"}
 
 
 def test_pipeline_does_not_overwrite_already_sent_reply_draft(db, settings):
+    # A fresh db's first-ever email resolves to the canonical EML-001/THR-001 --
+    # pre-seed the reply draft keyed on those, exactly as the real pipeline
+    # would have originally created it, so this genuinely simulates "this same
+    # email already has an existing reply draft" under the canonical ID scheme.
     reply_repo = ReplyDraftRepository(db)
     reply_repo.upsert_by_key(
-        {"source_email_id": "msg_001"},
+        {"source_email_id": "EML-001"},
         ReplyDraft(
-            reply_id="reply_msg_001",
-            thread_id="thread_msg_001",
-            source_email_id="msg_001",
+            reply_id="reply_EML-001",
+            thread_id="THR-001",
+            source_email_id="EML-001",
             status="simulated_sent",
             draft=ReplyDraftContent(subject="Re: Enterprise CRM Proposal", body="Already sent to the customer."),
             created_at=datetime.now(timezone.utc),
@@ -244,7 +248,7 @@ def test_pipeline_does_not_overwrite_already_sent_reply_draft(db, settings):
     payloads = [_raw_email("msg_001", "We currently use Salesforce but pricing is a pain point.")]
     run_pipeline(db, _ListEmailProvider(payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.reply_drafts.find_one({"source_email_id": "msg_001"})
+    stored = db.reply_drafts.find_one({"source_email_id": "EML-001"})
     assert stored["status"] == "simulated_sent"
     assert stored["draft"]["body"] == "Already sent to the customer."
     assert db.reply_drafts.count_documents({}) == 1
@@ -254,7 +258,7 @@ def test_pipeline_does_not_overwrite_already_scheduled_calendar_action(db, setti
     payloads_first = [_raw_email("msg_001", "Let's schedule a call soon.")]
     run_pipeline(db, _ListEmailProvider(payloads_first), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    thread_id = "thread_msg_001"
+    thread_id = "THR-001"
     fingerprint = f"needs_clarification_{thread_id}"
     calendar_repo = CalendarActionRepository(db)
     action_doc = calendar_repo.find_one({"thread_id": thread_id, "meeting_fingerprint": fingerprint})
@@ -302,7 +306,7 @@ def test_pipeline_never_drafts_reply_for_email_from_agents_own_address(db, setti
         db, _ListEmailProvider(payloads), MockLLMProvider(), MockCalendarProvider(), agent_settings
     )
 
-    stored_email = db.emails.find_one({"message_id": "msg_001"})
+    stored_email = db.emails.find_one({"source_message_id": "msg_001"})
     assert stored_email["processing_status"]["stage"] == "COMPLETED"
     assert db.reply_drafts.count_documents({}) == 0
 
@@ -324,4 +328,4 @@ def test_pipeline_keeps_knowledge_subject_key_stable_as_company_name_becomes_kno
     # after msg_002, this would be 2 separate items instead of 1 merged one.
     pain_point_items = list(db.knowledge_items.find({"predicate": "has_pain_point"}))
     assert len(pain_point_items) == 1
-    assert set(pain_point_items[0]["source_emails"]) == {"msg_001", "msg_002"}
+    assert set(pain_point_items[0]["source_emails"]) == {"EML-001", "EML-002"}

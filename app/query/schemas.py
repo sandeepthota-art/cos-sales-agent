@@ -197,7 +197,13 @@ class ParsedIntent(BaseModel):
 class EvidenceItem(BaseModel):
     """One structured, auditable record backing a synthesized answer. Never
     constructed from LLM output -- only from a document app.query.retrieval actually
-    read out of MongoDB."""
+    read out of MongoDB.
+
+    email_id holds the canonical EML-nnn value (from ReplyDraft.source_email_id /
+    Commitment.source_record) -- named email_id, not source_message_id, since the
+    canonical-ID refactor reserves the source_* prefix for raw, never-reassigned
+    provider identifiers, which this field is not.
+    """
 
     collection: str
     record_id: str
@@ -206,7 +212,7 @@ class EvidenceItem(BaseModel):
     person_id: str | None = None
     org_id: str | None = None
     project_id: str | None = None
-    source_message_id: str | None = None
+    email_id: str | None = None
     timestamp: datetime | None = None
     summary_fields: dict[str, Any] = Field(default_factory=dict)
 

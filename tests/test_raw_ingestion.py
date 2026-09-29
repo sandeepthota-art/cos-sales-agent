@@ -56,7 +56,9 @@ def test_valid_raw_ingestion_inserts_the_email(db, tmp_path):
     assert summary.skipped == 0
     assert summary.failed == 0
     assert summary.unique_threads == 1
-    assert EmailRepository(db).find_many({})[0]["message_id"] == "18f348ce69f386be"
+    stored = EmailRepository(db).find_many({})[0]
+    assert stored["message_id"] == "EML-001"
+    assert stored["source_message_id"] == "18f348ce69f386be"
 
 
 # --- 2. 662-message structure (generated test data) ---
@@ -101,9 +103,11 @@ def test_message_to_mongodb_field_mapping_is_exact(db, tmp_path):
 
     run_raw_file_ingestion(db, path)
 
-    stored = EmailRepository(db).find_one({"message_id": "abc123"})
-    assert stored["message_id"] == "abc123"
-    assert stored["thread_id"] == "thread_xyz"
+    stored = EmailRepository(db).find_one({"source_message_id": "abc123"})
+    assert stored["message_id"] == "EML-001"
+    assert stored["source_message_id"] == "abc123"
+    assert stored["thread_id"] == "THR-001"
+    assert stored["source_thread_id"] == "thread_xyz"
     assert stored["subject"] == "Renewal check-in"
     assert stored["from"]["email"] == "jane@example.com"
     assert [a["email"] for a in stored["to"]] == ["ashok@databeat.io"]
@@ -125,9 +129,10 @@ def test_thread_created_with_correct_participants_and_message_ids(db, tmp_path):
 
     run_raw_file_ingestion(db, path)
 
-    thread = ThreadRepository(db).find_one({"thread_id": "t1"})
+    thread = ThreadRepository(db).find_one({"source_thread_id": "t1"})
     assert thread is not None
-    assert set(thread["message_ids"]) == {"m1", "m2"}
+    assert set(thread["source_message_ids"]) == {"m1", "m2"}
+    assert set(thread["message_ids"]) == {"EML-001", "EML-002"}
     assert set(thread["participant_emails"]) == {"a@x.com", "b@x.com"}
 
 
@@ -160,9 +165,10 @@ def test_raw_ingestion_never_overwrites_an_already_enriched_email(db, tmp_path):
     # ingestion never writes, like processing_status/entities_referenced) -- a later
     # raw-file run over the same dataset must never touch or downgrade it.
     EmailRepository(db).upsert_by_key(
-        {"message_id": "18f348ce69f386be"},
+        {"source_message_id": "18f348ce69f386be"},
         {
-            "message_id": "18f348ce69f386be", "thread_id": "18f348ce69f386be", "subject": "old",
+            "message_id": "EML-001", "source_message_id": "18f348ce69f386be",
+            "thread_id": "THR-001", "subject": "old",
             "from": {"name": None, "email": "john.t@614group.com"}, "to": [], "cc": [],
             "body": "old body", "timestamp": "2024-05-01T14:26:28Z", "labels": [],
             "processing_status": {"stage": "COMPLETED", "error": None},
@@ -175,7 +181,7 @@ def test_raw_ingestion_never_overwrites_an_already_enriched_email(db, tmp_path):
 
     assert summary.already_existed == 1
     assert summary.inserted == 0
-    stored = EmailRepository(db).find_one({"message_id": "18f348ce69f386be"})
+    stored = EmailRepository(db).find_one({"source_message_id": "18f348ce69f386be"})
     assert stored["processing_status"]["stage"] == "COMPLETED"
     assert stored["entities_referenced"] == {"people": ["PER-001"]}
     assert stored["subject"] == "old"  # untouched, not overwritten with the raw file's "subject"

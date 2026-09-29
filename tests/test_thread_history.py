@@ -168,7 +168,7 @@ class _SpyLLMProvider(MockLLMProvider):
     def __init__(self):
         self.calls: dict[str, list] = {}
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         self.calls[email.message_id] = thread_history
         return super().analyze_email(email, thread_history=thread_history)
 
@@ -193,7 +193,7 @@ def test_run_pipeline_passes_no_history_for_a_threads_first_message(db):
 
     run_pipeline(db, _ListEmailProvider(payloads), spy, MockCalendarProvider(), settings)
 
-    assert spy.calls["msg_001"] == []
+    assert spy.calls["EML-001"] == []
 
 
 def test_run_pipeline_passes_prior_message_as_history_for_a_reply(db):
@@ -209,6 +209,6 @@ def test_run_pipeline_passes_prior_message_as_history_for_a_reply(db):
 
     run_pipeline(db, _ListEmailProvider(payloads), spy, MockCalendarProvider(), settings)
 
-    assert spy.calls["msg_001"] == []
-    assert [m["message_id"] for m in spy.calls["msg_002"]] == ["msg_001"]
-    assert spy.calls["msg_002"][0]["body"] == "We currently use Salesforce but pricing is a pain point."
+    assert spy.calls["EML-001"] == []
+    assert [m["message_id"] for m in spy.calls["EML-002"]] == ["EML-001"]
+    assert spy.calls["EML-002"][0]["body"] == "We currently use Salesforce but pricing is a pain point."

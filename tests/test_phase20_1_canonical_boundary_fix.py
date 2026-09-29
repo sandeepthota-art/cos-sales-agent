@@ -152,9 +152,9 @@ def test_active_person_reply_draft_and_calendar_action_unchanged(db, settings):
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft["person_id"] == "PER-1"
-    action = CalendarActionRepository(db).find_one({"thread_id": "thread_msg_001"})
+    action = CalendarActionRepository(db).find_one({"thread_id": "THR-001"})
     assert action["person_id"] == "PER-1"
     # +1 for the operator's own dedicated profile (the payload's "to", settings.agent_email).
     assert PersonRepository(db).find_many({}).__len__() == 2  # no duplicate created
@@ -168,7 +168,7 @@ def test_unknown_sender_still_creates_a_new_person_and_reply_draft(db, settings)
 
     people = PersonRepository(db).find_many({"email": "brandnew@example.com"})
     assert len(people) == 1
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft["person_id"] == people[0]["id"]
 
 
@@ -183,9 +183,9 @@ def test_merged_person_end_to_end_reply_draft_and_calendar_action(db, settings):
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft["person_id"] == "PER-TEST-B"
-    action = CalendarActionRepository(db).find_one({"thread_id": "thread_msg_001"})
+    action = CalendarActionRepository(db).find_one({"thread_id": "THR-001"})
     assert action["person_id"] == "PER-TEST-B"
     assert action["event"]["attendees"] == []  # Section 8: hard safety invariant preserved
     # No third Person was created for the sender/canonical pair -- +1 more for the
@@ -205,7 +205,7 @@ def test_ambiguous_no_email_mentions_do_not_affect_the_concrete_sender_boundary(
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft["person_id"] == "PER-SENDER"
     # The two ambiguous, unrelated anchors are untouched -- no merge, no new record.
     # +1 for the operator's own dedicated profile (the payload's "to", settings.agent_email).

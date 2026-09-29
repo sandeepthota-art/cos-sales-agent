@@ -91,7 +91,15 @@ def process_new_fact(
     basis: Literal["stated", "inferred"],
     llm: LLMProvider,
     now: datetime,
+    person_id: str | None = None,
+    org_id: str | None = None,
 ) -> tuple[list[KnowledgeItem], KnowledgeItem]:
+    """person_id/org_id (optional): EXPLICIT canonical attribution, set by the
+    caller when it already knows who this fact is about (see
+    app.pipeline._process_person_facts) -- never re-derived here. Set only on a
+    brand-new KnowledgeItem; an existing item matched by (thread_id, subject_key,
+    predicate, fact_key) already carries whatever attribution it was created
+    with, which this function never overwrites."""
     subject_key = slugify(subject)
     fact_key = classify_fact_key(predicate, object_text)
 
@@ -123,6 +131,8 @@ def process_new_fact(
         predicate=predicate,
         fact_key=fact_key,
         current_value=object_text,
+        person_id=person_id,
+        org_id=org_id,
         history=[HistoryEntry(value=object_text, source_email_id=source_email_id, recorded_at=now)],
         source_emails=[source_email_id],
         basis=basis,

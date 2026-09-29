@@ -2,7 +2,7 @@
 import re
 import unicodedata
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import TypeAdapter
 from pymongo.database import Database
@@ -27,6 +27,15 @@ from app.knowledge.normalize import normalize_text
 # `now` is guaranteed UTC-aware -- so the update path below matches the creation path's
 # format regardless of what tzinfo (or lack of one) `now` actually carries.
 _DATETIME_JSON = TypeAdapter(datetime)
+
+
+def _field_delta(old_doc: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Thread Events, Phase 8: every resolver already builds its own `update` dict
+    from fields it JUST determined actually changed -- this simply reshapes that
+    same, already-known information into {field: {old, new}} for the caller to
+    attach to a Thread Event. Never re-derives or guesses a change independently;
+    {} in, {} out (a "created" or no-op "reused" outcome reports no delta)."""
+    return {field: {"old": old_doc.get(field), "new": new_value} for field, new_value in update.items()}
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -233,6 +242,27 @@ def _find_email_anchored_candidate(repo: PersonRepository, name: str, org: str |
 def resolve_person(
     db: Database, mention: dict[str, Any], is_sender: bool | None, now: datetime, thread_id: str
 ) -> str:
+    person_id, _operation, _delta = _resolve_person_impl(db, mention, is_sender, now, thread_id)
+    return person_id
+
+
+def resolve_person_with_operation(
+    db: Database, mention: dict[str, Any], is_sender: bool | None, now: datetime, thread_id: str
+) -> tuple[str, Literal["created", "reused", "updated"], dict[str, Any]]:
+    """Same resolution as resolve_person, plus the actual operation the resolver
+    itself performed -- never inferred from database state after the fact (Thread
+    Events, Phase 5). "updated" means an existing Person had at least one field
+    (last_inbound/last_outbound/open_threads/org_id/org/aliases) genuinely
+    backfilled by this call; "reused" means an existing Person was found and
+    nothing needed to change. The third element (Thread Events, Phase 8) is
+    {field: {"old", "new"}} for exactly the fields this call actually changed --
+    {} for "created"/"reused"."""
+    return _resolve_person_impl(db, mention, is_sender, now, thread_id)
+
+
+def _resolve_person_impl(
+    db: Database, mention: dict[str, Any], is_sender: bool | None, now: datetime, thread_id: str
+) -> tuple[str, Literal["created", "reused", "updated"], dict[str, Any]]:
     repo = PersonRepository(db)
     email = (mention.get("email") or "").strip().lower() or None
 
@@ -284,7 +314,7 @@ def resolve_person(
                 update["org"] = mention.get("org")
             if update:
                 repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
-            return existing["id"]
+            return existing["id"], ("updated" if update else "reused"), _field_delta(existing, update)
 
         person_id = next_id(db, "PER-")
         person = Person(
@@ -298,7 +328,7 @@ def resolve_person(
             open_threads=[thread_id],
         )
         repo.upsert_by_key({"id": person_id}, person.model_dump(mode="json"))
-        return person_id
+        return person_id, "created", {}
 
     # No email present.
     name = mention.get("name") or "Unknown"
@@ -337,7 +367,7 @@ def resolve_person(
             update["aliases"] = [*existing_aliases, name]
         if update:
             repo.upsert_by_key({"id": anchored["id"]}, {**anchored, **update})
-        return anchored["id"]
+        return anchored["id"], ("updated" if update else "reused"), _field_delta(anchored, update)
 
     # Never merge on name alone GLOBALLY -- but a name that exactly matches an existing
     # no-email Person already linked to THIS SAME THREAD is strong enough evidence to
@@ -355,7 +385,7 @@ def resolve_person(
         # into a canonical Person (exactly the historical Ashok/John-Toth-style
         # fragments this tier originally created) -- redirect rather than reusing
         # or re-enriching the retired record.
-        return _reuse_target(db, repo, candidates[0])["id"]
+        return _reuse_target(db, repo, candidates[0])["id"], "reused", {}
 
     person_id = next_id(db, "PER-")
     person = Person(
@@ -372,12 +402,29 @@ def resolve_person(
     # than storing "email": null) is what actually makes two no-email People coexist on
     # real MongoDB, not just under mongomock's more lenient interpretation of sparse+null.
     repo.upsert_by_key({"id": person_id}, person.model_dump(mode="json", exclude={"email"}))
-    return person_id
+    return person_id, "created", {}
 
 
 def resolve_operator_person(
     db: Database, agent_email: str, display_name: str, is_sender: bool | None, now: datetime, thread_id: str
 ) -> str:
+    person_id, _operation, _delta = _resolve_operator_person_impl(db, agent_email, display_name, is_sender, now, thread_id)
+    return person_id
+
+
+def resolve_operator_person_with_operation(
+    db: Database, agent_email: str, display_name: str, is_sender: bool | None, now: datetime, thread_id: str
+) -> tuple[str, Literal["created", "reused", "updated"], dict[str, Any]]:
+    """Same resolution as resolve_operator_person, plus the actual operation
+    performed (Thread Events, Phase 5) -- see resolve_person_with_operation's
+    docstring for what "updated" vs "reused" means, and what the third (delta)
+    element contains."""
+    return _resolve_operator_person_impl(db, agent_email, display_name, is_sender, now, thread_id)
+
+
+def _resolve_operator_person_impl(
+    db: Database, agent_email: str, display_name: str, is_sender: bool | None, now: datetime, thread_id: str
+) -> tuple[str, Literal["created", "reused", "updated"], dict[str, Any]]:
     """Resolves the operator's OWN dedicated Person profile -- a single, real,
     tracked record for the system's own user, deliberately distinct from an
     external lead. Reused forever after by exact email match, identical in
@@ -414,7 +461,7 @@ def resolve_operator_person(
             update["open_threads"] = new_open_threads
         if update:
             repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
-        return existing["id"]
+        return existing["id"], ("updated" if update else "reused"), _field_delta(existing, update)
 
     person_id = next_id(db, "PER-")
     person = Person(
@@ -429,7 +476,7 @@ def resolve_operator_person(
         open_threads=[thread_id],
     )
     repo.upsert_by_key({"id": person_id}, person.model_dump(mode="json"))
-    return person_id
+    return person_id, "created", {}
 
 
 # Punctuation that functions as a separator between words in a project/entity name and
@@ -462,6 +509,32 @@ def resolve_project(
     person_ids: list[str] | None = None,
     org_id: str | None = None,
 ) -> str:
+    project_id, _operation, _delta = _resolve_project_impl(db, mention, goal_pillar, person_ids, org_id)
+    return project_id
+
+
+def resolve_project_with_operation(
+    db: Database,
+    mention: dict[str, Any],
+    goal_pillar: str,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+) -> tuple[str, Literal["created", "reused", "updated"], dict[str, Any]]:
+    """Same resolution as resolve_project, plus the actual operation performed
+    (Thread Events, Phase 5): "updated" means an existing Project genuinely
+    gained a new person_id or its previously-missing org_id; "reused" means an
+    existing Project was found and nothing needed to change. The third element
+    is {field: {"old", "new"}} for exactly what changed -- {} otherwise."""
+    return _resolve_project_impl(db, mention, goal_pillar, person_ids, org_id)
+
+
+def _resolve_project_impl(
+    db: Database,
+    mention: dict[str, Any],
+    goal_pillar: str,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+) -> tuple[str, Literal["created", "reused", "updated"], dict[str, Any]]:
     repo = ProjectRepository(db)
     name_normalized = _normalize_project_name(mention["name"])
     entity = mention.get("org")
@@ -494,7 +567,7 @@ def resolve_project(
                 update["org_id"] = org_id
             if update:
                 repo.upsert_by_key({"id": candidate["id"]}, {**candidate, **update})
-            return candidate["id"]
+            return candidate["id"], ("updated" if update else "reused"), _field_delta(candidate, update)
 
     project_id = next_id(db, "PRJ-")
     project = Project(
@@ -506,7 +579,7 @@ def resolve_project(
         org_id=org_id,
     )
     repo.upsert_by_key({"id": project_id}, project.model_dump(mode="json"))
-    return project_id
+    return project_id, "created", {}
 
 
 def resolve_opportunity(
@@ -520,6 +593,48 @@ def resolve_opportunity(
     meeting_ids: list[str] | None = None,
     buying_signals: list[str] | None = None,
 ) -> str:
+    opportunity_id, _operation, _delta = _resolve_opportunity_impl(
+        db, mention, project_id, now, person_ids, org_id, source_email_id, meeting_ids, buying_signals
+    )
+    return opportunity_id
+
+
+def resolve_opportunity_with_operation(
+    db: Database,
+    mention: dict[str, Any],
+    project_id: str,
+    now: datetime,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+    source_email_id: str | None = None,
+    meeting_ids: list[str] | None = None,
+    buying_signals: list[str] | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
+    """Same resolution as resolve_opportunity, plus the actual operation
+    performed (Thread Events, Phase 5). No "updated" variant: an existing
+    Opportunity's last_activity_at/updated_at are unconditionally touched on
+    every reuse, so "reused" is the only meaningful outcome for an existing
+    match -- matching the opportunity_created/opportunity_reused vocabulary.
+    The third element (delta) deliberately excludes last_activity_at/updated_at
+    (always-ticking timestamps, never a meaningful "what changed" signal) --
+    it reports only person_ids/org_id/source_email_ids/meeting_ids/
+    buying_signals when one of those genuinely grew."""
+    return _resolve_opportunity_impl(
+        db, mention, project_id, now, person_ids, org_id, source_email_id, meeting_ids, buying_signals
+    )
+
+
+def _resolve_opportunity_impl(
+    db: Database,
+    mention: dict[str, Any],
+    project_id: str,
+    now: datetime,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+    source_email_id: str | None = None,
+    meeting_ids: list[str] | None = None,
+    buying_signals: list[str] | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
     """Called only for a Sales-classified email whose projects_mentioned entry
     already resolved to a real project_id (see app.pipeline._process_entities --
     this is never called on its own, independently of a resolved Project).
@@ -564,11 +679,13 @@ def resolve_opportunity(
         if new_buying_signals != existing.get("buying_signals", []):
             update["buying_signals"] = new_buying_signals
 
+        meaningful_delta = _field_delta(existing, update)
+
         update["last_activity_at"] = _DATETIME_JSON.dump_python(now, mode="json")
         update["updated_at"] = _DATETIME_JSON.dump_python(now, mode="json")
 
         repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
-        return existing["id"]
+        return existing["id"], "reused", meaningful_delta
 
     opportunity_id = next_id(db, "OPP-")
     opportunity = Opportunity(
@@ -586,7 +703,7 @@ def resolve_opportunity(
         updated_at=now,
     )
     repo.upsert_by_key({"id": opportunity_id}, opportunity.model_dump(mode="json"))
-    return opportunity_id
+    return opportunity_id, "created", {}
 
 
 def _commitment_dates_match(
@@ -618,6 +735,49 @@ def resolve_commitment(
     person_id: str | None = None,
     org_id: str | None = None,
 ) -> str:
+    commitment_id, _operation, _delta = _resolve_commitment_impl(
+        db, thread_id, raw, message_id, made_on, resolved_date, date_type, goal_pillar, project_id, person_id, org_id
+    )
+    return commitment_id
+
+
+def resolve_commitment_with_operation(
+    db: Database,
+    thread_id: str,
+    raw: dict[str, Any],
+    message_id: str,
+    made_on: datetime,
+    resolved_date: datetime | None,
+    date_type: str | None,
+    goal_pillar: str,
+    project_id: str | None,
+    person_id: str | None = None,
+    org_id: str | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
+    """Same resolution as resolve_commitment, plus the actual operation
+    performed (Thread Events, Phase 5). No "updated" variant: the named
+    vocabulary is commitment_created/commitment_reused only -- an existing
+    match backfilling person_id/org_id/project_id is still reported as
+    "reused", the same commitment being enriched, not a new logical event.
+    The third element (delta) reports exactly which of those got backfilled."""
+    return _resolve_commitment_impl(
+        db, thread_id, raw, message_id, made_on, resolved_date, date_type, goal_pillar, project_id, person_id, org_id
+    )
+
+
+def _resolve_commitment_impl(
+    db: Database,
+    thread_id: str,
+    raw: dict[str, Any],
+    message_id: str,
+    made_on: datetime,
+    resolved_date: datetime | None,
+    date_type: str | None,
+    goal_pillar: str,
+    project_id: str | None,
+    person_id: str | None = None,
+    org_id: str | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
     repo = CommitmentRepository(db)
     what_normalized = normalize_text(raw["what"])
 
@@ -642,7 +802,7 @@ def resolve_commitment(
                 update["project_id"] = project_id
             if update:
                 repo.upsert_by_key({"id": candidate["id"]}, {**candidate, **update})
-            return candidate["id"]
+            return candidate["id"], "reused", _field_delta(candidate, update)
 
     commitment_id = next_id(db, "CMT-")
     commitment = Commitment(
@@ -663,7 +823,7 @@ def resolve_commitment(
         thread_id=thread_id,
     )
     repo.upsert_by_key({"id": commitment_id}, commitment.model_dump(mode="json", by_alias=True))
-    return commitment_id
+    return commitment_id, "created", {}
 
 
 def resolve_meeting(
@@ -676,6 +836,37 @@ def resolve_meeting(
     org_id: str | None = None,
     project_or_pillar: str | None = None,
 ) -> str:
+    meeting_id, _operation, _delta = _resolve_meeting_impl(db, thread_id, date, raw, actionable, person_ids, org_id, project_or_pillar)
+    return meeting_id
+
+
+def resolve_meeting_with_operation(
+    db: Database,
+    thread_id: str,
+    date: datetime | None,
+    raw: dict[str, Any],
+    actionable: bool,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+    project_or_pillar: str | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
+    """Same resolution as resolve_meeting, plus the actual operation performed
+    (Thread Events, Phase 5). No "updated" variant, matching the named
+    meeting_created/meeting_reused vocabulary -- see
+    resolve_commitment_with_operation's docstring for the same reasoning."""
+    return _resolve_meeting_impl(db, thread_id, date, raw, actionable, person_ids, org_id, project_or_pillar)
+
+
+def _resolve_meeting_impl(
+    db: Database,
+    thread_id: str,
+    date: datetime | None,
+    raw: dict[str, Any],
+    actionable: bool,
+    person_ids: list[str] | None = None,
+    org_id: str | None = None,
+    project_or_pillar: str | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
     repo = MeetingRepository(db)
 
     for candidate in repo.all_for_thread(thread_id):
@@ -691,7 +882,7 @@ def resolve_meeting(
                 update["project_or_pillar"] = project_or_pillar
             if update:
                 repo.upsert_by_key({"id": candidate["id"]}, {**candidate, **update})
-            return candidate["id"]
+            return candidate["id"], "reused", _field_delta(candidate, update)
 
     meeting_id = next_id(db, "MTG-")
     meeting = Meeting(
@@ -706,19 +897,35 @@ def resolve_meeting(
         thread_id=thread_id,
     )
     repo.upsert_by_key({"id": meeting_id}, meeting.model_dump(mode="json"))
-    return meeting_id
+    return meeting_id, "created", {}
 
 
 def resolve_personal_item(
     db: Database, sender_email: str, raw: dict[str, Any], resolved_date: datetime | None
 ) -> str:
+    item_id, _operation, _delta = _resolve_personal_item_impl(db, sender_email, raw, resolved_date)
+    return item_id
+
+
+def resolve_personal_item_with_operation(
+    db: Database, sender_email: str, raw: dict[str, Any], resolved_date: datetime | None
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
+    """Same resolution as resolve_personal_item, plus the actual operation
+    performed (Thread Events, Phase 5). Never mutates an existing item on
+    reuse, so the delta is always {}."""
+    return _resolve_personal_item_impl(db, sender_email, raw, resolved_date)
+
+
+def _resolve_personal_item_impl(
+    db: Database, sender_email: str, raw: dict[str, Any], resolved_date: datetime | None
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
     repo = PersonalItemRepository(db)
     sender_normalized = sender_email.strip().lower()
     description_normalized = normalize_text(raw["description"])
 
     for candidate in repo.find_many({"sender_email": sender_normalized}):
         if normalize_text(candidate["description"]) == description_normalized:
-            return candidate["id"]
+            return candidate["id"], "reused", {}
 
     item_id = next_id(db, "PSN-")
     item = PersonalItem(
@@ -729,7 +936,7 @@ def resolve_personal_item(
         sender_email=sender_normalized,
     )
     repo.upsert_by_key({"id": item_id}, item.model_dump(mode="json"))
-    return item_id
+    return item_id, "created", {}
 
 
 def derive_follow_up(
@@ -742,12 +949,48 @@ def derive_follow_up(
     follow_up_earliest_at: datetime | None = None,
     follow_up_latest_at: datetime | None = None,
 ) -> str:
+    follow_up_id, _operation, _delta = _derive_follow_up_impl(
+        db, commitment_id, thread_id, person_id, org_id, audience, follow_up_earliest_at, follow_up_latest_at
+    )
+    return follow_up_id
+
+
+def derive_follow_up_with_operation(
+    db: Database,
+    commitment_id: str | None,
+    thread_id: str | None,
+    person_id: str | None = None,
+    org_id: str | None = None,
+    audience: str | None = None,
+    follow_up_earliest_at: datetime | None = None,
+    follow_up_latest_at: datetime | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
+    """Same resolution as derive_follow_up, plus the actual operation performed
+    (Thread Events, Phase 5). No named follow_up_reused type exists in the
+    Phase 2 vocabulary -- callers map "reused" to the generic entity_reused
+    event type (entity_type="follow_up"). Never mutates an existing FollowUp
+    on reuse, so the delta is always {}."""
+    return _derive_follow_up_impl(
+        db, commitment_id, thread_id, person_id, org_id, audience, follow_up_earliest_at, follow_up_latest_at
+    )
+
+
+def _derive_follow_up_impl(
+    db: Database,
+    commitment_id: str | None,
+    thread_id: str | None,
+    person_id: str | None = None,
+    org_id: str | None = None,
+    audience: str | None = None,
+    follow_up_earliest_at: datetime | None = None,
+    follow_up_latest_at: datetime | None = None,
+) -> tuple[str, Literal["created", "reused"], dict[str, Any]]:
     repo = FollowUpRepository(db)
 
     if commitment_id is not None:
         existing = repo.find_one({"commitment_id": commitment_id})
         if existing:
-            return existing["id"]
+            return existing["id"], "reused", {}
         follow_up_id = next_id(db, "FUP-")
         # thread_id is carried alongside commitment_id (previously dropped here even
         # when the caller passed one) so a FollowUp is directly queryable by thread_id
@@ -763,12 +1006,12 @@ def derive_follow_up(
             audience=audience, follow_up_earliest_at=follow_up_earliest_at, follow_up_latest_at=follow_up_latest_at,
         )
         repo.upsert_by_key({"id": follow_up_id}, follow_up.model_dump(mode="json"))
-        return follow_up_id
+        return follow_up_id, "created", {}
 
     existing = repo.find_one({"thread_id": thread_id})
     if existing:
-        return existing["id"]
+        return existing["id"], "reused", {}
     follow_up_id = next_id(db, "FUP-")
     follow_up = FollowUp(id=follow_up_id, thread_id=thread_id)
     repo.upsert_by_key({"id": follow_up_id}, follow_up.model_dump(mode="json"))
-    return follow_up_id
+    return follow_up_id, "created", {}

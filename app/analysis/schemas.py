@@ -45,6 +45,28 @@ class Fact(BaseModel):
     object: str
 
 
+class PersonFactMention(BaseModel):
+    """A qualitative fact EXPLICITLY attributed to one named person -- never a
+    thread/organization-level signal (those stay in requirements/pain_points/
+    objections/competitors/buying_signals, unchanged). person_name/person_email
+    identify WHO this is about; the pipeline resolves that to a canonical
+    person_id via app.entities.resolution.match_resolved_person_by_name against
+    people ALREADY resolved for this same email (see app.pipeline._process_entities)
+    -- never a fresh, riskier free-text scan of the whole people collection, and
+    never guessed when the name is ambiguous (an unresolved mention is simply
+    dropped, not attached to the wrong person).
+    """
+
+    person_name: str
+    person_email: str | None = None
+    category: Literal[
+        "role", "responsibility", "preference", "goal", "interest",
+        "concern", "pain_point", "objection", "buying_signal", "other",
+    ]
+    value: str
+    basis: Literal["stated", "inferred"] = "stated"
+
+
 class EmailAnalysis(BaseModel):
     email_id: str
     summary: str
@@ -68,6 +90,7 @@ class EmailAnalysis(BaseModel):
     commitments_mentioned: list[RawCommitment] = Field(default_factory=list)
     meetings_mentioned: list[RawMeeting] = Field(default_factory=list)
     personal_items_mentioned: list[RawPersonalItem] = Field(default_factory=list)
+    person_facts_mentioned: list[PersonFactMention] = Field(default_factory=list)
     goal_pillar: str = ""
     # BRD 6.1's six labels. "Needs reply: Soon" (this repo's original name for the
     # BRD's plain "Needs reply") is retired in favor of the BRD's own wording; "Needs

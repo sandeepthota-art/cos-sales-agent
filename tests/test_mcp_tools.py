@@ -25,7 +25,7 @@ def _raw_email(message_id, body, subject="Enterprise CRM Proposal", **overrides)
 
 
 class _AlwaysBrokenLLM(LLMProvider):
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return {"summary": "not enough fields"}
 
     def update_context(self, previous_context, new_analysis):
@@ -155,7 +155,7 @@ def test_list_processed_emails_returns_stored_fields_most_recent_first(db, setti
 
     results = list_processed_emails(db, limit=50)
 
-    assert [r["message_id"] for r in results] == ["msg_002", "msg_001"]
+    assert [r["message_id"] for r in results] == ["EML-002", "EML-001"]
     first = results[0]
     assert first["thread_id"] is not None
     assert first["from"] == {"name": "John", "email": "john@example.com"}
@@ -183,7 +183,7 @@ def test_list_processed_emails_respects_limit(db, settings):
     results = list_processed_emails(db, limit=2)
 
     assert len(results) == 2
-    assert [r["message_id"] for r in results] == ["msg_002", "msg_001"]
+    assert [r["message_id"] for r in results] == ["EML-003", "EML-002"]
 
 
 def test_list_processed_emails_includes_entity_metadata(db, settings):
@@ -198,7 +198,7 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
     results = list_processed_emails(db, limit=50)
 
     entry = results[0]
-    assert entry["record_id"] == "1a08090646ebaa45"
+    assert entry["record_id"] == "EML-001"
     assert entry["date"] == "2026-09-13"
     assert entry["goal_pillar"] == "Sales"
     assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
@@ -223,7 +223,7 @@ def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_t
 
     assert len(results) == 1
     entry = results[0]
-    assert entry["message_id"] == "msg_001"
+    assert entry["message_id"] == "EML-001"
     assert entry["processing_status"]["stage"] == "FAILED"
     assert entry["record_id"] is None
     assert entry["date"] is None
@@ -307,7 +307,7 @@ def test_list_processed_emails_handles_mixed_raw_and_processed_emails_without_cr
 
     assert len(results) == 2
     by_id = {r["message_id"]: r for r in results}
-    assert by_id["msg_processed"]["processing_status"]["stage"] == "COMPLETED"
+    assert by_id["EML-001"]["processing_status"]["stage"] == "COMPLETED"
     assert by_id["msg_raw"]["processing_status"] == {"stage": None, "error": None}
 
 

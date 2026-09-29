@@ -73,7 +73,7 @@ class _ThirdPersonCommitmentLLM(LLMProvider):
     (resolve_commitment, not extraction) handles it correctly once given a properly
     shaped mention."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return {
             "email_id": email.message_id,
             "summary": email.body[:200],
@@ -123,7 +123,7 @@ def test_third_person_commitment_is_extracted_and_persisted(db, settings):
     assert commitments[0]["what"] == "provide the pricing document"
     assert commitments[0]["class"] == "theirs"
     assert commitments[0]["owed_by"] == "John"
-    assert commitments[0]["source_record"] == "m1"
+    assert commitments[0]["source_record"] == "EML-001"
 
 
 def test_hedged_suggestion_does_not_create_a_commitment(db, settings):
@@ -143,7 +143,7 @@ def test_reply_draft_is_not_duplicated_when_the_same_email_is_processed_twice(db
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    drafts = ReplyDraftRepository(db).find_many({"source_email_id": "m1"})
+    drafts = ReplyDraftRepository(db).find_many({"source_email_id": "EML-001"})
     assert len(drafts) == 1
     assert drafts[0]["status"] == "awaiting_approval"
 
@@ -153,7 +153,7 @@ def test_reply_draft_requires_explicit_approval_before_send_and_is_never_auto_se
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "m1"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft["status"] == "awaiting_approval"
     assert draft["sent_at"] is None
     assert draft["approved_by"] is None
@@ -172,8 +172,8 @@ def test_context_aware_second_email_reply_uses_accumulated_thread_context(db, se
     run_pipeline(db, MockEmailProvider(payloads=[email_1]), MockLLMProvider(), MockCalendarProvider(), settings)
     run_pipeline(db, MockEmailProvider(payloads=[email_2]), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    thread = ThreadRepository(db).find_one({"thread_id": "thread_alpha"})
-    assert set(thread["message_ids"]) == {"m1", "m2"}
+    thread = ThreadRepository(db).find_one({"source_thread_id": "thread_alpha"})
+    assert set(thread["source_message_ids"]) == {"m1", "m2"}
 
     # Both emails resolve to the SAME person (thread + email-address reuse) -- proves
     # email 2 is not treated as a fresh, isolated sender. (+1 for the operator's own
@@ -181,12 +181,12 @@ def test_context_aware_second_email_reply_uses_accumulated_thread_context(db, se
     people = PersonRepository(db).find_many({})
     assert len(people) == 2
     john = PersonRepository(db).find_one({"email": "john@example.com"})
-    assert "thread_alpha" in john["open_threads"]
+    assert "THR-001" in john["open_threads"]
 
     # Email 2's reply draft exists and was built from a real ThreadContext, not a
     # standalone summary of email 2 alone -- the draft for m2 must reference the
     # accumulated context object rather than fail/be skipped.
-    draft_2 = ReplyDraftRepository(db).find_one({"source_email_id": "m2"})
+    draft_2 = ReplyDraftRepository(db).find_one({"source_email_id": "EML-002"})
     assert draft_2 is not None
     assert draft_2["status"] == "awaiting_approval"
 
@@ -196,13 +196,13 @@ def test_full_provenance_chain_from_email_to_reply_draft(db, settings):
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    email = db.emails.find_one({"message_id": "m1"}, {"_id": 0})
+    email = db.emails.find_one({"message_id": "EML-001"}, {"_id": 0})
     refs = email["entities_referenced"]
 
     # email["thread_id"] is only ever the raw, as-ingested value -- the threads
     # collection's own message_ids arrays are the authoritative source of which
     # thread an email actually resolved into.
-    thread = ThreadRepository(db).find_one({"message_ids": "m1"})
+    thread = ThreadRepository(db).find_one({"source_message_ids": "m1"})
     assert thread is not None
     thread_id = thread["thread_id"]
 
@@ -210,12 +210,12 @@ def test_full_provenance_chain_from_email_to_reply_draft(db, settings):
     assert person is not None
 
     commitment = CommitmentRepository(db).find_one({"id": refs["commitments"][0]})
-    assert commitment["source_record"] == "m1"
+    assert commitment["source_record"] == "EML-001"
 
     follow_up = FollowUpRepository(db).find_one({"id": refs["follow_ups"][0]})
     assert follow_up["commitment_id"] == commitment["id"]
 
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "m1"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft["thread_id"] == thread_id
 
 
@@ -227,7 +227,7 @@ def test_context_snapshot_commitments_stays_synchronized_with_resolved_commitmen
     payloads = [_raw_email("m1", "I will send the proposal tomorrow.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    thread = ThreadRepository(db).find_one({"message_ids": "m1"})
+    thread = ThreadRepository(db).find_one({"source_message_ids": "m1"})
     commitment = CommitmentRepository(db).find_one({"thread_id": thread["thread_id"]})
     assert commitment is not None
 
@@ -239,7 +239,7 @@ def test_context_snapshot_meetings_stays_synchronized_with_resolved_meeting(db, 
     payloads = [_raw_email("m1", "Sounds good. We will meet in 2 weeks.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    thread = ThreadRepository(db).find_one({"message_ids": "m1"})
+    thread = ThreadRepository(db).find_one({"source_message_ids": "m1"})
     meeting = MeetingRepository(db).find_one({"thread_id": thread["thread_id"]})
     assert meeting is not None
 

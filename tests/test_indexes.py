@@ -17,7 +17,9 @@ def test_initialize_indexes_creates_expected_unique_indexes():
             if spec["key"] != [("_id", 1)] and spec.get("unique", False)
         }
 
-    assert index_keys("emails") == {(("message_id", 1),): True, (("id", 1),): True}
+    assert index_keys("emails") == {
+        (("message_id", 1),): True, (("id", 1),): True, (("source_message_id", 1),): True,
+    }
     assert index_keys("threads") == {(("thread_id", 1),): True, (("id", 1),): True}
     assert index_keys("context_snapshots") == {
         (("thread_id", 1), ("triggering_email_id", 1)): True

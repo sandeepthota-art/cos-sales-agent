@@ -29,6 +29,7 @@ from app.database.repositories import (
 )
 from app.email.models import Email, parse_email
 from app.entities.resolution import resolve_canonical_person_for_email
+from app.entities.thread_events import get_thread_event_trail
 from app.query import retrieval
 from app.query.dates import resolve_date_range
 from app.query.meetings import classify_meeting
@@ -178,11 +179,17 @@ def process_email(
     if result.final_stage == "FAILED":
         return _empty_result("failed", result.error)
 
-    snapshot = ContextSnapshotRepository(db).find_one({"triggering_email_id": email.message_id})
+    # Canonical ID refactor: `email` (this function's own parameter) is the
+    # CALLER's original object and is never reassigned -- run_pipeline
+    # canonicalizes its own internal copy, which never propagates back here.
+    # result.message_id (from the EmailResult run_pipeline actually returned)
+    # is the canonical EML-nnn, and is the only correct id to look up by.
+    canonical_message_id = result.message_id
+    snapshot = ContextSnapshotRepository(db).find_one({"triggering_email_id": canonical_message_id})
     thread_id = snapshot["thread_id"] if snapshot else None
 
     knowledge = KnowledgeRepository(db).all_for_thread(thread_id) if thread_id else []
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": email.message_id})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": canonical_message_id})
     calendar_actions = (
         CalendarActionRepository(db).find_many({"thread_id": thread_id}) if thread_id else []
     )
@@ -345,12 +352,12 @@ def persist_email_analysis(
     email_repo.set_stage(message_id, ProcessingStage.ANALYZED.value)
 
     _process_knowledge(
-        knowledge_repo, thread_id, analysis, MockLLMProvider(), thread_id, message_id, datetime.now(timezone.utc)
+        db, knowledge_repo, thread_id, analysis, MockLLMProvider(), thread_id, message_id, datetime.now(timezone.utc)
     )
     email_repo.set_stage(message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
 
     entities_referenced = _process_entities(
-        db, thread_id, email, analysis, reference_now, settings.agent_email, settings.agent_name
+        db, thread_id, email, analysis, reference_now, settings.agent_email, MockLLMProvider(), settings.agent_name
     )
     email_repo.set_entity_metadata(
         message_id=message_id,
@@ -635,7 +642,10 @@ def get_thread(db: Database, thread_id: str) -> dict[str, Any] | None:
     """Read-only retrieval of one full conversation. Returns None if the thread doesn't
     exist -- never fabricates one. `latest_context`/`context_version` are None when no
     context_snapshot exists for this thread (e.g. a raw-only thread that was never run
-    through the AI pipeline) -- never invented.
+    through the AI pipeline) -- never invented. `event_trail` is the deterministic,
+    already-recorded Thread Events audit trail (app.entities.thread_events.
+    get_thread_event_trail) -- integrated into this existing thread-retrieval surface
+    rather than a new, duplicate MCP tool; [] for a thread with no recorded events.
     """
     thread = ThreadRepository(db).find_one({"thread_id": thread_id})
     if thread is None:
@@ -669,6 +679,7 @@ def get_thread(db: Database, thread_id: str) -> dict[str, Any] | None:
         ],
         "latest_context": latest_context["context"] if latest_context else None,
         "context_version": latest_context["context_version"] if latest_context else None,
+        "event_trail": get_thread_event_trail(db, thread_id),
     }
 
 

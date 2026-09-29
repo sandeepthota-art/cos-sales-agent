@@ -26,3 +26,29 @@ def format_thread_history(thread_history: list[dict[str, Any]] | None) -> str:
         "Prior messages in this thread, oldest first (context only -- the new message "
         "below is what you are analyzing):\n\n" + "\n\n---\n\n".join(rendered) + "\n\n===\n\n"
     )
+
+
+def format_person_context(person_context: dict[str, Any] | None) -> str:
+    """Renders a bounded person-context view (see
+    app.entities.person_context.get_bounded_person_context_for_llm) as a plain-text
+    block to prepend before the thread-history/Subject/Body block in an
+    analyze_email prompt. Returns "" when there's nothing to show -- a sender with
+    no prior processed email must never show an empty, misleading header."""
+    if not person_context:
+        return ""
+
+    lines = [f"Known context on the sender, {person_context['name']!r}:"]
+    if person_context.get("org"):
+        lines.append(f"- Organization: {person_context['org']}")
+    for entry in person_context.get("current_context", []):
+        lines.append(f"- [{entry['category']}, {entry['provenance']}] {entry['summary']}")
+    for entry in person_context.get("historical_context", []):
+        lines.append(f"- [{entry['category']}, historical] {entry['summary']}")
+    for item in person_context.get("knowledge", []):
+        # item["predicate"] is itself a semantic label (role/preference/concern/...)
+        # for a person-attributed fact (see app.pipeline._process_person_facts), or
+        # a generic fact predicate otherwise -- rendered as the leading tag either
+        # way, exactly like current_context/historical_context entries above.
+        lines.append(f"- [{item['predicate']}, {item['basis']}] {item['current_value']}")
+
+    return "\n".join(lines) + "\n\n===\n\n"

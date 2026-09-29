@@ -6,7 +6,7 @@ import anthropic
 
 from app.email.models import Email
 from app.interfaces.llm_provider import LLMProvider
-from app.providers.llm.thread_history import format_thread_history
+from app.providers.llm.thread_history import format_person_context, format_thread_history
 
 # Claude sometimes wraps its JSON reply in a markdown code fence (```json ... ``` or
 # plain ``` ... ```) even when told "JSON only" -- this pattern strips that fence, if
@@ -83,6 +83,32 @@ _ANALYSIS_INSTRUCTIONS = (
     "facts, requirements, pain_points, and the other business-fact lists empty rather than populating them "
     "with the system's own instructions. "
     "personal_items_mentioned (list of {item_type, description, date_phrase}), "
+    "person_facts_mentioned (list of {person_name, person_email, category, value, basis}) -- for a "
+    "qualitative statement EXPLICITLY about one named, identifiable person's role, responsibility, "
+    "preference, goal, interest, concern, pain point, objection, or buying signal (e.g. 'Ashok is leading "
+    "the analytics initiative' -> {person_name: 'Ashok', category: 'responsibility', value: 'leading the "
+    "analytics initiative'}; 'Ashok prefers weekly calls on Tuesday' -> {person_name: 'Ashok', category: "
+    "'preference', value: 'weekly calls on Tuesday'}; 'Vijender handles procurement' -> {person_name: "
+    "'Vijender', category: 'responsibility', value: 'handles procurement'}). person_name must be a real "
+    "name the email actually gives (matching or closely corresponding to a people_mentioned entry or the "
+    "sender/recipient) -- never a placeholder, role title, or pronoun alone. category is exactly one of: "
+    "role, responsibility, preference, goal, interest, concern, pain_point, objection, buying_signal, "
+    "other. "
+    "ATTRIBUTION IS EVIDENCE-GATED, NEVER AUTOMATIC: only add a person_facts_mentioned entry when the "
+    "email's own wording makes that SPECIFIC person the subject of that SPECIFIC statement -- being merely "
+    "mentioned, copied, or present in the thread is never enough. Distinguish carefully: a statement about "
+    "the SENDER ('I need this by Friday') may be attributed to the sender by name if known; a statement "
+    "about ANOTHER named person ('Ashok says...', 'Vijender handles...') may be attributed to THAT person; "
+    "a statement about the organization or team as a whole ('procurement is worried about security', 'the "
+    "team needs this by Friday') must NOT be attributed to any individual, even one who reported it -- e.g. "
+    "'Ashok says the procurement team is worried about security' is a fact about the procurement team/"
+    "organization, not a personal concern of Ashok's, and must not be turned into 'Ashok has a security "
+    "concern'. If it is unclear whether a statement is about a specific person, the organization, or the "
+    "deal in general, leave it OUT of person_facts_mentioned entirely and let it remain in the existing "
+    "requirements/pain_points/objections/buying_signals/competitors lists instead (thread-scoped, not lost) "
+    "-- never guess an attribution. Never hallucinate a role, title, or preference that the email does not "
+    "state or clearly imply; basis is 'stated' for something the email says directly, 'inferred' only for a "
+    "reasonable, directly-supported inference (never a speculation). "
     "goal_pillar (a short label for which business goal this relates to, e.g. 'Sales'), "
     "label_applied -- exactly one of: "
     "'Needs reply: ASAP' (he must respond, and it is time-critical or from a key relationship), "
@@ -152,10 +178,14 @@ class ClaudeProvider(LLMProvider):
         text = "".join(block.text for block in response.content if hasattr(block, "text"))
         return _extract_json(text)
 
-    def analyze_email(self, email: Email, thread_history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def analyze_email(
+        self, email: Email, thread_history: list[dict[str, Any]] | None = None,
+        person_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         result = self._complete_json(
             _ANALYSIS_INSTRUCTIONS,
-            f"{format_thread_history(thread_history)}Subject: {email.subject}\n\nBody:\n{email.body}",
+            f"{format_person_context(person_context)}{format_thread_history(thread_history)}"
+            f"Subject: {email.subject}\n\nBody:\n{email.body}",
         )
         result.setdefault("email_id", email.message_id)
         return result

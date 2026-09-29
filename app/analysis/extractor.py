@@ -19,6 +19,7 @@ def analyze_email_with_validation(
     email: Email,
     max_retries: int = 1,
     thread_history: list[dict[str, Any]] | None = None,
+    person_context: dict[str, Any] | None = None,
 ) -> AnalysisOutcome:
     last_error: str | None = None
     attempts = max_retries + 1
@@ -33,7 +34,7 @@ def analyze_email_with_validation(
         # identical input, so this failure mode gets the same retry chance as a schema
         # mismatch, using the same max_retries budget -- not a new retry mechanism.
         try:
-            raw = llm.analyze_email(email, thread_history=thread_history)
+            raw = llm.analyze_email(email, thread_history=thread_history, person_context=person_context)
         except json.JSONDecodeError as exc:
             last_error = f"JSONDecodeError: {exc}"
             continue

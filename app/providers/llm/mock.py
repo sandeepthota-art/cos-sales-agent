@@ -59,11 +59,15 @@ _MEETING_REFERENCE_MARKERS = re.compile(
 
 
 class MockLLMProvider(LLMProvider):
-    def analyze_email(self, email: Email, thread_history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        # Pure regex over this one email's own body -- thread_history is accepted
-        # for interface compatibility but deliberately not used: mixing prior
-        # messages' text into these keyword scans would misattribute pain
-        # points/buying signals from an earlier email to this one.
+    def analyze_email(
+        self, email: Email, thread_history: list[dict[str, Any]] | None = None,
+        person_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # Pure regex over this one email's own body -- thread_history/person_context
+        # are accepted for interface compatibility but deliberately not used: mixing
+        # prior messages' text or prior-email person context into these keyword
+        # scans would misattribute pain points/buying signals from an earlier email
+        # to this one.
         body = email.body
 
         competitors = [c for c in _COMPETITORS if c.lower() in body.lower()]

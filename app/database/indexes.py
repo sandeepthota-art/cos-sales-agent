@@ -2,6 +2,9 @@ from pymongo.database import Database
 
 
 def initialize_indexes(db: Database) -> None:
+    # message_id now always holds the canonical EML-nnn value (see the canonical ID
+    # refactor in app.pipeline.ingest_raw_email) -- unique by construction (next_id),
+    # so this index remains a valid, meaningful guarantee, not just a legacy one.
     db.emails.create_index("message_id", unique=True)
     db.emails.create_index("processing_status.stage")
     # Sparse: a pre-existing document that hasn't been backfilled with the new
@@ -9,9 +12,19 @@ def initialize_indexes(db: Database) -> None:
     # simply lacks the field -- a sparse unique index lets any number of documents
     # omit it, while still enforcing uniqueness among documents that do have it.
     db.emails.create_index("id", unique=True, sparse=True)
+    # The TRUE dedup guarantee going forward: source_message_id is the permanent,
+    # never-reassigned Gmail/provider identity app.pipeline.ingest_raw_email's
+    # dedup check now keys on. Sparse: a not-yet-backfilled historical document may
+    # not have this field yet.
+    db.emails.create_index("source_message_id", unique=True, sparse=True)
 
+    # thread_id now always holds the canonical THR-nnn value (mirrors id) -- see
+    # app.pipeline._upsert_thread.
     db.threads.create_index("thread_id", unique=True)
     db.threads.create_index("id", unique=True, sparse=True)
+    # source_thread_id is only ever set when the source actually supplied one --
+    # never unique (many threads legitimately have none; see resolve_thread_id).
+    db.threads.create_index("source_thread_id", sparse=True)
 
     db.context_snapshots.create_index(
         [("thread_id", 1), ("triggering_email_id", 1)], unique=True
@@ -59,3 +72,24 @@ def initialize_indexes(db: Database) -> None:
     db.personal_items.create_index("id", unique=True)
 
     db.ingested_files.create_index("filename", unique=True)
+
+    db.person_context_snapshots.create_index("id", unique=True)
+    # The idempotency guarantee (Phase 5): a retried email always resolves to the
+    # same canonical source_email_id (EML-nnn), so re-running enrichment for the
+    # same (person, email) pair upserts over this same key rather than creating a
+    # duplicate snapshot.
+    db.person_context_snapshots.create_index(
+        [("person_id", 1), ("source_email_id", 1)], unique=True
+    )
+    db.person_context_snapshots.create_index([("person_id", 1), ("created_at", 1)])
+
+    db.thread_events.create_index("id", unique=True)
+    # The idempotency guarantee (Thread Events, Phase 3): at most one event per
+    # logical (thread, email, event_type, entity_type, entity_id) operation --
+    # a retry corrects `operation`/`summary` in place via upsert rather than
+    # appending a second record for the same logical observation.
+    db.thread_events.create_index(
+        [("thread_id", 1), ("email_id", 1), ("event_type", 1), ("entity_type", 1), ("entity_id", 1)],
+        unique=True,
+    )
+    db.thread_events.create_index([("thread_id", 1), ("sequence", 1)], unique=True)

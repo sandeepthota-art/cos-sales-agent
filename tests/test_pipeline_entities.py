@@ -60,8 +60,8 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
     payloads = [_raw_email("1a08090646ebaa45", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
-    assert stored["record_id"] == "1a08090646ebaa45"
+    stored = db.emails.find_one({"source_message_id": "1a08090646ebaa45"}, {"_id": 0})
+    assert stored["record_id"] == "EML-001"
     assert stored["date"] == "2026-09-13"
     assert stored["goal_pillar"] == "Sales"
     assert stored["label_applied"] in {"Needs reply: ASAP", "Read only"}
@@ -104,10 +104,10 @@ def test_follow_up_derived_from_commitment_carries_the_commitment_thread_id(db, 
     payloads = [_raw_email("m1", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m1"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m1"}, {"_id": 0})
     entities_referenced = stored["entities_referenced"]
 
-    thread = ThreadRepository(db).find_one({"message_ids": "m1"})
+    thread = ThreadRepository(db).find_one({"source_message_ids": "m1"})
     commitment = CommitmentRepository(db).find_one({"id": entities_referenced["commitments"][0]})
     follow_up = FollowUpRepository(db).find_one({"id": entities_referenced["follow_ups"][0]})
 
@@ -139,7 +139,7 @@ def test_pipeline_detects_relative_date_meeting_with_no_commitment_and_no_follow
     payloads = [_raw_email("1a08090646ebaa45", "Sounds good. We will meet in 2 weeks.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "1a08090646ebaa45"}, {"_id": 0})
     entities_referenced = stored["entities_referenced"]
     assert entities_referenced["commitments"] == []
     assert len(entities_referenced["meetings"]) == 1
@@ -163,7 +163,7 @@ def test_pipeline_propagates_goal_pillar_onto_the_resolved_meeting(db, settings)
     payloads = [_raw_email("m_pillar_meeting", "Sounds good. We will meet in 2 weeks.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_pillar_meeting"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_pillar_meeting"}, {"_id": 0})
     meeting = MeetingRepository(db).find_one({"id": stored["entities_referenced"]["meetings"][0]})
     assert meeting["project_or_pillar"] == "Sales"
     assert FollowUpRepository(db).find_many({}) == []
@@ -182,7 +182,7 @@ class _NoPeopleLLM(LLMProvider):
     envelope-based resolution works entirely independently of what the LLM chooses to
     report."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return {
             "email_id": email.message_id, "summary": email.body[:200], "intent": "evaluation",
             "entities": [], "facts": [], "requirements": [], "pain_points": [],
@@ -210,7 +210,7 @@ class _MentionsSenderLLM(_NoPeopleLLM):
     envelope resolution independently resolves -- to prove the two paths converge on
     one Person, never two."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "John Explicit", "email": email.from_.email, "org": None, "role_hint": None}
@@ -231,7 +231,7 @@ def test_envelope_resolves_sender_even_when_llm_never_mentions_them_reuses_exist
     payloads = [_raw_email("msg_001", "Just checking in.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _NoPeopleLLM(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "msg_001"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "msg_001"}, {"_id": 0})
     people = stored["entities_referenced"]["people"]
     # John (reused, not duplicated) + the operator's own dedicated profile (Ashok,
     # settings.agent_email).
@@ -244,7 +244,7 @@ def test_envelope_resolves_sender_creating_a_new_person_when_llm_never_mentions_
     payloads = [_raw_email("msg_001", "Just checking in.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _NoPeopleLLM(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "msg_001"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "msg_001"}, {"_id": 0})
     people = stored["entities_referenced"]["people"]
     assert len(people) == 2  # John + the operator's own dedicated profile
     person = PersonRepository(db).find_one({"id": people[0]})
@@ -279,7 +279,7 @@ def test_envelope_and_llm_mention_of_the_same_address_do_not_create_a_duplicate_
     payloads = [_raw_email("msg_001", "Just checking in.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _MentionsSenderLLM(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "msg_001"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "msg_001"}, {"_id": 0})
     people = stored["entities_referenced"]["people"]
     # John (deduped across envelope + mention, not one per resolution path) + the
     # operator's own dedicated profile.
@@ -308,7 +308,7 @@ def test_pipeline_does_not_create_a_meeting_for_a_mere_reference_mtg_384_regress
     payloads = [_raw_email("1a0c5642a4225edd", "Following our meeting, here's the recap you asked for.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "1a0c5642a4225edd"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "1a0c5642a4225edd"}, {"_id": 0})
     assert stored["entities_referenced"]["meetings"] == []
     assert MeetingRepository(db).find_many({}) == []
 
@@ -317,7 +317,7 @@ def test_pipeline_does_not_mark_historical_meeting_mention_as_actionable(db, set
     payloads = [_raw_email("1a08090646ebaa45", "We met last week and it went well.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "1a08090646ebaa45"}, {"_id": 0})
     # MockLLMProvider never recognizes "met" (past tense) as a meeting mention at all --
     # see test_mock_llm_does_not_detect_historical_meeting_mention_as_a_meeting (Task 5).
     assert stored["entities_referenced"]["meetings"] == []
@@ -337,12 +337,12 @@ def test_pipeline_marks_failed_at_entities_processed_without_losing_prior_stage_
     def _boom(*args, **kwargs):
         raise RuntimeError("simulated entity resolution failure")
 
-    monkeypatch.setattr(pipeline_module, "resolve_person", _boom)
+    monkeypatch.setattr(pipeline_module, "resolve_person_with_operation", _boom)
 
     payloads = [_raw_email("1a08090646ebaa45", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "1a08090646ebaa45"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "1a08090646ebaa45"}, {"_id": 0})
     assert stored["processing_status"]["stage"] == "FAILED"
     assert stored["processing_status"]["failed_stage"] == "ENTITIES_PROCESSED"
     assert "simulated entity resolution failure" in stored["processing_status"]["error"]
@@ -366,7 +366,7 @@ class _SingleCommitmentLLM(_NoPeopleLLM):
     def __init__(self, commitment_class):
         self._commitment_class = commitment_class
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["commitments_mentioned"] = [
             {
@@ -385,7 +385,7 @@ def test_pipeline_mine_commitment_creates_a_follow_up(db, settings):
     payloads = [_raw_email("m_mine", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_mine"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_mine"}, {"_id": 0})
     entities_referenced = stored["entities_referenced"]
     assert len(entities_referenced["commitments"]) == 1
     assert len(entities_referenced["follow_ups"]) == 1
@@ -400,7 +400,7 @@ def test_pipeline_owed_to_me_commitment_creates_a_follow_up(db, settings):
     payloads = [_raw_email("m_owed", "Could you send over pricing by Friday?")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_owed"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_owed"}, {"_id": 0})
     entities_referenced = stored["entities_referenced"]
     assert len(entities_referenced["commitments"]) == 1
     assert len(entities_referenced["follow_ups"]) == 1
@@ -417,7 +417,7 @@ def test_pipeline_theirs_commitment_creates_commitment_but_no_follow_up(db, sett
         db, MockEmailProvider(payloads=payloads), _SingleCommitmentLLM("theirs"), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_theirs"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_theirs"}, {"_id": 0})
     entities_referenced = stored["entities_referenced"]
     assert len(entities_referenced["commitments"]) == 1
     assert entities_referenced["follow_ups"] == []
@@ -433,7 +433,7 @@ def test_pipeline_recap_commitment_creates_commitment_but_no_follow_up(db, setti
         db, MockEmailProvider(payloads=payloads), _SingleCommitmentLLM("recap"), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_recap"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_recap"}, {"_id": 0})
     entities_referenced = stored["entities_referenced"]
     assert len(entities_referenced["commitments"]) == 1
     assert entities_referenced["follow_ups"] == []
@@ -469,7 +469,7 @@ def test_pipeline_does_not_create_a_commitment_from_purely_informational_text(db
     payloads = [_raw_email("m_info", "Here is the deck we discussed. No action needed.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_info"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_info"}, {"_id": 0})
     assert stored["entities_referenced"]["commitments"] == []
     assert CommitmentRepository(db).find_many({}) == []
     assert FollowUpRepository(db).find_many({}) == []
@@ -484,7 +484,7 @@ class _ThirdPersonCommitmentLLM(_NoPeopleLLM):
     different name than _raw_email's default sender ("John") so the two never collide
     into an ambiguous same-name match (see match_resolved_person_by_name)."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Priya", "email": "priya@example.com", "org": None, "role_hint": None}
@@ -512,7 +512,7 @@ def test_pipeline_third_person_commitment_is_owned_by_the_named_person_not_the_s
         db, MockEmailProvider(payloads=payloads), _ThirdPersonCommitmentLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_third_person"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_third_person"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     assert commitment["class"] == "theirs"
 
@@ -526,7 +526,7 @@ class _TwoDistinctCommitmentsLLM(_NoPeopleLLM):
     """Two commitments with different `what` text in one email -- must resolve to two
     distinct Commitment records, never merged into one."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["commitments_mentioned"] = [
             {
@@ -547,7 +547,7 @@ def test_pipeline_creates_two_distinct_commitments_from_one_email(db, settings):
         db, MockEmailProvider(payloads=payloads), _TwoDistinctCommitmentsLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_two"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_two"}, {"_id": 0})
     commitment_ids = stored["entities_referenced"]["commitments"]
     assert len(commitment_ids) == 2
     assert len(set(commitment_ids)) == 2  # genuinely distinct, not the same id twice
@@ -564,17 +564,17 @@ def test_pipeline_merges_the_same_commitment_restated_in_a_later_reply_same_thre
     # thread-scoped dedup already in app.entities.resolution.resolve_commitment.
     first_payload = [_raw_email("m_restate_1", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=first_payload), MockLLMProvider(), MockCalendarProvider(), settings)
-    first_stored = db.emails.find_one({"message_id": "m_restate_1"}, {"_id": 0})
+    first_stored = db.emails.find_one({"source_message_id": "m_restate_1"}, {"_id": 0})
     first_thread_id = first_stored["thread_id"]
 
     second_payload = [
         _raw_email(
             "m_restate_2", "Just confirming: I will send the proposal on Friday.",
-            thread_id=first_thread_id, in_reply_to="m_restate_1",
+            in_reply_to="m_restate_1",
         )
     ]
     run_pipeline(db, MockEmailProvider(payloads=second_payload), MockLLMProvider(), MockCalendarProvider(), settings)
-    second_stored = db.emails.find_one({"message_id": "m_restate_2"}, {"_id": 0})
+    second_stored = db.emails.find_one({"source_message_id": "m_restate_2"}, {"_id": 0})
 
     assert first_stored["entities_referenced"]["commitments"] == second_stored["entities_referenced"]["commitments"]
     assert first_stored["entities_referenced"]["follow_ups"] == second_stored["entities_referenced"]["follow_ups"]
@@ -587,7 +587,7 @@ class _CommitmentWithProjectEvidenceLLM(_NoPeopleLLM):
     org matches that project's org -- the only evidence app.pipeline is allowed to use
     to link Commitment.project_id (never a fresh/guessed scan)."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Jane", "email": "jane@acme.com", "org": "Acme", "role_hint": None}
@@ -608,7 +608,7 @@ def test_pipeline_links_commitment_to_project_when_counterparty_org_matches(db, 
         db, MockEmailProvider(payloads=payloads), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_project_link"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_project_link"}, {"_id": 0})
     project_id = stored["entities_referenced"]["projects"][0]
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
 
@@ -631,7 +631,7 @@ def test_pipeline_propagates_goal_pillar_onto_the_resolved_project(db, settings)
         db, MockEmailProvider(payloads=payloads), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_project_pillar"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_project_pillar"}, {"_id": 0})
     project = ProjectRepository(db).find_one({"id": stored["entities_referenced"]["projects"][0]})
     assert project["goal_pillar"] == "Sales"
 
@@ -641,7 +641,7 @@ class _SalesProjectAndMeetingLLM(_NoPeopleLLM):
     SAME email -- for verifying an Opportunity picks up that email's own
     meeting via entities_referenced, never a retroactive scan."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["buying_signals"] = ["pricing request"]
         result["projects_mentioned"] = [{"name": "Acme Renewal", "org": "Acme", "objective_hint": None}]
@@ -656,7 +656,7 @@ class _NonSalesWithProjectEvidenceLLM(_CommitmentWithProjectEvidenceLLM):
     NOT Sales-classified -- proves a resolved Project alone is never enough to
     create an Opportunity without goal_pillar == 'Sales' too."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["goal_pillar"] = "Finance"
         return result
@@ -668,12 +668,12 @@ def test_pipeline_creates_opportunity_for_sales_email_with_resolved_project(db, 
         db, MockEmailProvider(payloads=payloads), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_opp_create"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_opp_create"}, {"_id": 0})
     project_id = stored["entities_referenced"]["projects"][0]
     assert len(stored["entities_referenced"]["opportunities"]) == 1
     opportunity = OpportunityRepository(db).find_one({"id": stored["entities_referenced"]["opportunities"][0]})
     assert opportunity["project_ids"] == [project_id]
-    assert opportunity["source_email_ids"] == ["m_opp_create"]
+    assert opportunity["source_email_ids"] == ["EML-001"]
     assert opportunity["status"] == "open"
     # Manual-only CRM fields are never auto-populated by the pipeline.
     assert opportunity["stage"] is None
@@ -692,15 +692,15 @@ def test_pipeline_reuses_the_same_opportunity_across_two_sales_emails_for_the_sa
         db, MockEmailProvider(payloads=second_payload), _CommitmentWithProjectEvidenceLLM(), MockCalendarProvider(), settings
     )
 
-    first_stored = db.emails.find_one({"message_id": "m_opp_1"}, {"_id": 0})
-    second_stored = db.emails.find_one({"message_id": "m_opp_2"}, {"_id": 0})
+    first_stored = db.emails.find_one({"source_message_id": "m_opp_1"}, {"_id": 0})
+    second_stored = db.emails.find_one({"source_message_id": "m_opp_2"}, {"_id": 0})
     first_opp_id = first_stored["entities_referenced"]["opportunities"][0]
     second_opp_id = second_stored["entities_referenced"]["opportunities"][0]
 
     assert first_opp_id == second_opp_id
     assert OpportunityRepository(db).find_many({}).__len__() == 1
     opportunity = OpportunityRepository(db).find_one({"id": first_opp_id})
-    assert opportunity["source_email_ids"] == ["m_opp_1", "m_opp_2"]
+    assert opportunity["source_email_ids"] == ["EML-001", "EML-002"]
 
 
 def test_pipeline_does_not_create_opportunity_for_sales_email_without_project_evidence(db, settings):
@@ -711,7 +711,7 @@ def test_pipeline_does_not_create_opportunity_for_sales_email_without_project_ev
     payloads = [_raw_email("m_opp_no_project", "Thanks for the update, we'll keep this in mind.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _NoPeopleLLM(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_opp_no_project"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_opp_no_project"}, {"_id": 0})
     assert stored["goal_pillar"] == "Sales"
     assert stored["entities_referenced"]["opportunities"] == []
     assert OpportunityRepository(db).find_many({}) == []
@@ -727,7 +727,7 @@ def test_pipeline_does_not_create_opportunity_for_non_sales_email_with_project_e
         db, MockEmailProvider(payloads=payloads), _NonSalesWithProjectEvidenceLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_opp_non_sales"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_opp_non_sales"}, {"_id": 0})
     assert stored["goal_pillar"] == "Finance"
     assert len(stored["entities_referenced"]["projects"]) == 1  # Project still created, pillar-agnostic
     assert stored["entities_referenced"]["opportunities"] == []
@@ -740,7 +740,7 @@ def test_pipeline_links_opportunity_to_this_emails_own_meeting(db, settings):
         db, MockEmailProvider(payloads=payloads), _SalesProjectAndMeetingLLM(), MockCalendarProvider(), settings
     )
 
-    stored = db.emails.find_one({"message_id": "m_opp_meeting"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_opp_meeting"}, {"_id": 0})
     meeting_id = stored["entities_referenced"]["meetings"][0]
     opportunity = OpportunityRepository(db).find_one({"id": stored["entities_referenced"]["opportunities"][0]})
     assert opportunity["meeting_ids"] == [meeting_id]
@@ -753,7 +753,7 @@ def test_pipeline_commitment_project_id_stays_unset_without_matching_project_evi
     payloads = [_raw_email("m_no_project", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_no_project"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_no_project"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     assert commitment["project_id"] is None
 
@@ -765,7 +765,7 @@ class _CommitmentWithAmbiguousProjectEvidenceLLM(_NoPeopleLLM):
     project-specific reference of its own, so nothing distinguishes which of the two
     the commitment actually belongs to."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Jane", "email": "jane@acme.com", "org": "Acme", "role_hint": None}
@@ -794,7 +794,7 @@ def test_pipeline_commitment_project_id_stays_unset_when_org_has_multiple_projec
         MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_ambiguous_project"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_ambiguous_project"}, {"_id": 0})
     assert len(stored["entities_referenced"]["projects"]) == 2  # both projects still created
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     assert commitment["project_id"] is None
@@ -819,7 +819,7 @@ def test_pipeline_resolves_an_explicit_date_commitment_as_stated(db, settings):
     payloads = [_raw_email("m_stated", "I will send the contract by June 5th.", timestamp="2026-01-01T10:00:00Z")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_stated"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_stated"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     assert commitment["date_type"] == "stated"
     assert commitment["committed_date"].startswith("2026-06-05")
@@ -829,7 +829,7 @@ class _UnresolvedDatePhraseLLM(_NoPeopleLLM):
     """A commitment whose date phrase carries no recognizable date signal at all --
     the phrase itself is still preserved as evidence, but no date may be invented."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["commitments_mentioned"] = [
             {
@@ -844,20 +844,21 @@ def test_pipeline_leaves_commitment_date_unresolved_for_an_unrecognized_phrase(d
     payloads = [_raw_email("m_unresolved", "I'll circle back once things settle down.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _UnresolvedDatePhraseLLM(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_unresolved"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_unresolved"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     assert commitment["committed_date"] is None
     assert commitment["date_type"] == "window"
     # The original phrase must remain visible somewhere as evidence -- it does, on the
-    # raw email body itself (source_record points back to this exact message).
-    assert commitment["source_record"] == "m_unresolved"
+    # raw email body itself (source_record points back to this exact message, by its
+    # canonical EML- id).
+    assert commitment["source_record"] == "EML-001"
 
 
 def test_pipeline_new_follow_up_starts_at_escalation_level_one_unsurfaced_active(db, settings):
     payloads = [_raw_email("m_escalation_default", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_escalation_default"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_escalation_default"}, {"_id": 0})
     follow_up = FollowUpRepository(db).find_one({"id": stored["entities_referenced"]["follow_ups"][0]})
     assert follow_up["escalation_level"] == 1
     assert follow_up["surfaced"] is False
@@ -868,7 +869,7 @@ def test_pipeline_commitment_and_follow_up_use_the_brd_canonical_id_prefixes(db,
     payloads = [_raw_email("m_prefixes", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_prefixes"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_prefixes"}, {"_id": 0})
     assert stored["entities_referenced"]["commitments"][0].startswith("CMT-")
     assert stored["entities_referenced"]["follow_ups"][0].startswith("FUP-")
 
@@ -888,7 +889,7 @@ class _OwedToMeFromLLM(_NoPeopleLLM):
         self._counterparty_email = counterparty_email
         self._date_phrase = date_phrase
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Counterparty", "email": self._counterparty_email, "org": None, "role_hint": None}
@@ -912,7 +913,7 @@ def test_pipeline_internal_owed_to_me_commitment_gets_internal_audience_and_timi
         _OwedToMeFromLLM("colleague@example.com", "tomorrow"), MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_internal"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_internal"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     follow_up = FollowUpRepository(db).find_one({"id": stored["entities_referenced"]["follow_ups"][0]})
 
@@ -933,7 +934,7 @@ def test_pipeline_external_owed_to_me_commitment_with_fixed_date_gets_client_fix
         _OwedToMeFromLLM("buyer@acme.com", "June 5th"), MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_client_fixed"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_client_fixed"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     follow_up = FollowUpRepository(db).find_one({"id": stored["entities_referenced"]["follow_ups"][0]})
 
@@ -959,7 +960,7 @@ def test_pipeline_external_owed_to_me_commitment_with_no_date_gets_client_open_w
         _OwedToMeFromLLM("buyer@acme.com", "once things settle down"), MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_client_window"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_client_window"}, {"_id": 0})
     commitment = CommitmentRepository(db).find_one({"id": stored["entities_referenced"]["commitments"][0]})
     follow_up = FollowUpRepository(db).find_one({"id": stored["entities_referenced"]["follow_ups"][0]})
 
@@ -977,7 +978,7 @@ def test_pipeline_mine_commitment_never_gets_audience_or_timing(db, settings):
     payloads = [_raw_email("m_mine_no_audience", "I will send the proposal on Friday.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_mine_no_audience"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_mine_no_audience"}, {"_id": 0})
     follow_up = FollowUpRepository(db).find_one({"id": stored["entities_referenced"]["follow_ups"][0]})
 
     assert follow_up["audience"] is None
@@ -993,7 +994,7 @@ def test_pipeline_mine_commitment_never_gets_audience_or_timing(db, settings):
 
 
 class _SingleMeetingLLM(_NoPeopleLLM):
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["meetings_mentioned"] = [
             {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []}
@@ -1005,7 +1006,7 @@ def test_pipeline_links_calendar_action_to_the_single_meeting(db, settings):
     payloads = [_raw_email("m_single_meeting", "Let's meet Friday at 3 PM for 30 minutes.")]
     run_pipeline(db, MockEmailProvider(payloads=payloads), _SingleMeetingLLM(), MockCalendarProvider(), settings)
 
-    stored = db.emails.find_one({"message_id": "m_single_meeting"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_single_meeting"}, {"_id": 0})
     assert len(stored["entities_referenced"]["meetings"]) == 1
     meeting_id = stored["entities_referenced"]["meetings"][0]
 
@@ -1018,7 +1019,7 @@ class _TwoMeetingsOneMatchingDetectedDateLLM(_NoPeopleLLM):
     """Two meetings mentioned with different dates -- Friday (matching the real,
     regex-detected calendar action) and next Monday (which doesn't)."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["meetings_mentioned"] = [
             {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []},
@@ -1039,7 +1040,7 @@ def test_pipeline_links_calendar_action_to_the_matching_meeting_among_several(db
         MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_two_meetings_match"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_two_meetings_match"}, {"_id": 0})
     assert len(stored["entities_referenced"]["meetings"]) == 2
     meetings = MeetingRepository(db).find_many({"id": {"$in": stored["entities_referenced"]["meetings"]}})
     friday_meeting = next(m for m in meetings if datetime.fromisoformat(m["date"]).date().isoformat() == "2026-09-18")
@@ -1053,7 +1054,7 @@ class _TwoMeetingsAmbiguousLLM(_NoPeopleLLM):
     detect_meeting to pin down a real date/time (needs_clarification) -- there is no
     real detected date to match either candidate against."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["meetings_mentioned"] = [
             {"date_phrase": "Friday", "attendees": [], "is_past": False, "actions_raised": []},
@@ -1073,7 +1074,7 @@ def test_pipeline_calendar_action_meeting_id_stays_unset_when_ambiguous(db, sett
         db, MockEmailProvider(payloads=payloads), _TwoMeetingsAmbiguousLLM(), MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_ambiguous_meeting"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_ambiguous_meeting"}, {"_id": 0})
     assert len(stored["entities_referenced"]["meetings"]) == 2
 
     action = CalendarActionRepository(db).find_one({})  # exactly one calendar action created in this test
@@ -1095,7 +1096,7 @@ class _CalendarInviteBodyRepeatsAttendeeNameLLM(_NoPeopleLLM):
     Vijender Reddy Pochampally"), with no email of its own -- exactly the shape a
     calendar invite's body produces."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [
             {"name": "Vijender Reddy Pochampally", "email": None, "org": None, "role_hint": None}
@@ -1115,7 +1116,7 @@ def test_pipeline_calendar_invite_body_mention_reuses_the_envelope_person_not_a_
         MockCalendarProvider(), settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_calendar_invite"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_calendar_invite"}, {"_id": 0})
     # John (sender) + Vijender (cc, resolved once) + the operator's own dedicated
     # profile (Ashok, the default "to", is settings.agent_email). The body mention of
     # Vijender must NOT add a second, no-email record for him.
@@ -1131,7 +1132,7 @@ class _NoPeopleLLMWithMention(_NoPeopleLLM):
     def __init__(self, name):
         self._name = name
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [{"name": self._name, "email": None, "org": None, "role_hint": None}]
         return result
@@ -1160,7 +1161,7 @@ def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tie
     # for >1 candidate, so this must behave exactly as before the fix (new flagged
     # record), not silently attach to either.
     class _TwoRedditsLLM(_NoPeopleLLM):
-        def analyze_email(self, email, thread_history=None):
+        def analyze_email(self, email, thread_history=None, person_context=None):
             result = super().analyze_email(email)
             result["people_mentioned"] = [
                 {"name": "Anil Reddy", "email": "anil@example.com", "org": None, "role_hint": None},
@@ -1200,7 +1201,7 @@ class _CalendarInviteBodyMentionsOperatorByNameLLM(_NoPeopleLLM):
     def __init__(self, name):
         self._name = name
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         result = super().analyze_email(email)
         result["people_mentioned"] = [{"name": self._name, "email": None, "org": None, "role_hint": None}]
         return result
@@ -1219,7 +1220,7 @@ def test_pipeline_body_mention_of_operators_own_name_links_to_operator_profile(d
         MockCalendarProvider(), operator_settings,
     )
 
-    stored = db.emails.find_one({"message_id": "m_calendar_invite_self"}, {"_id": 0})
+    stored = db.emails.find_one({"source_message_id": "m_calendar_invite_self"}, {"_id": 0})
     # John (sender) + the operator's own dedicated profile (Ashok, resolved once via
     # the envelope loop AND once via the body mention -- deduped to the same id).
     assert len(set(stored["entities_referenced"]["people"])) == 2
@@ -1252,7 +1253,7 @@ def test_pipeline_mention_with_agent_email_links_to_operator_profile_regardless_
     # display name (e.g. a signature block) -- must still tie to the operator
     # profile by email, with no dependence on agent_name being configured at all.
     class _MentionsAgentEmailUnderOtherNameLLM(_NoPeopleLLM):
-        def analyze_email(self, email, thread_history=None):
+        def analyze_email(self, email, thread_history=None, person_context=None):
             result = super().analyze_email(email)
             result["people_mentioned"] = [
                 {"name": "Ashok Ganapam Kumar", "email": "ashok@example.com", "org": None, "role_hint": None}

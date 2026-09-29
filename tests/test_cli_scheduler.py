@@ -59,7 +59,7 @@ def test_scheduler_cli_once_runs_a_single_poll_and_exits(monkeypatch, tmp_path, 
 
     settings = Settings()
     db = _patch_mongo_client[settings.mongodb_database]
-    assert db.emails.count_documents({"message_id": "m1"}) == 1
+    assert db.emails.count_documents({"source_message_id": "m1"}) == 1
     assert db.ingested_files.count_documents({"filename": "a.json"}) == 1
 
 
@@ -78,7 +78,7 @@ def test_scheduler_cli_detects_a_newly_added_file_across_two_once_runs(monkeypat
     settings = Settings()
     db = _patch_mongo_client[settings.mongodb_database]
     assert db.emails.count_documents({}) == 2
-    assert db.emails.count_documents({"message_id": "m2"}) == 1
+    assert db.emails.count_documents({"source_message_id": "m2"}) == 1
 
 
 def test_scheduler_cli_default_mode_calls_run_forever_with_configured_interval_without_looping(

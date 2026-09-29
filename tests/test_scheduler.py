@@ -63,7 +63,7 @@ def test_run_once_processes_a_discovered_batch_through_the_real_pipeline(db, set
 
     assert len(summaries) == 1
     assert summaries[0].completed == 1
-    assert db.emails.count_documents({"message_id": "m1"}) == 1
+    assert db.emails.count_documents({"source_message_id": "m1"}) == 1
     assert source.marked == [("batch-1", 0)]
 
 
@@ -123,8 +123,8 @@ def test_run_once_continues_remaining_batches_after_one_batch_raises(db, setting
 
     assert len(summaries) == 1
     assert source.marked == [("batch-2", 0)]
-    assert db.emails.count_documents({"message_id": "m2"}) == 1
-    assert db.emails.count_documents({"message_id": "m1"}) == 0
+    assert db.emails.count_documents({"source_message_id": "m2"}) == 1
+    assert db.emails.count_documents({"source_message_id": "m1"}) == 0
 
 
 def test_run_once_returns_empty_and_does_not_raise_when_source_discovery_raises(db, settings):

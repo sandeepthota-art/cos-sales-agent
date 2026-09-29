@@ -66,8 +66,8 @@ def test_file_mode_ingests_export_through_existing_pipeline(monkeypatch, tmp_pat
 
     settings = Settings()
     db = _patch_mongo_client[settings.mongodb_database]
-    assert db.emails.count_documents({"message_id": "18f348ce69f386be"}) == 1
-    assert db.threads.count_documents({"thread_id": "18f348ce69f386be"}) == 1
+    assert db.emails.count_documents({"source_message_id": "18f348ce69f386be"}) == 1
+    assert db.threads.count_documents({"source_thread_id": "18f348ce69f386be"}) == 1
 
 
 def test_file_mode_ignores_email_limit_and_processes_whole_export(monkeypatch, tmp_path, _patch_mongo_client):

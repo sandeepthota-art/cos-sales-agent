@@ -310,10 +310,13 @@ def retrieve_email_activity(
     """Bounded, read-only email retrieval using only fields the live pipeline
     actually populates: `entities_referenced.people` (the real canonical link every
     processed email already carries -- see app.entities.context.get_person_context's
-    own emails query) for person scoping, and Thread.message_ids (NOT a `thread_id`
-    field on the Email document itself, which the live pipeline never sets -- see
-    app.mcp.tools' own established `EmailRepository.find_many({"message_id":
-    {"$in": thread["message_ids"]}})` pattern) for thread scoping.
+    own emails query) for person scoping, and Thread.message_ids for thread scoping
+    (joined via app.mcp.tools' own established `EmailRepository.find_many(
+    {"message_id": {"$in": thread["message_ids"]}})` pattern, both sides canonical
+    EML-nnn values post the canonical-ID refactor -- since Email.thread_id is
+    itself now backfilled to the canonical thread id too, either join would work,
+    but this keeps the one, already-established pattern rather than introducing a
+    second, redundant path to the same data).
 
     Never fabricates sentiment, response status, sales stage, or priority -- returns
     each email's real stored fields only (label_applied is a real, LLM-set

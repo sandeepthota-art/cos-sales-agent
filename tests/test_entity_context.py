@@ -28,6 +28,7 @@ from app.database.repositories import (
 from app.entities.context import get_organization_context, get_person_context
 from app.entities.resolution import match_resolved_person_by_name, resolve_person
 from app.pipeline import _link_knowledge_to_entities, _link_thread_to_entities, _process_entities
+from app.providers.llm.mock import MockLLMProvider
 from app.replies.models import ReplyDraft, ReplyDraftContent
 
 _NOW = datetime(2026, 9, 13, 10, 30, tzinfo=timezone.utc)
@@ -125,7 +126,7 @@ def test_thread_document_gets_canonical_person_ids_and_org_ids(db):
     email = _email()
     entities = _process_entities(db, "thread_1", email, _analysis(
         people_mentioned=[MentionedPerson(name="Ashok Ganapam", email="ashok@databeat.io", org="DataBeat")],
-    ), _NOW, "sandeep@example.com")
+    ), _NOW, "sandeep@example.com", MockLLMProvider())
     ashok_id = entities["people"][0]
     ashok_org_id = PersonRepository(db).find_one({"id": ashok_id})["org_id"]
     # The email's "to" (settings.agent_email in this call) resolves to the operator's
@@ -146,7 +147,9 @@ def test_calendar_action_can_reference_a_canonical_meeting_id(db):
     email = _email(body="Let's meet Tuesday at 3pm to discuss the rollout.")
     _run_pipeline_for(db, email)
 
-    action = CalendarActionRepository(db).find_one({"thread_id": "thread_1"})
+    # Canonical ID refactor: "thread_1" is the source-supplied thread id -- the real
+    # pipeline resolves it to a fresh canonical THR-001 (first thread in this db).
+    action = CalendarActionRepository(db).find_one({"thread_id": "THR-001"})
     assert action is not None
     # detect_meeting's calendar-invite detection is independent of meetings_mentioned
     # (which this MockLLMProvider body doesn't trigger here) -- meeting_id is simply
@@ -169,7 +172,7 @@ def test_commitment_can_point_to_the_canonical_person(db):
         ],
     )
 
-    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
 
     ashok_id = entities["people"][0]
     commitment = CommitmentRepository(db).find_one({"id": entities["commitments"][0]})
@@ -187,7 +190,7 @@ def test_meeting_can_point_to_the_canonical_person(db):
         ],
     )
 
-    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
 
     ashok_id = entities["people"][0]
     meeting = MeetingRepository(db).find_one({"id": entities["meetings"][0]})
@@ -203,7 +206,7 @@ def test_project_can_point_to_the_canonical_person(db):
         projects_mentioned=[MentionedProject(name="Rollout", org="DataBeat")],
     )
 
-    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
 
     ashok_id = entities["people"][0]
     project = ProjectRepository(db).find_one({"id": entities["projects"][0]})
@@ -225,7 +228,7 @@ def test_follow_up_inherits_canonical_person_from_its_commitment(db):
         ],
     )
 
-    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    entities = _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
 
     ashok_id = entities["people"][0]
     commitment = CommitmentRepository(db).find_one({"id": entities["commitments"][0]})
@@ -241,7 +244,7 @@ def test_knowledge_item_can_point_to_the_canonical_person_when_appropriate(db):
         people_mentioned=[MentionedPerson(name="Ashok Ganapam", email="ashok@databeat.io", org="DataBeat")],
         facts=[{"subject": "Ashok", "predicate": "prefers", "object": "morning meetings"}],
     )
-    _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
     KnowledgeRepository(db).upsert_by_key(
         {"knowledge_id": "k1"},
         {
@@ -265,7 +268,7 @@ def test_knowledge_item_about_the_company_points_to_the_canonical_org(db):
     analysis = _analysis(
         people_mentioned=[MentionedPerson(name="Ashok Ganapam", email="ashok@databeat.io", org="DataBeat")],
     )
-    _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
     KnowledgeRepository(db).upsert_by_key(
         {"knowledge_id": "k2"},
         {
@@ -289,7 +292,7 @@ def test_thread_level_knowledge_item_gets_neither_person_nor_org(db):
     analysis = _analysis(
         people_mentioned=[MentionedPerson(name="Ashok Ganapam", email="ashok@databeat.io", org="DataBeat")],
     )
-    _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com")
+    _process_entities(db, "thread_1", email, analysis, _NOW, "sandeep@example.com", MockLLMProvider())
     KnowledgeRepository(db).upsert_by_key(
         {"knowledge_id": "k3"},
         {
@@ -341,7 +344,7 @@ def test_reply_draft_can_point_to_the_canonical_person(db):
     _run_pipeline_for(db, email)
 
     ashok_id = PersonRepository(db).find_one({"email": "ashok@databeat.io"})["id"]
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_1"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft is not None
     assert draft["person_id"] == ashok_id
     assert draft["org_id"] is not None
@@ -353,7 +356,7 @@ def test_calendar_action_can_reference_the_canonical_person_without_external_att
     _run_pipeline_for(db, email)
 
     ashok_id = PersonRepository(db).find_one({"email": "ashok@databeat.io"})["id"]
-    action = CalendarActionRepository(db).find_one({"thread_id": "thread_1"})
+    action = CalendarActionRepository(db).find_one({"thread_id": "THR-001"})
     assert action is not None
     assert action["person_id"] == ashok_id
     # The existing calendar safety rule is completely untouched by this metadata.
@@ -375,7 +378,7 @@ def test_multiple_objects_referring_to_ashok_all_use_the_same_canonical_person(d
             RawCommitment.model_validate({"what": "send pricing", "class": "mine", "owed_by": None, "owed_to": "Ashok Ganapam"})
         ],
         meetings_mentioned=[RawMeeting.model_validate({"attendees": ["Ashok"], "is_past": False, "actions_raised": []})],
-    ), _NOW, "sandeep@example.com")
+    ), _NOW, "sandeep@example.com", MockLLMProvider())
 
     ashok_id = entities1["people"][0]
     commitment = CommitmentRepository(db).find_one({"id": entities1["commitments"][0]})
@@ -393,7 +396,7 @@ def test_multiple_objects_referring_to_databeat_all_use_the_same_canonical_org(d
     entities = _process_entities(db, "thread_1", email, _analysis(
         people_mentioned=[MentionedPerson(name="Ashok Ganapam", email="ashok@databeat.io", org="DataBeat")],
         projects_mentioned=[MentionedProject(name="Rollout", org="DataBeat")],
-    ), _NOW, "sandeep@example.com")
+    ), _NOW, "sandeep@example.com", MockLLMProvider())
 
     person = PersonRepository(db).find_one({"id": entities["people"][0]})
     project = ProjectRepository(db).find_one({"id": entities["projects"][0]})
@@ -415,7 +418,7 @@ def test_get_person_context_retrieves_canonical_relationships(db):
         ],
         meetings_mentioned=[RawMeeting.model_validate({"attendees": ["Ashok"], "is_past": False, "actions_raised": []})],
         projects_mentioned=[MentionedProject(name="Rollout", org="DataBeat")],
-    ), _NOW, "sandeep@example.com")
+    ), _NOW, "sandeep@example.com", MockLLMProvider())
     _link_thread_to_entities(db, "thread_1")
 
     ashok_id = entities["people"][0]

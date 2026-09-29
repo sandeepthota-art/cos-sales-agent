@@ -46,10 +46,13 @@ class _FailingGmailClient:
 
 
 def _mark_completed(db, message_id, thread_id="thread_1"):
+    # Simulates an email already fully processed under the canonical ID scheme:
+    # message_id holds the canonical EML- value, source_message_id the true,
+    # permanent Gmail id LiveGmailSource's own pre-filter must check against.
     EmailRepository(db).upsert_by_key(
-        {"message_id": message_id},
+        {"source_message_id": message_id},
         {
-            "message_id": message_id, "thread_id": thread_id,
+            "message_id": f"EML-{message_id}", "source_message_id": message_id, "thread_id": thread_id,
             "from": {"name": None, "email": "someone@example.com"}, "to": [], "cc": [],
             "subject": "historical", "body": "historical body", "timestamp": "2024-01-01T00:00:00Z",
             "labels": [], "processing_status": {"stage": "COMPLETED", "error": None},

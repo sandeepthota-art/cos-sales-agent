@@ -50,7 +50,7 @@ def run_raw_file_ingestion(db: Database, input_path: str) -> RawIngestionSummary
     raw_emails = provider.fetch_emails(limit=provider.total_found)
 
     for raw in raw_emails:
-        message_id = raw.get("message_id")
+        message_id = raw.get("message_id") or raw.get("source_message_id")
         try:
             email = parse_email(raw)
         except ValidationError:
@@ -65,22 +65,33 @@ def run_raw_file_ingestion(db: Database, input_path: str) -> RawIngestionSummary
         # `file`-mode run, which raw ingestion must never downgrade back to a bare
         # raw copy. This is also what makes a second run of the same file a pure
         # no-op for every email it already touched: idempotent by construction.
-        if email_repo.find_one({"message_id": email.message_id}) is not None:
+        # Dedup keys on source_message_id (the true, permanent Gmail/provider
+        # identity) -- never on message_id, which this function is about to
+        # reassign to the canonical EML-nnn value.
+        if email_repo.find_one({"source_message_id": email.source_message_id}) is not None:
             already_existed += 1
             continue
 
+        # Guarded above -- every email reaching this point is genuinely new, so an
+        # EML- id is always generated here, exactly once, via the same atomic
+        # next_id counter the AI-enriched pipeline uses. Canonical ID refactor:
+        # message_id is reassigned to it -- the same one translation boundary
+        # app.pipeline.ingest_raw_email uses, kept in sync here since this
+        # function intentionally does not call ingest_raw_email itself (no LLM
+        # provider may ever be constructed on this path).
+        email_id = next_id(db, "EML-")
+        email = email.model_copy(update={"message_id": email_id})
         document = email.model_dump(mode="json", by_alias=True)
-        # Guarded above (`if email_repo.find_one(...) is not None: continue`) --
-        # every email reaching this point is genuinely new, so an EML- id is always
-        # generated here, exactly once, via the same atomic next_id counter the
-        # AI-enriched pipeline uses.
-        document["id"] = next_id(db, "EML-")
-        email_repo.upsert_by_key({"message_id": email.message_id}, document)
+        document["id"] = email_id
+        email_repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
         inserted += 1
 
         candidates = _load_thread_candidates(thread_repo)
-        thread_id = resolve_thread_id(email, candidates)
-        _upsert_thread(thread_repo, thread_id, email, db)
+        resolved_thread_id = resolve_thread_id(email, candidates)
+        thread_id = _upsert_thread(thread_repo, resolved_thread_id, email, db)
+        # emails.thread_id must also hold the canonical THR-nnn -- mirrors
+        # app.pipeline.resolve_and_persist_thread's own backfill.
+        email_repo.upsert_by_key({"source_message_id": email.source_message_id}, {"thread_id": thread_id})
         touched_thread_ids.add(thread_id)
 
     return RawIngestionSummary(

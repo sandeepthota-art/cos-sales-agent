@@ -1,8 +1,10 @@
 # tests/test_query_email_activity.py
 """Phase 22B.3: bounded, read-only email activity retrieval. Uses only fields the
 live pipeline actually populates -- entities_referenced.people for person scoping,
-Thread.message_ids for thread scoping (never a thread_id field on the Email
-document itself, which the live pipeline never sets)."""
+Thread.message_ids for thread scoping (joined via the existing message_id-in-list
+pattern; Email.thread_id is also backfilled to the canonical thread id post the
+canonical-ID refactor, but this module keeps the one established join rather than
+adding a second path to the same data)."""
 from datetime import datetime, timezone
 
 import mongomock

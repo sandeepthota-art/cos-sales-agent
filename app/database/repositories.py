@@ -205,3 +205,23 @@ class IngestedFileRepository(_BaseRepository):
 
 class MigrationRunRepository(_BaseRepository):
     collection_name = "migration_runs"
+
+
+class PersonContextSnapshotRepository(_BaseRepository):
+    collection_name = "person_context_snapshots"
+
+    def recent_for_person(self, person_id: str, limit: int) -> list[dict[str, Any]]:
+        return list(
+            self._collection.find({"person_id": person_id}, {"_id": 0})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+
+
+class ThreadEventRepository(_BaseRepository):
+    collection_name = "thread_events"
+
+    def for_thread(self, thread_id: str) -> list[dict[str, Any]]:
+        return list(
+            self._collection.find({"thread_id": thread_id}, {"_id": 0}).sort("sequence", 1)
+        )

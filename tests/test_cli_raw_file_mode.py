@@ -73,8 +73,8 @@ def test_raw_file_mode_ingests_without_any_llm_configuration(monkeypatch, tmp_pa
 
     settings = Settings()
     db = _patch_mongo_client[settings.mongodb_database]
-    assert db.emails.count_documents({"message_id": "18f348ce69f386be"}) == 1
-    assert db.threads.count_documents({"thread_id": "18f348ce69f386be"}) == 1
+    assert db.emails.count_documents({"source_message_id": "18f348ce69f386be"}) == 1
+    assert db.threads.count_documents({"source_thread_id": "18f348ce69f386be"}) == 1
 
 
 def test_raw_file_mode_never_writes_knowledge_or_entity_collections(monkeypatch, tmp_path, _patch_mongo_client):

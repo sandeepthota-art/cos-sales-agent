@@ -51,7 +51,7 @@ def build_evidence_items(
                 person_id=record.get("person_id") or _first_or_none(record.get("person_ids")),
                 org_id=record.get("org_id") or _first_or_none(record.get("org_ids")),
                 project_id=record.get("project_id"),
-                source_message_id=record.get("source_email_id") or record.get("source_record"),
+                email_id=record.get("source_email_id") or record.get("source_record"),
                 timestamp=_parse_iso(record.get(timestamp_field)) if timestamp_field else None,
                 summary_fields={k: record.get(k) for k in summary_fields if k in record},
             )
@@ -79,7 +79,7 @@ def build_evidence_from_context_items(
                 person_id=record.get("person_id") or _first_or_none(record.get("person_ids")),
                 org_id=record.get("org_id") or _first_or_none(record.get("org_ids")),
                 project_id=record.get("project_id"),
-                source_message_id=record.get("source_email_id") or record.get("source_record"),
+                email_id=record.get("source_email_id") or record.get("source_record"),
                 timestamp=_parse_iso(record.get(timestamp_field)) if timestamp_field else None,
                 summary_fields={k: record.get(k) for k in summary_fields if k in record},
             )

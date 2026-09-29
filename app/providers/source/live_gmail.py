@@ -75,7 +75,10 @@ class LiveGmailSource(Source):
             if converted is None:
                 skipped_malformed += 1
                 continue
-            existing = self._email_repo.find_one({"message_id": converted["message_id"]})
+            # Canonical ID refactor: emails.message_id now holds the canonical
+            # EML-nnn, never the raw Gmail id -- the true, permanent identity to
+            # pre-filter against is source_message_id.
+            existing = self._email_repo.find_one({"source_message_id": converted["message_id"]})
             if existing and (existing.get("processing_status") or {}).get("stage") == "COMPLETED":
                 skipped_already_completed += 1
                 continue

@@ -9,6 +9,11 @@ explicitly patch ProviderFactory.create_llm_provider to RAISE if called, to prov
 these tools never reach the configured LLM provider even in the one place the
 existing pipeline can touch an LLM downstream of analysis (the ambiguous-band
 verify_same_fact call inside knowledge deduplication).
+
+Canonical ID refactor: message_id/thread_id are always EML-nnn/THR-nnn from
+ingest_email onward -- every fixture below uses a raw source id (e.g. "msg_001")
+only when BUILDING the raw email, and the canonical "EML-00N"/"THR-00N" (the
+Nth one allocated in that test's own fresh db) for every call afterward.
 """
 import mongomock
 import pytest
@@ -49,7 +54,7 @@ def _raw_email(message_id, body="Body.", subject="Enterprise CRM Proposal", **ov
     return raw
 
 
-def _analysis(message_id="msg_001", **overrides):
+def _analysis(message_id="EML-001", **overrides):
     base = dict(
         email_id=message_id,
         summary="a summary",
@@ -102,15 +107,17 @@ def test_ingest_email_persists_raw_email_and_resolves_thread(db):
 
     result = tools.ingest_email(db, email)
 
-    assert result["message_id"] == "msg_001"
+    assert result["message_id"] == "EML-001"
     assert result["thread_id"] is not None
     assert result["already_completed"] is False
     assert result["previous_context"] is None
 
-    stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["processing_status"]["stage"] == "THREADED"
+    assert stored["source_message_id"] == "msg_001"
     thread = ThreadRepository(db).find_one({"thread_id": result["thread_id"]})
-    assert "msg_001" in thread["message_ids"]
+    assert "EML-001" in thread["message_ids"]
+    assert "msg_001" in thread["source_message_ids"]
 
 
 def test_ingest_email_returns_human_readable_internal_ids_for_a_new_email(db):
@@ -118,9 +125,9 @@ def test_ingest_email_returns_human_readable_internal_ids_for_a_new_email(db):
 
     assert result["email_internal_id"] == "EML-001"
     assert result["thread_internal_id"] == "THR-001"
-    # Source/dedup identifiers stay exactly as returned before this feature existed.
-    assert result["message_id"] == "msg_001"
-    assert result["thread_id"] == "thread_msg_001"
+    # Canonical identity now: message_id/thread_id ARE the internal ids.
+    assert result["message_id"] == "EML-001"
+    assert result["thread_id"] == "THR-001"
 
 
 def test_ingest_email_returns_internal_ids_for_an_already_completed_email_too(db, settings):
@@ -151,7 +158,7 @@ def test_ingest_email_skips_an_already_completed_email_without_reprocessing(db, 
     assert result["thread_id"] is not None
     after_count = EmailRepository(db).find_many({}).__len__()
     assert after_count == before_count  # no duplicate email document created
-    stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["processing_status"]["stage"] == "COMPLETED"  # not reset/downgraded
 
 
@@ -171,7 +178,7 @@ def test_ingest_email_returns_prior_messages_in_thread_timeline_excluding_itself
     )
     result = tools.ingest_email(db, parse_email(second))
 
-    assert [m["message_id"] for m in result["thread_timeline"]] == ["msg_001"]
+    assert [m["message_id"] for m in result["thread_timeline"]] == ["EML-001"]
     assert result["thread_timeline"][0]["body"] == "We currently use Salesforce."
 
 
@@ -198,17 +205,17 @@ def test_persist_email_analysis_requires_ingest_email_first(db, settings):
 
 def test_persist_email_analysis_never_constructs_the_configured_llm_provider(db, settings, no_llm_construction):
     tools.ingest_email(db, parse_email(_raw_email("msg_001")))
-    tools.persist_email_analysis(db, "msg_001", _analysis(message_id="msg_001"), settings)
+    tools.persist_email_analysis(db, "EML-001", _analysis(message_id="EML-001"), settings)
 
 
 def test_persist_email_analysis_resolves_people_and_stores_entities_referenced(db, settings):
     tools.ingest_email(db, parse_email(_raw_email("msg_001")))
     analysis = _analysis(
-        message_id="msg_001",
+        message_id="EML-001",
         people_mentioned=[MentionedPerson(name="Jane Doe", email="jane@example.com", org=None, role_hint=None)],
     )
 
-    result = tools.persist_email_analysis(db, "msg_001", analysis, settings)
+    result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
 
     # 3, not 1: envelope-based resolution also resolves the sender (john@example.com,
     # from _raw_email's default "from") in addition to the LLM's own people_mentioned
@@ -225,7 +232,7 @@ def test_persist_email_analysis_resolves_people_and_stores_entities_referenced(d
     assert operator is not None
     assert operator["type"] == "operator"
 
-    stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["entities_referenced"]["people"] == result["entities_referenced"]["people"]
     assert stored["processing_status"]["stage"] == "MEETING_PROCESSED"
 
@@ -233,7 +240,7 @@ def test_persist_email_analysis_resolves_people_and_stores_entities_referenced(d
 def test_persist_email_analysis_creates_commitment_and_follow_up_with_matching_thread_id(db, settings):
     ingest = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
     analysis = _analysis(
-        message_id="msg_001",
+        message_id="EML-001",
         commitments_mentioned=[
             RawCommitment.model_validate(
                 {"what": "send the proposal", "class": "mine", "date_phrase": "tomorrow"}
@@ -241,7 +248,7 @@ def test_persist_email_analysis_creates_commitment_and_follow_up_with_matching_t
         ],
     )
 
-    result = tools.persist_email_analysis(db, "msg_001", analysis, settings)
+    result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
 
     commitment_id = result["entities_referenced"]["commitments"][0]
     follow_up_id = result["entities_referenced"]["follow_ups"][0]
@@ -261,13 +268,13 @@ def test_persist_email_analysis_creates_meeting_entity_and_calendar_proposal(db,
         db, parse_email(_raw_email("msg_001", "Let's meet Tuesday at 3 PM for 30 minutes."))
     )
     analysis = _analysis(
-        message_id="msg_001",
+        message_id="EML-001",
         meetings_mentioned=[
             RawMeeting.model_validate({"date_phrase": "Tuesday", "attendees": [], "is_past": False})
         ],
     )
 
-    result = tools.persist_email_analysis(db, "msg_001", analysis, settings)
+    result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
 
     meeting_id = result["entities_referenced"]["meetings"][0]
     assert meeting_id.startswith("MTG-")
@@ -280,13 +287,13 @@ def test_persist_email_analysis_creates_meeting_entity_and_calendar_proposal(db,
 def test_persist_email_analysis_processes_knowledge_facts(db, settings):
     tools.ingest_email(db, parse_email(_raw_email("msg_001")))
     analysis = _analysis(
-        message_id="msg_001",
+        message_id="EML-001",
         facts=[{"subject": "Customer", "predicate": "uses", "object": "Salesforce"}],
     )
 
-    tools.persist_email_analysis(db, "msg_001", analysis, settings)
+    tools.persist_email_analysis(db, "EML-001", analysis, settings)
 
-    items = KnowledgeRepository(db).all_for_thread(tools._thread_id_index(db)["msg_001"])
+    items = KnowledgeRepository(db).all_for_thread(tools._thread_id_index(db)["EML-001"])
     assert any(i["current_value"] == "Salesforce" for i in items)
 
 
@@ -301,7 +308,7 @@ def test_persist_email_analysis_ambiguous_knowledge_band_never_calls_configured_
     thread_email_1 = _raw_email("msg_001", "We need pricing.")
     tools.ingest_email(db, parse_email(thread_email_1))
     tools.persist_email_analysis(
-        db, "msg_001", _analysis(message_id="msg_001", buying_signals=["pricing request"]), settings
+        db, "EML-001", _analysis(message_id="EML-001", buying_signals=["pricing request"]), settings
     )
 
     thread_email_2 = _raw_email(
@@ -309,7 +316,7 @@ def test_persist_email_analysis_ambiguous_knowledge_band_never_calls_configured_
     )
     tools.ingest_email(db, parse_email(thread_email_2))
     result = tools.persist_email_analysis(
-        db, "msg_002", _analysis(message_id="msg_002", buying_signals=["proposal request"]), settings
+        db, "EML-002", _analysis(message_id="EML-002", buying_signals=["proposal request"]), settings
     )
 
     # Completed without raising (no_llm_construction would have raised if a real
@@ -328,32 +335,32 @@ def test_persist_context_delta_creates_first_version(db):
         requirements=ListFieldDelta(added=[DeltaItem(value="100 seats", basis="stated")])
     )
 
-    result = tools.persist_context_delta(db, ingest["thread_id"], "msg_001", delta)
+    result = tools.persist_context_delta(db, ingest["thread_id"], "EML-001", delta)
 
     assert result["context_version"] == 1
     assert result["already_persisted"] is False
     assert any(r["value"] == "100 seats" for r in result["context"]["requirements"])
-    stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["processing_status"]["stage"] == "CONTEXT_BUILT"
 
 
 def test_persist_context_delta_never_calls_llm(db, no_llm_construction):
     ingest = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
-    tools.persist_context_delta(db, ingest["thread_id"], "msg_001", ContextDelta())
+    tools.persist_context_delta(db, ingest["thread_id"], "EML-001", ContextDelta())
 
 
 def test_persist_context_delta_is_idempotent_on_repeat_call(db):
     ingest = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
     delta = ContextDelta(requirements=ListFieldDelta(added=[DeltaItem(value="100 seats", basis="stated")]))
 
-    first = tools.persist_context_delta(db, ingest["thread_id"], "msg_001", delta)
-    second = tools.persist_context_delta(db, ingest["thread_id"], "msg_001", delta)
+    first = tools.persist_context_delta(db, ingest["thread_id"], "EML-001", delta)
+    second = tools.persist_context_delta(db, ingest["thread_id"], "EML-001", delta)
 
     assert first["already_persisted"] is False
     assert second["already_persisted"] is True
     assert second["context_version"] == first["context_version"]
     snapshots = ContextSnapshotRepository(db).find_many(
-        {"thread_id": ingest["thread_id"], "triggering_email_id": "msg_001"}
+        {"thread_id": ingest["thread_id"], "triggering_email_id": "EML-001"}
     )
     assert len(snapshots) == 1  # no duplicate version created
 
@@ -361,14 +368,14 @@ def test_persist_context_delta_is_idempotent_on_repeat_call(db):
 def test_persist_context_delta_builds_on_the_previous_snapshot_in_the_same_thread(db):
     ingest1 = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
     tools.persist_context_delta(
-        db, ingest1["thread_id"], "msg_001",
+        db, ingest1["thread_id"], "EML-001",
         ContextDelta(requirements=ListFieldDelta(added=[DeltaItem(value="100 seats", basis="stated")])),
     )
 
     email2 = _raw_email("msg_002", timestamp="2026-09-14T10:30:00Z")
     tools.ingest_email(db, parse_email(email2))
     result = tools.persist_context_delta(
-        db, ingest1["thread_id"], "msg_002",
+        db, ingest1["thread_id"], "EML-002",
         ContextDelta(pain_points=ListFieldDelta(added=[DeltaItem(value="slow onboarding", basis="stated")])),
     )
 
@@ -385,34 +392,34 @@ def test_create_reply_draft_persists_supplied_text_verbatim(db):
     ingest = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
 
     result = tools.create_reply_draft(
-        db, "msg_001", ingest["thread_id"], "Re: Enterprise CRM Proposal", "Thanks, here is the info."
+        db, "EML-001", ingest["thread_id"], "Re: Enterprise CRM Proposal", "Thanks, here is the info."
     )
 
     assert result["already_existed"] is False
     assert result["draft"]["subject"] == "Re: Enterprise CRM Proposal"
     assert result["draft"]["body"] == "Thanks, here is the info."
     assert result["status"] == "awaiting_approval"
-    stored = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    stored = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert stored["draft"]["body"] == "Thanks, here is the info."
-    email_stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    email_stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert email_stored["processing_status"]["stage"] == "REPLY_PROCESSED"
 
 
 def test_create_reply_draft_never_calls_llm(db, no_llm_construction):
     ingest = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
-    tools.create_reply_draft(db, "msg_001", ingest["thread_id"], "subject", "body")
+    tools.create_reply_draft(db, "EML-001", ingest["thread_id"], "subject", "body")
 
 
 def test_create_reply_draft_never_overwrites_an_existing_draft(db):
     ingest = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
-    tools.create_reply_draft(db, "msg_001", ingest["thread_id"], "First subject", "First body")
+    tools.create_reply_draft(db, "EML-001", ingest["thread_id"], "First subject", "First body")
 
-    result = tools.create_reply_draft(db, "msg_001", ingest["thread_id"], "Second subject", "Second body")
+    result = tools.create_reply_draft(db, "EML-001", ingest["thread_id"], "Second subject", "Second body")
 
     assert result["already_existed"] is True
-    stored = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    stored = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert stored["draft"]["body"] == "First body"  # not overwritten
-    assert ReplyDraftRepository(db).find_many({"source_email_id": "msg_001"}).__len__() == 1
+    assert ReplyDraftRepository(db).find_many({"source_email_id": "EML-001"}).__len__() == 1
 
 
 # --- mark_email_completed ------------------------------------------------------------
@@ -420,13 +427,13 @@ def test_create_reply_draft_never_overwrites_an_existing_draft(db):
 
 def test_mark_email_completed_succeeds_after_persist_email_analysis(db, settings):
     tools.ingest_email(db, parse_email(_raw_email("msg_001")))
-    tools.persist_email_analysis(db, "msg_001", _analysis(message_id="msg_001"), settings)
+    tools.persist_email_analysis(db, "EML-001", _analysis(message_id="EML-001"), settings)
 
-    result = tools.mark_email_completed(db, "msg_001")
+    result = tools.mark_email_completed(db, "EML-001")
 
     assert result["stage"] == "COMPLETED"
     assert result["already_completed"] is False
-    stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["processing_status"]["stage"] == "COMPLETED"
 
 
@@ -436,18 +443,18 @@ def test_mark_email_completed_rejects_incomplete_processing(db):
     tools.ingest_email(db, parse_email(_raw_email("msg_001")))
 
     with pytest.raises(ValueError, match="persist_email_analysis"):
-        tools.mark_email_completed(db, "msg_001")
+        tools.mark_email_completed(db, "EML-001")
 
-    stored = EmailRepository(db).find_one({"message_id": "msg_001"})
+    stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["processing_status"]["stage"] == "THREADED"  # unchanged, not silently completed
 
 
 def test_mark_email_completed_is_idempotent(db, settings):
     tools.ingest_email(db, parse_email(_raw_email("msg_001")))
-    tools.persist_email_analysis(db, "msg_001", _analysis(message_id="msg_001"), settings)
-    tools.mark_email_completed(db, "msg_001")
+    tools.persist_email_analysis(db, "EML-001", _analysis(message_id="EML-001"), settings)
+    tools.mark_email_completed(db, "EML-001")
 
-    result = tools.mark_email_completed(db, "msg_001")
+    result = tools.mark_email_completed(db, "EML-001")
 
     assert result["already_completed"] is True
 
@@ -471,7 +478,7 @@ def test_full_deterministic_round_trip_never_constructs_the_configured_llm_provi
         db, parse_email(_raw_email("msg_001", "Let's meet Tuesday at 3 PM for 30 minutes."))
     )
     analysis = _analysis(
-        message_id="msg_001",
+        message_id="EML-001",
         people_mentioned=[MentionedPerson(name="John", email="john@example.com", org=None, role_hint=None)],
         commitments_mentioned=[
             RawCommitment.model_validate({"what": "send the proposal", "class": "mine", "date_phrase": "tomorrow"})
@@ -480,18 +487,18 @@ def test_full_deterministic_round_trip_never_constructs_the_configured_llm_provi
             RawMeeting.model_validate({"date_phrase": "Tuesday", "attendees": [], "is_past": False})
         ],
     )
-    analysis_result = tools.persist_email_analysis(db, "msg_001", analysis, settings)
+    analysis_result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
     tools.persist_context_delta(
-        db, ingest["thread_id"], "msg_001",
+        db, ingest["thread_id"], "EML-001",
         ContextDelta(summary="Customer wants a meeting and will send a proposal."),
     )
-    tools.create_reply_draft(db, "msg_001", ingest["thread_id"], "Re: Enterprise CRM Proposal", "Sounds good.")
-    completion = tools.mark_email_completed(db, "msg_001")
+    tools.create_reply_draft(db, "EML-001", ingest["thread_id"], "Re: Enterprise CRM Proposal", "Sounds good.")
+    completion = tools.mark_email_completed(db, "EML-001")
 
     assert completion["stage"] == "COMPLETED"
     assert len(analysis_result["entities_referenced"]["commitments"]) == 1
     assert len(analysis_result["entities_referenced"]["meetings"]) == 1
-    assert EmailRepository(db).find_one({"message_id": "msg_001"})["processing_status"]["stage"] == "COMPLETED"
+    assert EmailRepository(db).find_one({"message_id": "EML-001"})["processing_status"]["stage"] == "COMPLETED"
 
 
 def test_ingest_email_treats_a_previously_completed_email_as_a_baseline_email_to_skip(db, settings):
@@ -500,10 +507,10 @@ def test_ingest_email_treats_a_previously_completed_email_as_a_baseline_email_to
     reprocessed by the new deterministic path, exactly like run_pipeline's own guard."""
     baseline_raw = _raw_email("baseline_msg_001", "Historical email.")
     tools.process_email(db, parse_email(baseline_raw), MockLLMProvider(), MockCalendarProvider(), settings)
-    stored_before = EmailRepository(db).find_one({"message_id": "baseline_msg_001"})
+    stored_before = EmailRepository(db).find_one({"message_id": "EML-001"})
 
     result = tools.ingest_email(db, parse_email(baseline_raw))
 
     assert result["already_completed"] is True
-    stored_after = EmailRepository(db).find_one({"message_id": "baseline_msg_001"})
+    stored_after = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored_after == stored_before  # byte-for-byte untouched

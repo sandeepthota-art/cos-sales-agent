@@ -81,7 +81,7 @@ def test_person_resolution_itself_correctly_redirects_merged_sender(db, settings
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    stored_email = db.emails.find_one({"message_id": "msg_001"})
+    stored_email = db.emails.find_one({"message_id": "EML-001"})
     assert canonical_id in stored_email["entities_referenced"]["people"]
     assert duplicate_id not in stored_email["entities_referenced"]["people"]
 
@@ -96,7 +96,7 @@ def test_reply_draft_person_id_resolves_to_canonical_not_merged_sender(db, setti
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "msg_001"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft is not None
     assert draft["person_id"] == canonical_id
     assert draft["person_id"] != duplicate_id
@@ -112,7 +112,7 @@ def test_calendar_action_person_id_resolves_to_canonical_not_merged_sender(db, s
 
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    action = CalendarActionRepository(db).find_one({"thread_id": "thread_msg_001"})
+    action = CalendarActionRepository(db).find_one({"thread_id": "THR-001"})
     assert action is not None
     assert action["person_id"] == canonical_id
     assert action["person_id"] != duplicate_id

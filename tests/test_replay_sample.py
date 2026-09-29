@@ -118,7 +118,7 @@ class _SalesProjectLLM(LLMProvider):
     so it can't exercise this path; this double stands in for it, the same pattern
     tests/test_end_to_end_validation.py already uses."""
 
-    def analyze_email(self, email, thread_history=None):
+    def analyze_email(self, email, thread_history=None, person_context=None):
         return {
             "email_id": email.message_id, "summary": email.body[:200], "intent": "buying_signal",
             "entities": [], "facts": [], "requirements": [], "pain_points": [],
@@ -160,7 +160,7 @@ def test_replay_runs_the_real_pipeline_and_reports_created_projects(monkeypatch,
     # The raw LLM analysis for this exact email must be visible, not just the final
     # persisted counts -- this is what lets a real run be debugged (BRD follow-up:
     # "why did projects_mentioned come back empty").
-    assert "raw LLM analysis: MSG-1" in output
+    assert "raw LLM analysis: EML-001" in output
     assert "projects_mentioned=[{'name': 'CustomerCo Renewal'" in output
 
 

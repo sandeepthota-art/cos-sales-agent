@@ -71,11 +71,11 @@ def test_fake_gmail_flows_through_scheduler_and_pipeline_into_mongodb(db, settin
     assert len(summaries) == 1
     assert summaries[0].completed == 1
 
-    email = db.emails.find_one({"message_id": "gmail_msg_1"}, {"_id": 0})
+    email = db.emails.find_one({"source_message_id": "gmail_msg_1"}, {"_id": 0})
     assert email is not None
     assert email["processing_status"]["stage"] == "COMPLETED"
 
-    thread = ThreadRepository(db).find_one({"message_ids": "gmail_msg_1"})
+    thread = ThreadRepository(db).find_one({"source_message_ids": "gmail_msg_1"})
     assert thread is not None
     thread_id = thread["thread_id"]
 
@@ -92,13 +92,13 @@ def test_fake_gmail_flows_through_scheduler_and_pipeline_into_mongodb(db, settin
     assert len(refs["follow_ups"]) == 2
 
     commitments = CommitmentRepository(db).find_many({"id": {"$in": refs["commitments"]}})
-    assert all(c["source_record"] == "gmail_msg_1" for c in commitments)
+    assert all(c["source_record"] == "EML-001" for c in commitments)
 
     follow_ups = FollowUpRepository(db).find_many({"id": {"$in": refs["follow_ups"]}})
     assert {f["commitment_id"] for f in follow_ups} == {c["id"] for c in commitments}
 
     # "Could you send over pricing?" is a question -> needs_reply() gate fires.
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": "gmail_msg_1"})
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": "EML-001"})
     assert draft is not None
     assert draft["status"] == "awaiting_approval"
 
@@ -131,7 +131,7 @@ def test_one_malformed_gmail_message_does_not_block_the_rest(db, settings):
 
     summaries = scheduler.run_once()
 
-    assert db.emails.count_documents({"message_id": "good"}) == 1
+    assert db.emails.count_documents({"source_message_id": "good"}) == 1
     assert db.emails.count_documents({"message_id": "bad"}) == 0
     assert summaries[0].processed == 1
 

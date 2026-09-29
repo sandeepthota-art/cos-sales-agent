@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from pymongo.database import Database
 
 from app.analysis.extractor import analyze_email_with_validation
-from app.analysis.schemas import EmailAnalysis
+from app.analysis.schemas import EmailAnalysis, PersonFactMention
 from app.calendar.actions import build_calendar_action
 from app.calendar.detector import detect_meeting
 from app.config.settings import Settings
@@ -31,18 +31,20 @@ from app.email.threading import ThreadCandidate, resolve_thread_id
 from app.entities.dates import classify_follow_up_timing, resolve_date_phrase
 from app.entities.extraction import envelope_people
 from app.entities.ids import next_id
+from app.entities.person_context import enrich_person_context_from_email, get_bounded_person_context_for_llm
 from app.entities.resolution import (
-    derive_follow_up,
+    derive_follow_up_with_operation,
     match_resolved_person_by_name,
     resolve_canonical_person_for_email,
-    resolve_commitment,
-    resolve_meeting,
-    resolve_operator_person,
-    resolve_opportunity,
-    resolve_person,
-    resolve_personal_item,
-    resolve_project,
+    resolve_commitment_with_operation,
+    resolve_meeting_with_operation,
+    resolve_operator_person_with_operation,
+    resolve_opportunity_with_operation,
+    resolve_person_with_operation,
+    resolve_personal_item_with_operation,
+    resolve_project_with_operation,
 )
+from app.entities.thread_events import try_record_event
 from app.interfaces.calendar_provider import CalendarProvider
 from app.interfaces.email_provider import EmailProvider
 from app.interfaces.llm_provider import LLMProvider
@@ -74,71 +76,96 @@ def _load_thread_candidates(thread_repo: ThreadRepository) -> list[ThreadCandida
         candidates.append(
             ThreadCandidate(
                 thread_id=doc["thread_id"],
+                source_thread_id=doc.get("source_thread_id"),
                 normalized_subject=doc["normalized_subject"],
                 participant_emails=set(doc["participant_emails"]),
-                message_ids=set(doc["message_ids"]),
+                source_message_ids=set(doc.get("source_message_ids", [])),
                 last_message_at=datetime.fromisoformat(doc["last_message_at"]),
             )
         )
     return candidates
 
 
-def _upsert_thread(thread_repo: ThreadRepository, thread_id: str, email: Email, db: Database) -> None:
-    """Human-readable internal id (`THR-nnn`): assigned exactly once, only when this
-    thread doc doesn't exist yet -- generated via the existing atomic next_id counter,
-    never regenerated on a later message added to the same thread. This is purely
-    additive: `thread_id` (the resolved/source/synthetic thread identifier -- see
-    app.email.threading.resolve_thread_id) is never renamed, replaced, or rewritten.
+def _upsert_thread(
+    thread_repo: ThreadRepository, resolved_thread_id: str | None, email: Email, db: Database
+) -> str:
+    """Canonical ID refactor: `thread_id` (and the `id` field, kept as an exact
+    mirror of it for anything already keying off `id`) now ALWAYS holds the
+    canonical `THR-nnn` value -- never the raw/synthetic identifier the old
+    `thread_{message_id}` fallback used to produce. `resolved_thread_id` is
+    whatever `app.email.threading.resolve_thread_id` found (an existing
+    canonical thread_id) or None (no existing thread matched by any signal,
+    including no Gmail-supplied thread id) -- a brand-new THR-nnn is allocated
+    via the existing atomic next_id counter exactly once, in that case, and
+    never regenerated on a later message added to the same thread.
+
+    `source_thread_id` (new field) carries the true Gmail/provider thread
+    identifier (or None, if the source never supplied one) -- set once, at
+    creation, never rewritten on a later message. `message_ids` keeps holding
+    canonical EML- values (unchanged reader contract for existing code); the
+    new `source_message_ids` field exists solely for
+    app.email.threading.resolve_thread_id's in_reply_to/references matching,
+    which must compare against raw Gmail ids, never canonical ones.
     """
-    existing = thread_repo.find_one({"thread_id": thread_id})
+    existing = thread_repo.find_one({"thread_id": resolved_thread_id}) if resolved_thread_id else None
     participant_emails = set(existing["participant_emails"]) if existing else set()
-    message_ids = set(existing["message_ids"]) if existing else set()
+    message_ids = set(existing.get("message_ids", [])) if existing else set()
+    source_message_ids = set(existing.get("source_message_ids", [])) if existing else set()
 
     participant_emails |= {email.from_.email, *(a.email for a in email.to), *(a.email for a in email.cc)}
     message_ids.add(email.message_id)
+    source_message_ids.add(email.source_message_id)
 
     last_message_at = email.timestamp
     if existing:
         existing_last = datetime.fromisoformat(existing["last_message_at"])
         last_message_at = max(last_message_at, existing_last)
 
+    thread_id = existing["id"] if existing else next_id(db, "THR-")
     document = {
+        "id": thread_id,
         "thread_id": thread_id,
+        "source_thread_id": existing.get("source_thread_id") if existing else email.source_thread_id,
         "normalized_subject": existing["normalized_subject"] if existing else normalize_subject(email.subject),
         "participant_emails": sorted(participant_emails),
         "message_ids": sorted(message_ids),
+        "source_message_ids": sorted(source_message_ids),
         "last_message_at": last_message_at.isoformat(),
     }
-    if existing is None:
-        document["id"] = next_id(db, "THR-")
     thread_repo.upsert_by_key({"thread_id": thread_id}, document)
+    return thread_id
 
 
 def ingest_raw_email(email_repo: EmailRepository, email: Email, db: Database) -> tuple[Email, bool]:
-    """Normalizes the email and applies the existing message_id + COMPLETED duplicate
+    """Normalizes the email and applies the source_message_id + COMPLETED duplicate
     guard; if not a duplicate, persists the raw email and advances it through
-    RECEIVED/VALIDATED. Returns (normalized_email, already_completed).
+    RECEIVED/VALIDATED. Returns (canonicalized_email, already_completed).
 
     Shared by run_pipeline's per-email loop and app.mcp.tools.ingest_email, so the
     exact same duplicate-detection/raw-persistence behavior is never duplicated
     between the two entry points.
 
-    Human-readable internal id (`EML-nnn`): assigned exactly once, only for a
-    document that doesn't exist yet -- generated via the existing atomic next_id
-    counter, never regenerated on a retry of a not-yet-completed email. Purely
-    additive: `message_id` (the source/Gmail id, the canonical dedup key) is never
-    renamed, replaced, or rewritten.
+    Canonical ID refactor: this is the ONE translation boundary. Deduplication now
+    keys on `source_message_id` (the true Gmail/provider identity, permanent and
+    never reassigned) rather than `message_id` -- so a retry of the exact same
+    source message always resolves to the same existing `EML-nnn`, never a new
+    one. `message_id` is reassigned, exactly once here, to the canonical `EML-nnn`
+    (existing, on a match; freshly allocated via the same atomic next_id counter,
+    on a genuinely new source message) -- every stage downstream of this function
+    keeps reading `email.message_id` exactly as before; only the value it holds
+    has changed, not its name or role.
     """
     email = normalize_email(email)
 
-    existing = email_repo.find_one({"message_id": email.message_id})
+    existing = email_repo.find_one({"source_message_id": email.source_message_id})
     if existing and existing.get("processing_status", {}).get("stage") == ProcessingStage.COMPLETED.value:
-        return email, True
+        return email.model_copy(update={"message_id": existing["id"]}), True
 
+    email_id = existing["id"] if existing else next_id(db, "EML-")
+    email = email.model_copy(update={"message_id": email_id})
     document = email.model_dump(mode="json", by_alias=True)
-    if existing is None:
-        document["id"] = next_id(db, "EML-")
-    email_repo.upsert_by_key({"message_id": email.message_id}, document)
+    document["id"] = email_id
+    email_repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
     email_repo.set_stage(email.message_id, ProcessingStage.RECEIVED.value)
     email_repo.set_stage(email.message_id, ProcessingStage.VALIDATED.value)
     return email, False
@@ -152,8 +179,13 @@ def resolve_and_persist_thread(
     Shared by run_pipeline and app.mcp.tools.ingest_email.
     """
     candidates = _load_thread_candidates(thread_repo)
-    thread_id = resolve_thread_id(email, candidates)
-    _upsert_thread(thread_repo, thread_id, email, db)
+    resolved_thread_id = resolve_thread_id(email, candidates)
+    thread_id = _upsert_thread(thread_repo, resolved_thread_id, email, db)
+    # Canonical ID refactor: emails.thread_id must also hold the canonical
+    # THR-nnn (not just threads.thread_id) -- a partial $set (via upsert_by_key)
+    # touches only this one field, never disturbing anything else already
+    # stored on this email document.
+    email_repo.upsert_by_key({"message_id": email.message_id}, {"thread_id": thread_id})
     email_repo.set_stage(email.message_id, ProcessingStage.THREADED.value)
     return thread_id
 
@@ -205,7 +237,83 @@ def build_thread_timeline(
     ]
 
 
+def _record_knowledge_event(
+    db: Database, thread_id: str, source_email_id: str, item: KnowledgeItem, created: bool
+) -> None:
+    try_record_event(
+        db, thread_id, source_email_id,
+        "knowledge_created" if created else "knowledge_updated",
+        "knowledge", item.knowledge_id, "created" if created else "updated",
+        f"Knowledge {item.knowledge_id} {'created' if created else 'updated'}: {item.predicate}={item.current_value}",
+    )
+
+
+def _resolve_person_fact_target(
+    resolved_people: list[dict[str, Any]], mention: PersonFactMention
+) -> dict[str, Any] | None:
+    """Explicit canonical attribution ONLY -- never a fresh, wider name scan.
+    person_email (if given) is tried first, restricted to people ALREADY
+    resolved for this same email (exact match, never ambiguous -- more than one
+    match means "don't guess," same principle as match_resolved_person_by_name).
+    Falls back to name-token matching against that same already-resolved pool.
+    Returns None (dropped, never guessed) when neither signal resolves uniquely.
+    """
+    if mention.person_email:
+        email_normalized = mention.person_email.strip().lower()
+        matches_by_id = {
+            p["id"]: p for p in resolved_people
+            if p and (p.get("email") or "").lower() == email_normalized
+        }
+        if len(matches_by_id) == 1:
+            return next(iter(matches_by_id.values()))
+        if len(matches_by_id) > 1:
+            return None
+    return match_resolved_person_by_name(resolved_people, mention.person_name)
+
+
+def _process_person_facts(
+    db: Database, thread_id: str, email: Email, analysis: EmailAnalysis,
+    resolved_people: list[dict[str, Any]], llm_provider: LLMProvider, reference_now: datetime,
+) -> None:
+    """P0 fix: qualitative facts (role/responsibility/preference/goal/interest/
+    concern/pain_point/objection/buying_signal) EXPLICITLY attributed to one
+    canonical Person -- reuses the existing KnowledgeItem architecture and
+    conflict/history mechanism exactly like _process_knowledge (never a
+    duplicate/competing knowledge system); the only difference is person_id is
+    set explicitly here, from a real resolved match, never inferred after the
+    fact from free-text name matching. A mention that doesn't resolve to
+    exactly one already-known person for this email is silently dropped -- it
+    remains available only via the existing thread-scoped requirements/
+    pain_points/objections/buying_signals/competitors fields, never guessed
+    onto the wrong person.
+    """
+    if not analysis.person_facts_mentioned:
+        return
+    knowledge_repo = KnowledgeRepository(db)
+    items = [KnowledgeItem.model_validate(doc) for doc in knowledge_repo.all_for_thread(thread_id)]
+
+    for mention in analysis.person_facts_mentioned:
+        target = _resolve_person_fact_target(resolved_people, mention)
+        if target is None:
+            continue
+        new_items, item = process_new_fact(
+            items, thread_id, target["id"], mention.category, mention.value,
+            email.message_id, mention.basis, llm_provider, reference_now,
+            person_id=target["id"], org_id=target.get("org_id"),
+        )
+        _record_knowledge_event(db, thread_id, email.message_id, item, created=len(new_items) > len(items))
+        items = new_items
+        knowledge_repo.upsert_by_key(
+            {
+                "thread_id": item.thread_id, "subject_key": item.subject_key,
+                "predicate": item.predicate, "fact_key": item.fact_key,
+            },
+            item.model_dump(mode="json"),
+        )
+
+
 def _process_knowledge(
+    db: Database,
     knowledge_repo: KnowledgeRepository,
     thread_id: str,
     analysis: EmailAnalysis,
@@ -218,9 +326,11 @@ def _process_knowledge(
     items = [KnowledgeItem.model_validate(doc) for doc in stored_docs]
 
     for fact in analysis.facts:
-        items, item = process_new_fact(
+        new_items, item = process_new_fact(
             items, thread_id, fact.subject, fact.predicate, fact.object, source_email_id, "stated", llm, now
         )
+        _record_knowledge_event(db, thread_id, source_email_id, item, created=len(new_items) > len(items))
+        items = new_items
         knowledge_repo.upsert_by_key(
             {
                 "thread_id": item.thread_id,
@@ -233,9 +343,11 @@ def _process_knowledge(
 
     for field, predicate in _FACT_FIELD_PREDICATES.items():
         for value in getattr(analysis, field):
-            items, item = process_new_fact(
+            new_items, item = process_new_fact(
                 items, thread_id, subject_name, predicate, value, source_email_id, "stated", llm, now
             )
+            _record_knowledge_event(db, thread_id, source_email_id, item, created=len(new_items) > len(items))
+            items = new_items
             knowledge_repo.upsert_by_key(
                 {
                     "thread_id": item.thread_id,
@@ -254,6 +366,7 @@ def _process_entities(
     analysis: EmailAnalysis,
     reference_now: datetime,
     agent_email: str,
+    llm_provider: LLMProvider,
     agent_name: str | None = None,
 ) -> dict[str, list[str]]:
     # reference_now is the email's OWN timestamp, not wall-clock "now" -- this matches the
@@ -298,20 +411,21 @@ def _process_entities(
     # never indistinguishable from a real external contact.
     for envelope_email, addr in envelope.items():
         if envelope_email == agent_email_normalized:
-            person_id = resolve_operator_person(
+            person_id, operation, delta = resolve_operator_person_with_operation(
                 db, agent_email, operator_display_name,
                 is_sender=envelope_email == sender_email,
                 now=reference_now,
                 thread_id=thread_id,
             )
         else:
-            person_id = resolve_person(
+            person_id, operation, delta = resolve_person_with_operation(
                 db,
                 {"name": addr.name, "email": addr.email, "org": None},
                 is_sender=envelope_email == sender_email,
                 now=reference_now,
                 thread_id=thread_id,
             )
+        _record_person_event(db, thread_id, email.message_id, person_id, operation, delta)
         entities_referenced["people"].append(person_id)
         resolved_people.append(person_repo.find_one({"id": person_id}))
 
@@ -338,10 +452,11 @@ def _process_entities(
             is_sender = False
 
         if is_operator_mention:
-            person_id = resolve_operator_person(
+            person_id, operation, delta = resolve_operator_person_with_operation(
                 db, agent_email, operator_display_name, is_sender=is_sender,
                 now=reference_now, thread_id=thread_id,
             )
+            _record_person_event(db, thread_id, email.message_id, person_id, operation, delta)
             entities_referenced["people"].append(person_id)
             resolved_people.append(person_repo.find_one({"id": person_id}))
             continue
@@ -362,15 +477,32 @@ def _process_entities(
         if same_email_match is not None:
             person_id = same_email_match["id"]
         else:
-            person_id = resolve_person(
+            person_id, operation, delta = resolve_person_with_operation(
                 db,
                 {"name": mention.name, "email": mention.email, "org": mention.org},
                 is_sender=is_sender,
                 now=reference_now,
                 thread_id=thread_id,
             )
+            _record_person_event(db, thread_id, email.message_id, person_id, operation, delta)
         entities_referenced["people"].append(person_id)
         resolved_people.append(same_email_match or person_repo.find_one({"id": person_id}))
+
+    # Organization linkage: one entity_linked event per (email, org) actually
+    # associated with a person this email resolved -- a direct fact this email's
+    # own processing already established (person.org_id), never inferred from a
+    # later database read.
+    linked_org_ids = {p["org_id"] for p in resolved_people if p and p.get("org_id")}
+    for org_id in linked_org_ids:
+        try_record_event(
+            db, thread_id, email.message_id, "entity_linked", "organization", org_id, "linked",
+            f"Organization {org_id} linked via this email's resolved people",
+        )
+
+    # P0 person-knowledge fix: explicit, canonical-person-attributed qualitative
+    # facts (role/responsibility/preference/goal/interest/concern/pain_point/
+    # objection/buying_signal) -- see _process_person_facts' own docstring.
+    _process_person_facts(db, thread_id, email, analysis, resolved_people, llm_provider, reference_now)
 
     # org_id -> [project_id, ...], built only from projects actually resolved for THIS
     # email (never a fresh collection-wide scan) -- reused below to link a commitment to
@@ -398,13 +530,24 @@ def _process_entities(
         ]
         project_org_id = next((p["org_id"] for p in matching_people if p.get("org_id")), None)
         project_person_ids = list(dict.fromkeys(p["id"] for p in matching_people))
-        project_id = resolve_project(
+        project_id, project_operation, project_delta = resolve_project_with_operation(
             db,
             {"name": mention.name, "org": mention.org},
             goal_pillar=analysis.goal_pillar,
             person_ids=project_person_ids,
             org_id=project_org_id,
         )
+        if project_operation == "updated":
+            try_record_event(
+                db, thread_id, email.message_id, "project_updated", "project", project_id, "updated",
+                f"Project {project_id} updated", metadata=_delta_metadata(project_delta),
+            )
+        else:
+            try_record_event(
+                db, thread_id, email.message_id,
+                "entity_created" if project_operation == "created" else "entity_reused",
+                "project", project_id, project_operation, f"Project {project_id} {project_operation}",
+            )
         entities_referenced["projects"].append(project_id)
         if project_org_id:
             project_ids_by_org_id.setdefault(project_org_id, [])
@@ -447,7 +590,7 @@ def _process_entities(
         commitment_org_id = commitment_person.get("org_id") if commitment_person else None
         org_candidate_project_ids = project_ids_by_org_id.get(commitment_org_id, []) if commitment_org_id else []
         commitment_project_id = org_candidate_project_ids[0] if len(org_candidate_project_ids) == 1 else None
-        commitment_id = resolve_commitment(
+        commitment_id, commitment_operation, commitment_delta = resolve_commitment_with_operation(
             db,
             thread_id=thread_id,
             raw=raw_commitment.model_dump(mode="json", by_alias=True),
@@ -459,6 +602,13 @@ def _process_entities(
             project_id=commitment_project_id,
             person_id=commitment_person["id"] if commitment_person else None,
             org_id=commitment_org_id,
+        )
+        try_record_event(
+            db, thread_id, email.message_id,
+            "commitment_created" if commitment_operation == "created" else "commitment_reused",
+            "commitment", commitment_id, commitment_operation,
+            f"Commitment {commitment_id} {commitment_operation}: {raw_commitment.what}",
+            metadata=_delta_metadata(commitment_delta),
         )
         entities_referenced["commitments"].append(commitment_id)
         # BRD 6.3: only "mine"/"owed_to_me" commitments are chased -- "theirs" and
@@ -485,7 +635,7 @@ def _process_entities(
             # own parameter) is now carried onto the derived FollowUp -- see
             # app.entities.resolution.derive_follow_up. person_id/org_id are inherited
             # directly from the commitment just resolved above, never re-inferred.
-            follow_up_id = derive_follow_up(
+            follow_up_id, follow_up_operation, _follow_up_delta = derive_follow_up_with_operation(
                 db,
                 commitment_id=commitment_id,
                 thread_id=thread_id,
@@ -494,6 +644,11 @@ def _process_entities(
                 audience=audience,
                 follow_up_earliest_at=follow_up_earliest_at,
                 follow_up_latest_at=follow_up_latest_at,
+            )
+            try_record_event(
+                db, thread_id, email.message_id,
+                "follow_up_created" if follow_up_operation == "created" else "entity_reused",
+                "follow_up", follow_up_id, follow_up_operation, f"Follow-up {follow_up_id} {follow_up_operation}",
             )
             entities_referenced["follow_ups"].append(follow_up_id)
 
@@ -512,7 +667,7 @@ def _process_entities(
         ]
         attendee_people = [p for p in attendee_people if p is not None]
         meeting_org_id = next((p["org_id"] for p in attendee_people if p.get("org_id")), None)
-        meeting_id = resolve_meeting(
+        meeting_id, meeting_operation, meeting_delta = resolve_meeting_with_operation(
             db,
             thread_id=thread_id,
             date=resolved_date,
@@ -527,6 +682,12 @@ def _process_entities(
             # logic to handle unchanged.
             project_or_pillar=analysis.goal_pillar,
         )
+        try_record_event(
+            db, thread_id, email.message_id,
+            "meeting_created" if meeting_operation == "created" else "meeting_reused",
+            "meeting", meeting_id, meeting_operation, f"Meeting {meeting_id} {meeting_operation}",
+            metadata=_delta_metadata(meeting_delta),
+        )
         entities_referenced["meetings"].append(meeting_id)
 
     # Deferred from the projects_mentioned loop above so this email's OWN detected
@@ -534,7 +695,7 @@ def _process_entities(
     # onto the Opportunity at creation/update time -- never a retroactive scan of
     # meetings from other emails.
     for candidate in sales_opportunity_candidates:
-        opportunity_id = resolve_opportunity(
+        opportunity_id, opportunity_operation, opportunity_delta = resolve_opportunity_with_operation(
             db,
             {"name": candidate["mention"].name, "org": candidate["mention"].org},
             project_id=candidate["project_id"],
@@ -545,16 +706,44 @@ def _process_entities(
             meeting_ids=list(entities_referenced["meetings"]),
             buying_signals=list(analysis.buying_signals),
         )
+        try_record_event(
+            db, thread_id, email.message_id,
+            "opportunity_created" if opportunity_operation == "created" else "opportunity_reused",
+            "opportunity", opportunity_id, opportunity_operation, f"Opportunity {opportunity_id} {opportunity_operation}",
+            metadata=_delta_metadata(opportunity_delta),
+        )
         entities_referenced["opportunities"].append(opportunity_id)
 
     for raw_item in analysis.personal_items_mentioned:
         resolved_date, _ = resolve_date_phrase(raw_item.date_phrase, reference_now)
-        item_id = resolve_personal_item(
+        item_id, item_operation, _item_delta = resolve_personal_item_with_operation(
             db, sender_email=sender_email, raw=raw_item.model_dump(mode="json"), resolved_date=resolved_date
+        )
+        try_record_event(
+            db, thread_id, email.message_id,
+            "entity_created" if item_operation == "created" else "entity_reused",
+            "personal_item", item_id, item_operation, f"Personal item {item_id} {item_operation}",
         )
         entities_referenced["personal"].append(item_id)
 
     return {key: list(dict.fromkeys(ids)) for key, ids in entities_referenced.items()}
+
+
+def _delta_metadata(delta: dict[str, Any]) -> dict[str, Any]:
+    """Thread Events, Phase 8: never fabricate a delta -- an empty delta means the
+    resolver found nothing to report, so the event's metadata stays exactly as it
+    was before (no "delta" key at all), rather than inventing an empty placeholder."""
+    return {"delta": delta} if delta else {}
+
+
+def _record_person_event(
+    db: Database, thread_id: str, email_id: str, person_id: str, operation: str, delta: dict[str, Any] | None = None,
+) -> None:
+    event_type = {"created": "entity_created", "reused": "entity_reused", "updated": "entity_updated"}[operation]
+    try_record_event(
+        db, thread_id, email_id, event_type, "person", person_id, operation, f"Person {person_id} {operation}",
+        metadata=_delta_metadata(delta or {}),
+    )
 
 
 def _thread_resolved_people(db: Database, thread_id: str) -> list[dict[str, Any]]:
@@ -679,12 +868,29 @@ def run_pipeline(
         try:
             thread_id = resolve_and_persist_thread(thread_repo, email_repo, email, db)
             thread_id_for_logging = thread_id
+            try_record_event(
+                db, thread_id, email.message_id, "email_received", "email", email.message_id, "created",
+                f"Email {email.message_id} received into thread {thread_id}",
+            )
             thread_timeline = build_thread_timeline(
                 email_repo, thread_repo, thread_id, exclude_message_id=email.message_id
             )
+            # Person Context, Phase 4 wiring: a read-only lookup (never creates a
+            # Person -- that stays _process_entities' job, below) of any Person
+            # ALREADY known for this sender, so a subsequent email from/about the
+            # same person feeds the LLM a bounded view of what earlier processing
+            # already established about them. None for a genuinely new sender's
+            # first email -- there is nothing to look up yet.
+            sender_person_for_context = resolve_canonical_person_for_email(db, email.from_.email)
+            person_context_for_llm = (
+                get_bounded_person_context_for_llm(db, sender_person_for_context["id"])
+                if sender_person_for_context else None
+            )
 
             current_stage = ProcessingStage.ANALYZED
-            outcome = analyze_email_with_validation(llm_provider, email, thread_history=thread_timeline)
+            outcome = analyze_email_with_validation(
+                llm_provider, email, thread_history=thread_timeline, person_context=person_context_for_llm
+            )
             if not outcome.success:
                 email_repo.set_stage(
                     email.message_id,
@@ -723,10 +929,23 @@ def run_pipeline(
                         "created_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
+                # Thread Events, Phase 7 (P0): the real, already-computed
+                # ContextChange list -- never the full ThreadContext, never a
+                # fabricated diff. Skipped entirely when nothing actually
+                # changed (a thread's first email, or an email that repeated
+                # only what was already known).
+                if changes:
+                    try_record_event(
+                        db, thread_id, email.message_id, "context_enriched", "thread_context",
+                        str(next_version), "enriched",
+                        "Context updated: " + ", ".join(f"{c.field} {c.type.lower()}" for c in changes),
+                        metadata={"changes": [c.model_dump(mode="json") for c in changes]},
+                    )
             email_repo.set_stage(email.message_id, ProcessingStage.CONTEXT_BUILT.value)
 
             current_stage = ProcessingStage.KNOWLEDGE_PROCESSED
             _process_knowledge(
+                db,
                 knowledge_repo,
                 thread_id,
                 analysis,
@@ -742,7 +961,7 @@ def run_pipeline(
             # reference-date pattern, so relative phrases resolve consistently regardless
             # of when the pipeline actually runs.
             entities_referenced = _process_entities(
-                db, thread_id, email, analysis, email.timestamp, settings.agent_email, settings.agent_name
+                db, thread_id, email, analysis, email.timestamp, settings.agent_email, llm_provider, settings.agent_name
             )
             # Additive linking passes, run AFTER entity resolution so both have the
             # complete, up-to-date set of canonical people/orgs for this thread to work
@@ -750,6 +969,13 @@ def run_pipeline(
             # KNOWLEDGE_PROCESSED/ENTITIES_PROCESSED stage sequence above.
             _link_knowledge_to_entities(db, thread_id, email.message_id)
             _link_thread_to_entities(db, thread_id)
+            # Person Context, Phase 2/5: after entity resolution AND knowledge
+            # linking (so KnowledgeItem.person_id is already set for this email's
+            # facts) -- one incremental, idempotent snapshot per person this email
+            # actually involved.
+            enrich_person_context_from_email(
+                db, thread_id, email, analysis, entities_referenced, email.timestamp
+            )
             email_repo.set_entity_metadata(
                 message_id=email.message_id,
                 record_id=email.message_id,
@@ -856,6 +1082,25 @@ def run_pipeline(
                 duration_ms=(time.perf_counter() - stage_started) * 1000,
                 error_type=type(exc).__name__,
             )
+            # A Thread Event needs a real THR-nnn to attach to -- if the failure
+            # happened before thread resolution even ran, there is nothing to
+            # record against yet, and that's fine (not a gap: the FAILED
+            # processing_status on the email itself is still the authoritative
+            # record of this failure). Never a secret/prompt/payload -- only the
+            # stage name and exception type/message, mirroring set_stage's own
+            # existing error-logging convention above.
+            if thread_id_for_logging:
+                # entity_id carries the failed stage (not None) so a later failure
+                # of the SAME email at a DIFFERENT stage is its own distinct event
+                # (append-only across genuinely different observations), while a
+                # retry failing again at the SAME stage still corrects the same
+                # logical event in place (idempotent).
+                try_record_event(
+                    db, thread_id_for_logging, email.message_id, "processing_failed", "pipeline",
+                    current_stage.value, "failed",
+                    f"Processing failed at stage {current_stage.value}: {type(exc).__name__}",
+                    metadata={"failed_stage": current_stage.value, "error_type": type(exc).__name__},
+                )
             results.append(EmailResult(message_id=email.message_id, final_stage="FAILED", error=error_detail))
             continue
 
