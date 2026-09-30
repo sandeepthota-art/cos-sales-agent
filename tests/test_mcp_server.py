@@ -64,6 +64,95 @@ def test_mcp_endpoint_accepts_a_correct_bearer_token():
     assert response.status_code != 401
 
 
+# --- X-Auth-Token as a second, equal-secret auth header (Option 1) -------------------
+# Same middleware, same MCP_AUTH_TOKEN -- a client that can't set a custom Authorization
+# header can send X-Auth-Token instead. Authorization takes strict precedence whenever
+# it's present at all: an invalid Authorization value is rejected outright and never
+# falls back to X-Auth-Token, even when X-Auth-Token alone would have been valid.
+#
+# These exercise _BearerAuthMiddleware directly against a minimal dummy inner app,
+# rather than the real mcp.streamable_http_app() -- that session manager can only run
+# its lifespan once per process (see test_mcp_endpoint_accepts_a_correct_bearer_token
+# above, the one test in this file allowed to use it), so a second or third test
+# entering that same lifespan raises "StreamableHTTPSessionManager .run() can only be
+# called once per instance." The middleware's own pass/fail decision -- which is all
+# these tests are about -- doesn't need the real MCP stack at all.
+
+
+def _isolated_auth_app(token: str):
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def _ok(request):
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp", _ok, methods=["POST"]), Route("/health", _health, methods=["GET"])])
+    app.add_middleware(_BearerAuthMiddleware, expected_token=token)
+    return app
+
+
+def test_auth_valid_authorization_header_is_allowed():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post("/mcp", json={}, headers={"Authorization": "Bearer secret-token"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_auth_invalid_authorization_header_is_rejected():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post("/mcp", json={}, headers={"Authorization": "Bearer wrong-token"})
+    assert response.status_code == 401
+
+
+def test_auth_valid_x_auth_token_is_allowed():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post("/mcp", json={}, headers={"X-Auth-Token": "secret-token"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_auth_invalid_x_auth_token_is_rejected():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post("/mcp", json={}, headers={"X-Auth-Token": "wrong-token"})
+    assert response.status_code == 401
+
+
+def test_auth_no_credentials_at_all_is_rejected():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post("/mcp", json={})
+    assert response.status_code == 401
+
+
+def test_auth_both_headers_present_valid_authorization_is_allowed():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post(
+        "/mcp", json={},
+        headers={"Authorization": "Bearer secret-token", "X-Auth-Token": "irrelevant-does-not-matter"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_auth_both_headers_present_invalid_authorization_valid_x_auth_token_is_rejected():
+    # Precedence test: Authorization is present (even though wrong), so it is the only
+    # header consulted -- a valid X-Auth-Token alongside it must NOT be used as a
+    # fallback. This is the behavior that actually defines "prefer Authorization."
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.post(
+        "/mcp", json={},
+        headers={"Authorization": "Bearer wrong-token", "X-Auth-Token": "secret-token"},
+    )
+    assert response.status_code == 401
+
+
+def test_auth_health_endpoint_remains_unauthenticated_with_x_auth_token_option_present():
+    client = TestClient(_isolated_auth_app("secret-token"))
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_list_processed_emails_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]

@@ -495,6 +495,13 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
     Claude Desktop itself can spawn and talk to), an HTTP deployment is reachable by
     anyone who has the URL -- without this, they could call process_email using your
     MongoDB credentials and burn your LLM API key with no credentials of their own.
+
+    Accepts the SAME `MCP_AUTH_TOKEN` via either of exactly two headers -- no others:
+    `Authorization: Bearer <token>` (the original scheme) or `X-Auth-Token: <token>`
+    (for a client that can't set a custom Authorization header). When `Authorization`
+    is present at all, it is the only header checked -- an invalid Authorization value
+    is rejected outright and never falls back to `X-Auth-Token`, even if the latter is
+    valid. `X-Auth-Token` is only consulted when `Authorization` is absent entirely.
     """
 
     def __init__(self, app, expected_token: str) -> None:
@@ -507,11 +514,18 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
         # nothing beyond "the process is running".
         if request.url.path == "/health":
             return await call_next(request)
-        header = request.headers.get("authorization", "")
-        provided = header[len("Bearer "):].strip() if header.startswith("Bearer ") else ""
-        if not provided or not secrets.compare_digest(provided, self._expected_token):
+
+        auth_header = request.headers.get("authorization", "")
+        if auth_header:
+            provided = auth_header[len("Bearer "):].strip() if auth_header.startswith("Bearer ") else ""
+            if provided and secrets.compare_digest(provided, self._expected_token):
+                return await call_next(request)
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
+
+        x_auth_token = request.headers.get("x-auth-token", "").strip()
+        if x_auth_token and secrets.compare_digest(x_auth_token, self._expected_token):
+            return await call_next(request)
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
 async def _health(request: Request) -> JSONResponse:
