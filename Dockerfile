@@ -1,4 +1,7 @@
-FROM python:3.11-slim
+# Pinned to the Debian "bookworm" codename (not the floating "slim" alias) for a
+# current, reproducible OpenSSL/TLS stack -- fixes TLSV1_ALERT_INTERNAL_ERROR
+# against MongoDB Atlas caused by an outdated OpenSSL in a stale cached base image.
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
