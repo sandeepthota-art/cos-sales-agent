@@ -550,8 +550,18 @@ def _resolve_project_impl(
     for candidate in repo.find_many({}):
         candidate_entity = candidate.get("entity")
         candidate_entity_normalized = _normalize_project_name(candidate_entity) if candidate_entity else None
+        # A missing entity on either side is "unknown", not "different" -- a follow-up
+        # email in the same thread rarely restates the org name, and treating that
+        # absence as a conflict silently created a second Project/Opportunity for the
+        # same real deal (the EML-001/EML-002 "Google Growth Strategy Proposal"
+        # duplicate). Only two BOTH-populated, differing entities are a real conflict.
+        entity_conflicts = (
+            candidate_entity_normalized is not None
+            and entity_normalized is not None
+            and candidate_entity_normalized != entity_normalized
+        )
         if (
-            candidate_entity_normalized == entity_normalized
+            not entity_conflicts
             and _normalize_project_name(candidate["project"]) == name_normalized
             and candidate.get("goal_pillar") == goal_pillar
         ):
@@ -565,6 +575,8 @@ def _resolve_project_impl(
                 update["person_ids"] = new_person_ids
             if org_id and not candidate.get("org_id"):
                 update["org_id"] = org_id
+            if entity and not candidate.get("entity"):
+                update["entity"] = entity
             if update:
                 repo.upsert_by_key({"id": candidate["id"]}, {**candidate, **update})
             return candidate["id"], ("updated" if update else "reused"), _field_delta(candidate, update)

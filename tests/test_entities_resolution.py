@@ -408,6 +408,35 @@ def test_resolve_project_does_not_merge_across_different_entities(db):
     assert first != second
 
 
+def test_resolve_project_merges_when_new_mention_omits_a_known_entity(db):
+    # A follow-up email in the same thread often doesn't restate the org name --
+    # a missing entity on the NEW mention must not be treated as a conflict with
+    # an existing project that already has one. This is the exact real-world
+    # duplicate: EML-001 resolved "org": "Google", the Sept 30 follow-up's own
+    # mention carried no org at all, and the old strict-equality check silently
+    # created a second project instead of reusing the first.
+    first = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
+    second = resolve_project(db, {"name": "Renewal", "org": None}, goal_pillar="Sales")
+
+    assert first == second
+    assert len(ProjectRepository(db).find_many({})) == 1
+    stored = ProjectRepository(db).find_one({"id": first})
+    assert stored["entity"] == "Acme"  # existing entity is preserved, never cleared
+
+
+def test_resolve_project_backfills_entity_when_existing_project_lacked_one(db):
+    # Mirror of the case above: the FIRST mention had no entity, a later one does --
+    # must still reuse the same project, and the newly-learned entity should be
+    # backfilled onto it (same pattern already used for org_id).
+    first = resolve_project(db, {"name": "Renewal", "org": None}, goal_pillar="Sales")
+    second = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
+
+    assert first == second
+    assert len(ProjectRepository(db).find_many({})) == 1
+    stored = ProjectRepository(db).find_one({"id": first})
+    assert stored["entity"] == "Acme"
+
+
 def test_resolve_project_does_not_merge_without_goal_pillar_corroboration(db):
     first = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Sales")
     second = resolve_project(db, {"name": "Renewal", "org": "Acme"}, goal_pillar="Support")
