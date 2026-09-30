@@ -479,7 +479,12 @@ def _process_entities(
         else:
             person_id, operation, delta = resolve_person_with_operation(
                 db,
-                {"name": mention.name, "email": mention.email, "org": mention.org},
+                {
+                    "name": mention.name,
+                    "email": mention.email,
+                    "org": mention.org,
+                    "role_hint": mention.role_hint,
+                },
                 is_sender=is_sender,
                 now=reference_now,
                 thread_id=thread_id,

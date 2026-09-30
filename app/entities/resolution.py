@@ -312,6 +312,11 @@ def _resolve_person_impl(
             # missing value, never overwrites an existing one.
             if not existing.get("org") and mention.get("org"):
                 update["org"] = mention.get("org")
+            # Same backfill-only contract as `org` directly above: a professional
+            # designation stated in one email (role_hint) fills an unset role, but
+            # never overwrites one an earlier email already established.
+            if not existing.get("role") and mention.get("role_hint"):
+                update["role"] = mention.get("role_hint")
             if update:
                 repo.upsert_by_key({"id": existing["id"]}, {**existing, **update})
             return existing["id"], ("updated" if update else "reused"), _field_delta(existing, update)
@@ -323,6 +328,7 @@ def _resolve_person_impl(
             email=email,
             org=mention.get("org"),
             org_id=resolve_organization(db, email, mention.get("org")),
+            role=mention.get("role_hint"),
             last_inbound=now if is_sender is True else None,
             last_outbound=now if is_sender is False else None,
             open_threads=[thread_id],
@@ -393,6 +399,7 @@ def _resolve_person_impl(
         name=name,
         email=None,
         org=org,
+        role=mention.get("role_hint"),
         open_threads=[thread_id],
     )
     # exclude={"email"}: MongoDB's sparse unique index on people.email (Task 3) only
@@ -432,7 +439,9 @@ def _resolve_operator_person_impl(
     creation and never overwritten by a later call (only
     last_inbound/last_outbound/open_threads ever change on reuse), so a later
     mention's own wording (a signature, a calendar invite's attendee list) can never
-    clobber the operator's distinct display name or its type="operator" marker.
+    clobber the operator's distinct display name. Operator identity is resolved
+    purely by email (agent_email), never by `role` -- this profile's `role` field is
+    left unset here; it is not a control field for operator detection.
 
     Called from app.pipeline._process_entities whenever an envelope address or a
     people_mentioned entry is recognized as the operator (by agent_email or
@@ -470,7 +479,6 @@ def _resolve_operator_person_impl(
         email=email,
         org=None,
         org_id=None,
-        type="operator",
         last_inbound=now if is_sender is True else None,
         last_outbound=now if is_sender is False else None,
         open_threads=[thread_id],

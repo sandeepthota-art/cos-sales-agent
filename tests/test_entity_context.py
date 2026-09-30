@@ -130,8 +130,10 @@ def test_thread_document_gets_canonical_person_ids_and_org_ids(db):
     ashok_id = entities["people"][0]
     ashok_org_id = PersonRepository(db).find_one({"id": ashok_id})["org_id"]
     # The email's "to" (settings.agent_email in this call) resolves to the operator's
-    # own dedicated profile, which is also linked onto this thread.
-    operator_id = PersonRepository(db).find_one({"type": "operator"})["id"]
+    # own dedicated profile, which is also linked onto this thread. Operator identity
+    # is resolved purely by email, never by `role` -- so the operator record is found
+    # here the same way the pipeline itself finds it.
+    operator_id = PersonRepository(db).find_one({"email": "sandeep@example.com"})["id"]
 
     _link_thread_to_entities(db, "thread_1")
 
@@ -452,7 +454,7 @@ def test_get_person_context_never_copies_related_content_into_the_person_documen
 
     stored = PersonRepository(db).find_one({"id": person_id})
     assert set(stored.keys()) == {
-        "id", "name", "email", "aliases", "org", "org_id", "type", "goal_pillar",
+        "id", "name", "email", "aliases", "org", "org_id", "role", "goal_pillar",
         "last_inbound", "last_outbound", "open_threads", "note_link", "source",
         "status", "merged_into",
     }

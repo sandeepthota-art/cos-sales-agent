@@ -19,6 +19,7 @@ from app.entities.resolution import (
     derive_follow_up,
     resolve_commitment,
     resolve_meeting,
+    resolve_operator_person,
     resolve_opportunity,
     resolve_organization,
     resolve_person,
@@ -1044,6 +1045,66 @@ def test_resolve_person_backfills_org_id_on_reuse_of_a_pre_existing_record(db):
     )
 
     assert repo.find_one({"id": person_id})["org_id"] is not None
+
+
+def test_resolve_person_sets_role_from_role_hint_on_creation(db):
+    person_id = resolve_person(
+        db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint", "role_hint": "CTO"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+    stored = PersonRepository(db).find_one({"id": person_id})
+    assert stored["role"] == "CTO"
+
+
+def test_resolve_person_role_stays_unset_without_a_role_hint(db):
+    person_id = resolve_person(
+        db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+    stored = PersonRepository(db).find_one({"id": person_id})
+    assert stored.get("role") is None
+
+
+def test_resolve_person_backfills_role_when_a_later_mention_supplies_one(db):
+    # First mention has no role_hint (role stays unset); a later email finally states
+    # a role -- same backfill-only contract as org_id/org above.
+    person_id = resolve_person(
+        db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+    assert PersonRepository(db).find_one({"id": person_id}).get("role") is None
+
+    resolve_person(
+        db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint", "role_hint": "CTO"},
+        is_sender=True, now=_NOW, thread_id="t2",
+    )
+
+    assert PersonRepository(db).find_one({"id": person_id})["role"] == "CTO"
+
+
+def test_resolve_person_never_overwrites_an_already_stated_role(db):
+    # An already-established role is never clobbered by a later, possibly less
+    # reliable mention -- same contract as org's own backfill-only handling.
+    person_id = resolve_person(
+        db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint", "role_hint": "CTO"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+
+    resolve_person(
+        db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint", "role_hint": "Founder"},
+        is_sender=True, now=_NOW, thread_id="t2",
+    )
+
+    assert PersonRepository(db).find_one({"id": person_id})["role"] == "CTO"
+
+
+def test_resolve_operator_person_never_sets_a_role(db):
+    # Operator identity is resolved purely by email, never by `role` -- the operator's
+    # own dedicated profile never gets a role value through this path.
+    operator_id = resolve_operator_person(
+        db, "ashok@example.com", "Ashok", is_sender=True, now=_NOW, thread_id="t1",
+    )
+    assert PersonRepository(db).find_one({"id": operator_id}).get("role") is None
 
 
 # --- Phase 19.1: identity resolution must be future-safe against merged Persons -----------

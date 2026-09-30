@@ -24,7 +24,12 @@ class Person(BaseModel):
     # historical document or existing behavior changes. None on any Person resolved
     # before this field existed, or with no email to derive a domain from.
     org_id: str | None = None
-    type: str | None = None
+    # Free-text professional designation (e.g. "CTO", "AI Analyst", "Sales Manager"),
+    # extracted from an email's own content (MentionedPerson.role_hint) -- never used
+    # to detect or distinguish the operator, which is resolved purely by email (see
+    # app.entities.resolution.resolve_operator_person). Backfill-only on reuse, same
+    # as `org`: a later mention never overwrites an already-stated role.
+    role: str | None = None
     goal_pillar: str | None = None
     last_inbound: datetime | None = None
     last_outbound: datetime | None = None

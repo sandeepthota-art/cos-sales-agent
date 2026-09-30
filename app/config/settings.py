@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # default, preserving old behavior with zero configuration). When set, a
     # people_mentioned entry with no email of its own that names the operator (e.g. a
     # calendar invite's body text listing them as an attendee) resolves to the
-    # operator's own dedicated Person profile (type="operator") instead of creating a
+    # operator's own dedicated Person profile instead of creating a
     # generic shadow record for them -- see app/pipeline.py's _process_entities and
     # app.entities.resolution.resolve_operator_person. Never affects agent_email-based
     # recognition, which already works independently of this field.

@@ -230,7 +230,9 @@ def test_persist_email_analysis_resolves_people_and_stores_entities_referenced(d
     assert mentioned["id"].startswith("PER-")
     operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
     assert operator is not None
-    assert operator["type"] == "operator"
+    # Operator identity is resolved purely by email -- `role` is never used to detect
+    # or mark the operator, and is unset here since no role_hint was supplied for them.
+    assert operator.get("role") is None
 
     stored = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored["entities_referenced"]["people"] == result["entities_referenced"]["people"]

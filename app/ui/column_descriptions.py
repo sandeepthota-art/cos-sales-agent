@@ -65,7 +65,7 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "aliases": "Alternate names proven to belong to this person by an actual name/org match.",
         "org": "Free-text company name, as mentioned in email.",
         "org_id": "Canonical Organization this person belongs to, resolved by email domain.",
-        "type": 'Set to "operator" for the configured mailbox owner; otherwise unset.',
+        "role": "Professional designation (e.g. \"CTO\", \"Sales Manager\"), stated in an email; unset until one is.",
         "goal_pillar": _NOT_SET,
         "last_inbound": "Most recent email known received FROM this person (only ever moves forward in time).",
         "last_outbound": "Most recent email known sent TO this person (only ever moves forward in time).",

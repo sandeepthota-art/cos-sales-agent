@@ -86,7 +86,8 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
 
     operator = PersonRepository(db).find_one({"id": entities_referenced["people"][1]})
     assert operator["email"] == "ashok@example.com"
-    assert operator["type"] == "operator"
+    # Operator identity is resolved purely by email, never by `role`.
+    assert operator.get("role") is None
 
     commitment = CommitmentRepository(db).find_one({"id": entities_referenced["commitments"][0]})
     assert commitment["class"] == "mine"
@@ -218,6 +219,27 @@ class _MentionsSenderLLM(_NoPeopleLLM):
         return result
 
 
+class _MentionsPersonWithRoleHintLLM(_NoPeopleLLM):
+    """A people_mentioned entry carrying an explicit professional designation --
+    proves role_hint flows from EmailAnalysis all the way through to Person.role."""
+
+    def analyze_email(self, email, thread_history=None, person_context=None):
+        result = super().analyze_email(email)
+        result["people_mentioned"] = [
+            {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint", "role_hint": "CTO"}
+        ]
+        return result
+
+
+def test_pipeline_populates_person_role_from_an_explicit_designation_in_the_email(db, settings):
+    payloads = [_raw_email("msg_role_hint", "Best regards, Deepanshu Sonwane, CTO, MediaMint.")]
+    run_pipeline(db, MockEmailProvider(payloads=payloads), _MentionsPersonWithRoleHintLLM(), MockCalendarProvider(), settings)
+
+    person = PersonRepository(db).find_one({"email": "deepanshu@mediamint.com"})
+    assert person is not None
+    assert person["role"] == "CTO"
+
+
 def test_envelope_resolves_sender_even_when_llm_never_mentions_them_reuses_existing_person(db, settings):
     from datetime import datetime, timezone
 
@@ -261,7 +283,8 @@ def test_envelope_resolution_creates_a_dedicated_operator_profile_for_the_agent_
 
     operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
     assert operator is not None
-    assert operator["type"] == "operator"
+    # Operator identity is resolved purely by email, never by `role`.
+    assert operator.get("role") is None
     assert operator["name"] == "Me"  # settings.agent_name unset in this fixture -- see operator_display_name
 
 
@@ -271,7 +294,7 @@ def test_envelope_resolution_reuses_the_same_operator_profile_across_emails(db, 
     second = [_raw_email("msg_002", "Following up.", timestamp="2026-09-14T10:00:00Z")]
     run_pipeline(db, MockEmailProvider(payloads=second), _NoPeopleLLM(), MockCalendarProvider(), settings)
 
-    operators = PersonRepository(db).find_many({"type": "operator"})
+    operators = PersonRepository(db).find_many({"email": "ashok@example.com"})
     assert len(operators) == 1
 
 
@@ -1183,8 +1206,9 @@ def test_pipeline_ambiguous_same_email_match_still_falls_through_to_no_email_tie
 
 # --- Operator Profile (settings.agent_name) -------------------------------------------
 # The operator IS tracked, like any other participant, but always tied to their own
-# single dedicated Person profile (type="operator", resolve_operator_person) instead
-# of an ordinary contact -- whether recognized by email (settings.agent_email,
+# single dedicated Person profile (resolve_operator_person, identity resolved purely
+# by email -- never by `role`) instead of an ordinary contact -- whether recognized by
+# email (settings.agent_email,
 # enforced by the envelope loop above) or, when a people_mentioned entry has no email
 # of its own, by settings.agent_name (e.g. a calendar invite's body text listing the
 # operator as an attendee by name). agent_name is unset (None) by default, so every
@@ -1228,7 +1252,7 @@ def test_pipeline_body_mention_of_operators_own_name_links_to_operator_profile(d
     # straight to the operator profile.
     assert PersonRepository(db).find_one({"name": "Ashok Kumar", "email": {"$exists": False}}) is None
     operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
-    assert operator["type"] == "operator"
+    assert operator is not None
     assert operator["name"] == "Ashok Kumar (Me)"
     assert len(PersonRepository(db).find_many({})) == 2  # John + operator, no shadow third record
 
@@ -1268,7 +1292,6 @@ def test_pipeline_mention_with_agent_email_links_to_operator_profile_regardless_
 
     operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
     assert operator is not None
-    assert operator["type"] == "operator"
     assert operator["name"] == "Me"  # agent_name unset in this fixture -- the mention's own name never wins
     assert len(PersonRepository(db).find_many({})) == 2  # John + operator, no separate record
 
@@ -1286,7 +1309,11 @@ def test_pipeline_body_mention_of_unrelated_name_unaffected_by_agent_name(db, se
 
     priya = PersonRepository(db).find_one({"name": "Priya"})
     assert priya is not None
-    assert priya.get("type") != "operator"
+    # Must be a distinct record from the operator's own dedicated profile, not merged
+    # into it -- operator identity is by email, which Priya's mention never carries.
+    operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
+    assert operator is not None
+    assert priya["id"] != operator["id"]
 
 
 def test_pipeline_body_mention_of_operators_name_still_creates_shadow_person_when_agent_name_unset(db, settings):
@@ -1309,4 +1336,7 @@ def test_pipeline_body_mention_of_operators_name_still_creates_shadow_person_whe
     shadow = PersonRepository(db).find_one({"name": "Ashok Kumar"})
     assert shadow is not None
     assert "email" not in shadow
-    assert shadow.get("type") != "operator"
+    # Must be a distinct record from the operator's own dedicated profile.
+    operator = PersonRepository(db).find_one({"email": "ashok@example.com"})
+    assert operator is not None
+    assert shadow["id"] != operator["id"]
