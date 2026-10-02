@@ -139,6 +139,61 @@ def test_dashboard_read_only_mode_hides_approval_buttons(monkeypatch):
     assert "Kickoff call" in all_text
 
 
+def test_dashboard_reply_approval_shows_recipient_and_thread_context(monkeypatch):
+    # Full-system schema cleanup pass: the Reply Approval card previously showed
+    # only subject/body, with no way to tell WHO a draft is to or WHICH thread it
+    # belongs to. Proves the new context line actually surfaces person_id (via a
+    # real Person lookup) and org_id (via a real Organization lookup), not just
+    # that the dashboard doesn't crash.
+    fake_client = mongomock.MongoClient()
+    db = fake_client["cos_sales_test"]
+    initialize_indexes(db)
+    db.people.insert_one({"id": "PER-001", "name": "Ashok Ganapam", "email": "ashok@databeat.io"})
+    db.organizations.insert_one({"id": "ORG-001", "name": "DataBeat"})
+    db.reply_drafts.insert_one(
+        {
+            "reply_id": "reply_msg_001",
+            "thread_id": "THR-001",
+            "source_email_id": "EML-001",
+            "status": "awaiting_approval",
+            "draft": {"subject": "Re: Pricing", "body": "Body text"},
+            "person_id": "PER-001",
+            "org_id": "ORG-001",
+            "created_at": "2026-09-13T10:00:00Z",
+        }
+    )
+
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+
+    assert not at.exception
+    all_captions = " ".join(c.value for c in at.caption)
+    assert "Ashok Ganapam" in all_captions
+    assert "DataBeat" in all_captions
+    assert "THR-001" in all_captions
+
+
+def test_dashboard_shows_rebranded_product_name(monkeypatch):
+    # User-facing rebrand: "CoS Sales Agent" -> "CoS Staff EA Agent", everywhere
+    # visible in the UI. Backend module/package/collection names are deliberately
+    # unchanged -- this only proves the UI-facing title text.
+    fake_client = mongomock.MongoClient()
+    initialize_indexes(fake_client["cos_sales_test"])
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+
+    assert not at.exception
+    all_titles = " ".join(t.value for t in at.title)
+    assert "CoS Staff EA Agent" in all_titles
+    assert "CoS Sales Agent" not in all_titles
+
+
 def test_dashboard_password_gate_blocks_until_correct_password(monkeypatch):
     fake_client = mongomock.MongoClient()
     initialize_indexes(fake_client["cos_sales_test"])

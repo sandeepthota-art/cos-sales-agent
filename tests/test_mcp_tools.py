@@ -198,8 +198,6 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
     results = list_processed_emails(db, limit=50)
 
     entry = results[0]
-    assert entry["record_id"] == "EML-001"
-    assert entry["date"] == "2026-09-13"
     assert entry["goal_pillar"] == "Sales"
     assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
     # John (sender) + the operator's own dedicated profile (Ashok, settings.agent_email).
@@ -225,8 +223,6 @@ def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_t
     entry = results[0]
     assert entry["message_id"] == "EML-001"
     assert entry["processing_status"]["stage"] == "FAILED"
-    assert entry["record_id"] is None
-    assert entry["date"] is None
     assert entry["goal_pillar"] is None
     assert entry["label_applied"] is None
     assert entry["entities_referenced"] == {

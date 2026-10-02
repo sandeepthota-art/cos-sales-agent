@@ -23,8 +23,12 @@ still handles exactly one named message), and it is not `cos-new-email-check`
 - Only ever use the `cos-sales-agent` connector's tools
   (`mcp__remote-devices__cos-sales-agent__*`). No other MCP connector is used
   for this skill's CoS processing job.
-- Use Gmail only to *read* the thread's messages -- never send, reply,
-  forward, or modify anything.
+- Use Gmail to *read* the thread's messages, and — only when a reply is
+  warranted per step 5.iii below — to *create a draft* via the Gmail
+  connector's `create_draft` tool. Never actually send, reply (dispatch),
+  forward, label, delete, or otherwise modify anything in Gmail. Creating
+  a draft is the one write action ever permitted here, and the draft must
+  never be sent automatically by this skill.
 - **Never call `process_email`.** Always use the granular tools, in this
   exact order, per message: `ingest_email` -> (you read and classify the
   message) -> `persist_email_analysis` -> `persist_context_delta` ->
@@ -101,6 +105,15 @@ still handles exactly one named message), and it is not `cos-new-email-check`
       skip the draft or keep it strictly non-committal, and flag the
       suspicion in the final report. Otherwise draft a reasonable reply and
       call `create_reply_draft`. Skip this step if no reply is warranted.
+      - **Immediately after `create_reply_draft` succeeds**, also create a
+        matching draft directly in the user's own Gmail mailbox: call the
+        Gmail connector's `create_draft` tool with the exact same subject
+        and body, addressed as a reply to the original sender within the
+        original thread (use the thread/message identifiers so Gmail nests
+        it correctly under the original conversation, not as a new,
+        unthreaded draft). This lets the user open it directly in Gmail,
+        edit it, and send it himself -- it is still never sent
+        automatically by this skill, in Gmail or anywhere else.
    4. Call `mark_email_completed`.
    5. **If any of steps 1-4 fails**, stop the loop immediately -- do not
       attempt the next message in this run.
@@ -112,6 +125,7 @@ Processed (newly completed): <message ids, one-line summary each>
 Skipped (already completed): <message ids, or "None">
 Failed: <message id + error, if the loop stopped early -- "None" otherwise>
 Remaining unprocessed in this thread (if stopped early): <count, or "None">
+Gmail drafts created (awaiting your review/send): <message ids, or "None">
 ```
 
 Report only what the tools' own results actually show. Never add a person,

@@ -72,49 +72,59 @@ declared-but-unused, rather than given a field table.
 **Purpose:** One document per ingested email — its raw content, its pipeline
 processing state, and its post-analysis classification.
 
+**Schema cleanup (collection-by-collection pass, emails first):** this section
+was rewritten after discovering it was stale against the actual code — the
+"Canonical ID refactor" in `app.pipeline.ingest_raw_email` reassigns
+`message_id` to the canonical `EML-nnn` value (it is **not** the original
+Gmail id despite the name), with `source_message_id` now holding that
+permanent original id instead. The table below reflects the current, verified
+behavior. `id` and `record_id` (both true duplicates of `message_id` — always
+identical to it) and `date` (`timestamp`'s date-only component) were removed
+from the schema entirely as a result — see
+`scripts/remove_email_id_record_id_date_fields.py` for the cleanup script.
+
 **Dashboard visibility:** every field in this table is shown on the Emails tab
-(`app/ui/dashboard.py:_render_emails_tab`) — an unfiltered raw dump of the document.
+(`app/ui/dashboard.py:_render_emails_tab`), in the order defined by
+`EMAIL_COLUMN_ORDER` (`app/ui/column_descriptions.py`), sorted newest-first by
+`timestamp`.
 
 There is a Pydantic model for the raw side (`app.email.models.Email`), but the
-document actually stored in MongoDB has more fields than that model: `processing_status`,
-`record_id`, `date`, `entities_referenced`, `goal_pillar`,
-and `label_applied` are all added later, by
-`EmailRepository.set_stage`/`set_entity_metadata` (`app/database/repositories.py`), and
-appear in no single Pydantic model — `emails` is a composite of the `Email` model plus
-these repository-written fields.
+document actually stored in MongoDB has more fields than that model:
+`processing_status`, `entities_referenced`, `goal_pillar`, and `label_applied`
+are all added later, by `EmailRepository.set_stage`/`set_entity_metadata`
+(`app/database/repositories.py`), and appear in no single Pydantic model —
+`emails` is a composite of the `Email` model plus these repository-written
+fields.
 
-**Removed fields:** `confidence` and `priority` were removed from `EmailAnalysis`,
-`EmailRepository.set_entity_metadata`, and the `emails` document entirely (no longer
-extracted, computed, or persisted). This also removed the `priority` filter parameter
-from the `search_emails` MCP tool and the `"p1_emails"` category from the
-`whats_on_my_table` MCP tool's response. `source_type` and `source_link` were removed
-the same way (along with the now-unused `_GMAIL_INTERNAL_ID_PATTERN` regex that only
-ever existed to compute `source_link`) — nothing builds a Gmail web link or a
-`source_type` value anywhere in this codebase anymore. If you find any of these four
-fields in an older document in a live database, it is leftover from before these
-changes, not something current code still writes — see
-`scripts/remove_email_confidence_priority_fields.py` and
-`scripts/remove_email_source_type_and_link_fields.py` for the cleanup scripts that
-strip them from existing documents.
+**Removed fields:** `confidence`, `priority`, `source_type`, `source_link`,
+`id`, `record_id`, and `date` have all been removed from the `emails` document
+entirely (no longer extracted, computed, or persisted). This also removed the
+`priority` filter parameter from the `search_emails` MCP tool and the
+`"p1_emails"` category from the `whats_on_my_table` MCP tool's response. If you
+find any of these seven fields in an older document in a live database, it is
+leftover from before these changes, not something current code still writes —
+see `scripts/remove_email_confidence_priority_fields.py`,
+`scripts/remove_email_source_type_and_link_fields.py`, and
+`scripts/remove_email_id_record_id_date_fields.py` for the cleanup scripts
+that strip them from existing documents.
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
-| `id` | string \| absent | Set for every email ingested after this field was introduced; absent on older documents until `scripts/backfill_email_thread_internal_ids.py` runs | **Internal, user-facing** human-readable email identifier (`EML-nnn`). Assigned exactly once, atomically, via the same `next_id()` counter every other internal id (`PER-nnn`, `PRJ-nnn`, ...) uses. Purely additive — never replaces `message_id`, never used for deduplication or as a foreign key anywhere else in the system | Deterministic pipeline (`app.pipeline.ingest_raw_email`) | `"EML-001"` |
-| `message_id` | string | Yes | **Original source/Gmail message identifier.** System-facing: the Mongo dedup/upsert key (unique index), and the value every other collection's reference/derived-id (`reply_drafts.reply_id`, `knowledge_items.source_emails`, `commitments.source_record`, etc.) is built from. Used for deduplication and source traceability back to the original Gmail message. Never renamed, replaced, or rewritten | Gmail/source ingestion | `"18f2a9b1c3d4e5f6"` |
-| `thread_id` | string \| null | No | Conversation thread id, if the source already supplied one (usually null on first ingest — see `threads` below for how it's actually resolved) | Gmail/source ingestion | `null` |
+| `message_id` | string | Yes | **Canonical internal email identifier (`EML-nnn`).** The Mongo dedup/upsert key (unique index), and the value every other collection's reference/derived-id (`reply_drafts.reply_id`, `knowledge_items.source_emails`, `commitments.source_record`, etc.) is built from. Reassigned exactly once, atomically, at ingestion (existing value reused on a dedup match) — never the original Gmail id despite the field name; see `source_message_id` for that | Deterministic pipeline (`app.pipeline.ingest_raw_email`) | `"EML-001"` |
+| `thread_id` | string | Yes | **Canonical internal thread identifier (`THR-nnn`)** this email belongs to — see the `threads` section below for how it's resolved | Deterministic pipeline (`app.pipeline.resolve_and_persist_thread`) | `"THR-001"` |
+| `source_message_id` | string | Yes | **The original, permanent Gmail/provider message identifier.** Set once at ingestion, never reassigned. This is what dedup actually keys on (not `message_id`) — a retry of the exact same source message always resolves to the same existing `message_id` | Gmail/source ingestion | `"18f2a9b1c3d4e5f6"` |
+| `source_thread_id` | string \| null | No | The original, permanent Gmail/provider thread identifier, if the source supplied one. Set once, never rewritten | Gmail/source ingestion | `null` |
 | `from` | object `{name, email}` | Yes | Sender | Gmail/source ingestion | `{"name": "Ashok Ganapam", "email": "ashok@databeat.io"}` |
 | `to` | list[object] | Yes (list, may be empty) | Recipients | Gmail/source ingestion | `[{"name": null, "email": "me@company.com"}]` |
 | `cc` | list[object] | No (defaults to `[]`) | CC recipients | Gmail/source ingestion | `[]` |
 | `subject` | string | Yes | Email subject line | Gmail/source ingestion | `"Re: Pricing for Q3"` |
 | `body` | string | Yes | Full email body text | Gmail/source ingestion | `"Hi, following up on..."` |
-| `timestamp` | string (ISO datetime) | Yes | When the email was sent | Gmail/source ingestion | `"2026-03-04T14:02:00Z"` |
+| `timestamp` | string (ISO datetime) | Yes | When the email was sent. Used for the dashboard's newest-first sort | Gmail/source ingestion | `"2026-03-04T14:02:00Z"` |
 | `in_reply_to` | string \| null | No | Threading header (message id this replies to) | Gmail/source ingestion | `null` |
 | `references` | list[string] | No (defaults to `[]`) | Threading header (chain of prior message ids) | Gmail/source ingestion | `[]` |
 | `attachments` | list[string] | No (defaults to `[]`) | Attachment filenames | Gmail/source ingestion | `[]` |
 | `labels` | list[string] | No (defaults to `[]`) | Gmail label ids, plus (via `$addToSet`) the applied `label_applied` triage value once analysis completes | Gmail/source ingestion, then deterministic pipeline (appends `label_applied`) | `["INBOX", "Needs reply"]` |
 | `processing_status` | object `{stage, error, failed_stage, updated_at}` | Always present after first ingest | Current pipeline stage (see `ProcessingStage` enum: RECEIVED → VALIDATED → THREADED → ANALYZED → CONTEXT_BUILT → KNOWLEDGE_PROCESSED → ENTITIES_PROCESSED → REPLY_PROCESSED → MEETING_PROCESSED → COMPLETED, or FAILED at any point) plus the error if one occurred | Deterministic pipeline (`EmailRepository.set_stage`) | `{"stage": "COMPLETED", "error": null, "failed_stage": null, "updated_at": "2026-03-04T14:02:31Z"}` |
-| `record_id` | string | Set only once analysis completes | Currently always identical to `message_id` | Deterministic pipeline | `"18f2a9b1c3d4e5f6"` |
-| `date` | string (date only, `YYYY-MM-DD`) | Set only once analysis completes | `timestamp`'s date component | Deterministic pipeline | `"2026-03-04"` |
 | `entities_referenced` | object, keys: `people`, `projects`, `commitments`, `follow_ups`, `meetings`, `personal`, `opportunities` | Set only once analysis completes | Canonical IDs of every record this email caused to be created or updated — the audit trail from an email back to everything it produced | Entity resolution | `{"people": ["PER-004"], "projects": ["PRJ-002"], "commitments": [], "follow_ups": [], "meetings": [], "personal": [], "opportunities": ["OPP-001"]}` |
 | `goal_pillar` | string (free text; only `"Sales"` has defined behavior) | Set only once analysis completes | Business category assigned to the email — see "Distinguishing `goal_pillar` and `label_applied`" below | Claude Desktop analysis / internal LLM call | `"Sales"` |
 | `label_applied` | string, one of: `"Needs reply: ASAP"`, `"Needs reply"`, `"Needs reply: mention"`, `"Read only"`, `"Delete"`, `"Undecided"` | Set only once analysis completes (defaults to `"Undecided"` in the schema if analysis omits it) | Six-way triage label — independent of `goal_pillar` (see below) | Claude Desktop analysis / internal LLM call | `"Needs reply"` |
@@ -123,8 +133,8 @@ strip them from existing documents.
 
 - `entities_referenced.people/projects/commitments/follow_ups/meetings/personal/opportunities` → the `id` field of documents in `people`, `projects`, `commitments`, `follow_ups`, `meetings`, `personal_items`, `opportunities` respectively.
 - `message_id` is referenced by `threads.message_ids`, `context_snapshots.triggering_email_id`, `reply_drafts.source_email_id`, `knowledge_items.source_emails`, `commitments.source_record`.
-- `id` is never referenced by any other collection — it exists purely for human-facing display/traceability, not as a foreign key.
-- Indexes: unique on `message_id`; unique + sparse on `id` (sparse because a not-yet-backfilled document simply lacks the field); non-unique on `processing_status.stage`.
+- `source_message_id`/`source_thread_id` are never referenced by any other collection — they exist purely for traceability back to the original Gmail/provider identity, not as a foreign key.
+- Indexes: unique on `message_id`; unique + sparse on `source_message_id` (sparse because a not-yet-backfilled historical document may lack it); non-unique on `processing_status.stage`.
 
 ---
 
@@ -161,37 +171,59 @@ code links one to the other.
 
 ## `threads`
 
+**Schema cleanup (collection-by-collection pass, threads second, after
+emails):** this section was rewritten after discovering it was stale against
+the actual code, same pattern as the `emails` section above —
+`app.pipeline._upsert_thread` reassigns `thread_id` to the canonical `THR-nnn`
+value (it is **not** "a genuine source/Gmail thread id... or the application's
+own synthetic fallback `thread_{message_id}`" as this section used to say —
+that description predates the canonical ID refactor). `source_thread_id` now
+holds the genuine original Gmail thread id instead (or `null` if the source
+never supplied one). `id` (a true duplicate of `thread_id` — always
+identical) was removed from the schema entirely — see
+`scripts/remove_thread_id_field.py`.
+
 **Purpose:** One row per resolved conversation thread — the grouping unit for
 context, knowledge, commitments, meetings, and canonical people/orgs.
 
-**Dashboard visibility:** `id` and `thread_id` both appear on the dashboard, as the
-entries of the Thread Explorer / Context Evolution thread-selector dropdown (shown
-together, e.g. `"THR-001 (thread_18f2a9b1c3d4e5f6)"`). `normalized_subject`,
-`participant_emails`, `message_ids`, `last_message_at`, `person_ids`, and `org_ids` are
-Backend-only — never displayed as values anywhere in `app/ui/dashboard.py`.
+**Dashboard visibility:** `thread_id` and `source_thread_id` (when set) appear
+together on the dashboard, as the entries of the Thread Explorer / Context
+Evolution thread-selector dropdown (e.g. `"THR-001 (gmail_thread_xyz)"`,
+falling back to just `"THR-001"` when there's no source thread id —
+`app/ui/data.py:_thread_display_label`). There is no raw table/dataframe view
+of this collection anywhere in the dashboard. `normalized_subject`,
+`participant_emails`, `message_ids`, `source_message_ids`, `last_message_at`,
+`person_ids`, and `org_ids` are Backend-only — never displayed as values
+anywhere in `app/ui/dashboard.py`.
 
 **No Pydantic model exists for this collection.** It is built and read as a plain
 Python dict throughout `app/pipeline.py`; `app.email.threading.ThreadCandidate` is a
 read-side helper used only to decide which thread an email belongs to, not what gets
 persisted.
 
+**Removed fields:** `id` has been removed from the `threads` document entirely
+(no longer written). If you find it in an older document in a live database,
+it is leftover from before this change — see `scripts/remove_thread_id_field.py`
+for the cleanup script that strips it from existing documents.
+
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
-| `id` | string \| absent | Set for every thread created after this field was introduced; absent on older documents until `scripts/backfill_email_thread_internal_ids.py` runs | **Internal, user-facing** human-readable thread identifier (`THR-nnn`). Assigned exactly once, atomically, the moment a genuinely new thread is first created — never regenerated when a later message is added to an existing thread. Purely additive — never replaces `thread_id`, never used for deduplication or as a foreign key anywhere else | Deterministic pipeline (`app.pipeline._upsert_thread`) | `"THR-001"` |
-| `thread_id` | string | Yes | **Existing resolved thread identifier.** System-facing: the unique upsert key, and the value every other collection's `thread_id` field/derived-id (`knowledge_items.knowledge_id`, `calendar_actions.meeting_fingerprint`'s ambiguous fallback, etc.) is built from. May be a genuine source/Gmail thread id (if the source supplied one), a value inherited via `in_reply_to`/`references`/subject+participants/participant+14-day-window matching against an existing thread, **or the application's own synthetic fallback** `thread_{message_id}` when none of the above resolve anything — i.e. this field is not guaranteed to be an externally-traceable Gmail id even though it often is. Never renamed, replaced, or rewritten | Deterministic pipeline (`app.email.threading.resolve_thread_id`) | `"thread_18f2a9b1c3d4e5f6"` |
+| `thread_id` | string | Yes | **Canonical internal thread identifier (`THR-nnn`).** The unique upsert key, and the value every other collection's `thread_id` field/derived-id (`knowledge_items.knowledge_id`, `calendar_actions.meeting_fingerprint`'s ambiguous fallback, etc.) is built from. Assigned exactly once, atomically, the moment a genuinely new thread is first created — never regenerated when a later message is added to an existing thread. Not the original Gmail id despite sometimes looking like one historically; see `source_thread_id` for that | Deterministic pipeline (`app.pipeline._upsert_thread`) | `"THR-001"` |
+| `source_thread_id` | string \| null | No | **The original, permanent Gmail/provider thread identifier**, if the source supplied one (`null` if not — many threads are resolved by subject/participant/`in_reply_to` matching rather than an explicit source thread id). Set once at creation, never rewritten on a later message | Gmail/source ingestion | `"gmail_thread_xyz"` or `null` |
 | `normalized_subject` | string | Yes | De-duplicated subject line (case/prefix-normalized), used only for thread matching | Deterministic pipeline | `"pricing for q3"` |
 | `participant_emails` | list[string] (sorted) | Yes | Every email address that has posted (From/To/CC) in this thread | Deterministic pipeline | `["ashok@databeat.io", "me@company.com"]` |
-| `message_ids` | list[string] (sorted) | Yes | Every `message_id` in this thread | Deterministic pipeline | `["18f2a9b1c3d4e5f6"]` |
+| `message_ids` | list[string] (sorted) | Yes | Every canonical `message_id` (`EML-nnn`) in this thread | Deterministic pipeline | `["EML-001"]` |
+| `source_message_ids` | list[string] (sorted) | Yes | Every original Gmail message id in this thread — used solely for `in_reply_to`/`references` matching, which must compare against raw Gmail ids, never canonical ones | Deterministic pipeline | `["18f2a9b1c3d4e5f6"]` |
 | `last_message_at` | string (ISO datetime) | Yes | Timestamp of the most recent message (kept as a running max, not overwritten with an older value) | Deterministic pipeline | `"2026-03-04T14:02:00Z"` |
 | `person_ids` | list[string] (sorted) | Set only after entity resolution runs | Every canonical Person resolved for this thread (`person.open_threads` contains this `thread_id`) — **always recomputed fresh from current Person records, never accumulated/backfilled from stale state** | Entity resolution (`app.pipeline._link_thread_to_entities`) | `["PER-004", "PER-011"]` |
 | `org_ids` | list[string] (sorted) | Set only after entity resolution runs | Every Organization those same people belong to | Entity resolution | `["ORG-002"]` |
 
 ### Relationships
 
-- `thread_id` is referenced by `emails.thread_id`, `context_snapshots.thread_id`, `knowledge_items.thread_id`, `commitments.thread_id`, `follow_ups.thread_id`, `meetings.thread_id`, `reply_drafts.thread_id`, `calendar_actions.thread_id`.
+- `thread_id` is referenced by `emails.thread_id`, `context_snapshots.thread_id`, `knowledge_items.thread_id`, `commitments.thread_id`, `follow_ups.thread_id`, `meetings.thread_id`, `reply_drafts.thread_id`, `calendar_actions.thread_id`, `people.open_threads`, `thread_events.thread_id`.
 - `person_ids`/`org_ids` → `people.id` / `organizations.id`.
-- `id` is never referenced by any other collection — purely for human-facing display/traceability.
-- Index: unique on `thread_id`; unique + sparse on `id`. (`entity_migration.py`'s optional, never-auto-run "indexes" stage additionally recommends non-unique indexes on `person_ids`/`org_ids` — not created by default; see `migration_runs` below.)
+- `source_thread_id` is never referenced by any other collection — purely for traceability back to the original Gmail/provider identity, not as a foreign key.
+- Index: unique on `thread_id`; non-unique sparse on `source_thread_id`. (`entity_migration.py`'s optional, never-auto-run "indexes" stage additionally recommends non-unique indexes on `person_ids`/`org_ids` — not created by default; see `migration_runs` below.)
 
 ---
 
@@ -336,21 +368,37 @@ one canonical record per real individual.
 `Person` (`app.entities.models.Person`) is a full Pydantic model; every field below is
 persisted exactly as modeled.
 
-**Dashboard visibility:** every field in this table is shown on the People tab
-(`app/ui/dashboard.py:_render_people_tab`) — an unfiltered raw dump of the document.
+**Schema cleanup (collection-by-collection pass, people third, after emails and
+threads):** this section was corrected in two ways while investigating a
+request to clean up `goal_pillar`/`role`/`source`. First, it still documented
+a `type` field (`"operator"`/unset) that no longer exists — it was replaced by
+`role` in an earlier session change (operator identity is resolved purely by
+email, never by any Person field), but this section was never updated to
+match; `role` was missing from this table entirely. Second, `source` and
+`note_link` were found to be genuinely unused (see "Removed fields" below) and
+removed.
+
+**Dashboard visibility:** the People tab (`app/ui/dashboard.py:_render_people_tab`)
+shows fields in the order defined by `PEOPLE_COLUMN_ORDER`
+(`app/ui/column_descriptions.py`) — no longer an unfiltered raw dump.
+`goal_pillar` is a real, persisted field but is hidden from the dashboard (see
+its own row below for why).
 
 **Removed fields:** `reports_to`, `review_flag`, `role_in_pillar`, `tier`,
-`voice_register`, and `preferences` were removed from `Person` entirely. Four of
-these (`reports_to`, `role_in_pillar`, `tier`, `voice_register`) had never been
-written by any code path. `review_flag` was written (on a no-email Person) but
-never read back anywhere — removing it changes no behavior. `preferences` was
-genuinely load-bearing: it powered a per-person reply-drafting customization
-(`voice_signature`, `remove_long_dash`) read by `app.pipeline.run_pipeline`,
-`app.replies.drafter.draft_reply`, and both `ClaudeProvider.draft_reply` and
-`MockLLMProvider.draft_reply` — all of that plumbing was removed alongside the
-field, so reply drafts are no longer customizable per recipient. If you find any
-of these six fields in an older document in a live database, it is leftover from
-before this change — see `scripts/remove_people_legacy_fields.py`.
+`voice_register`, `preferences`, `type`, `source`, and `note_link` have all been
+removed from `Person` entirely. Of the original six: four (`reports_to`,
+`role_in_pillar`, `tier`, `voice_register`) had never been written by any code
+path; `review_flag` was written (on a no-email Person) but never read back
+anywhere; `preferences` was genuinely load-bearing (a per-person reply-drafting
+customization) and its removal is covered in that migration's own history
+(`scripts/remove_people_legacy_fields.py`). `type` was replaced by `role` in a
+later change (see `role`'s own row). `source` was always just the unused
+Pydantic default `"gmail"` — never read or branched on anywhere. `note_link`
+was never read or written by any code path at all — the clearest "fully dead"
+field found in this collection. If you find any of these nine fields in an
+older document in a live database, it is leftover from before the relevant
+change — see `scripts/remove_people_legacy_fields.py` and
+`scripts/remove_person_source_note_link_fields.py`.
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
@@ -358,22 +406,20 @@ before this change — see `scripts/remove_people_legacy_fields.py`.
 | `name` | string | Yes | Display name | Entity resolution | `"Ashok Ganapam"` |
 | `email` | string \| null | No | Lowercased email address. **Omitted entirely from the document (not stored as `null`) when absent** — required so MongoDB's sparse unique index on this field allows more than one no-email person | Entity resolution / Gmail source ingestion | `"ashok@databeat.io"` |
 | `aliases` | list[string] | No (defaults to `[]`) | Alternate names proven to belong to this person by an actual resolution match (never speculative) | Entity resolution | `["Ashok"]` |
-| `org` | string \| null | No | Free-text company name, as mentioned | Entity resolution | `"DataBeat"` |
+| `org` | string \| null | No | Free-text company name, as mentioned. Also the lookup key `get_company_summary` filters on | Entity resolution | `"DataBeat"` |
 | `org_id` | string \| null | No | Canonical Organization, resolved by email domain only — never by company-name similarity | Entity resolution | `"ORG-002"` |
-| `type` | string \| null | No | Set to `"operator"` for the system's own configured mailbox; otherwise unset | Entity resolution | `"operator"` |
-| `goal_pillar` | string \| null | No | Not observed to be set by any current code path (field exists on the model; nothing in `app/pipeline.py` or `app/entities/resolution.py` writes it for a Person) | — | `null` |
+| `role` | string \| null | No | Professional designation (e.g. `"CTO"`), extracted from an email's own content. Set at creation and backfilled on reuse — but never overwrites an already-stated value. Never used to detect the operator, which is resolved purely by email | Entity resolution | `"CTO"` |
+| `goal_pillar` | string \| null | No | Never written by any Person-creation path — always `null` in practice today. IS read by `app.entities.person_context.get_bounded_person_context_for_llm`, which feeds the real pipeline's LLM-context step — kept in the schema for that reason, just hidden from the dashboard | — | `null` |
 | `last_inbound` | string (ISO datetime) \| null | No | Latest email known received FROM this person. Forward-only (never moves backward, regardless of processing order) | Entity resolution | `"2026-03-04T14:02:00Z"` |
 | `last_outbound` | string (ISO datetime) \| null | No | Latest email known sent TO this person. Forward-only | Entity resolution | `null` |
-| `open_threads` | list[string] | No (defaults to `[]`) | Every `thread_id` this person has been part of — append-only | Entity resolution | `["thread_18f2a9b1c3d4e5f6"]` |
-| `note_link` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `source` | string | No (defaults to `"gmail"`) | Not observed to be set to anything else | System-generated | `"gmail"` |
-| `status` | string, values actually used: `"active"`, `"merged"` | No (defaults to `"active"`) | `"merged"` is set only by the (separately invoked, admin-only) duplicate-consolidation CLI (`app/duplicate_consolidation.py`), never by the live pipeline | Deterministic pipeline (admin CLI only) | `"active"` |
-| `merged_into` | string \| null | No | Set together with `status="merged"` — the canonical Person's id this record was consolidated into | Deterministic pipeline (admin CLI only) | `null` |
+| `open_threads` | list[string] | No (defaults to `[]`) | Every `thread_id` this person has been part of — append-only | Entity resolution | `["THR-001"]` |
+| `status` | string, values actually used: `"active"`, `"merged"` | No (defaults to `"active"`) | `"merged"` is set only by the (separately invoked, admin-only) duplicate-consolidation CLI (`app/duplicate_consolidation.py`), never by the live pipeline. Drives the live `_reuse_target` redirect — actively used, not just bookkeeping | Deterministic pipeline (admin CLI only) | `"active"` |
+| `merged_into` | string \| null | No | Set together with `status="merged"` — the canonical Person's id this record was consolidated into. Read by the same live redirect logic as `status` | Deterministic pipeline (admin CLI only) | `null` |
 
 ### Relationships
 
 - `org_id` → `organizations.id`. `merged_into` → another `people.id`.
-- Referenced by: `threads.person_ids`, `projects.person_ids`, `opportunities.person_ids`, `commitments.person_id`, `follow_ups.person_id`, `meetings.person_ids`, `knowledge_items.person_id`, `reply_drafts.person_id`, `calendar_actions.person_id`.
+- Referenced by: `threads.person_ids`, `projects.person_ids`, `opportunities.person_ids`, `commitments.person_id`, `follow_ups.person_id`, `meetings.person_ids`, `knowledge_items.person_id`, `reply_drafts.person_id`, `calendar_actions.person_id`, `person_context_snapshots.person_id`.
 - Indexes: unique on `id`; unique-sparse on `email`; non-unique on `open_threads` (a multikey index, since `open_threads` is an array).
 
 ---
@@ -405,8 +451,21 @@ before this change — see `scripts/remove_people_legacy_fields.py`.
 **Purpose:** Named engagements or initiatives extracted from emails — the mechanism
 that predates and underlies the `opportunities` layer.
 
-**Dashboard visibility:** every field in this table is shown on the Projects tab —
-an unfiltered raw dump.
+**"Project product gap" closed:** `status`, `owner`, `health`, `next_milestone`,
+`due` existed on this schema with no way to ever be set (confirmed directly in
+`app.entities.resolution._resolve_project_impl`, which only ever passes
+`id`/`project`/`entity`/`goal_pillar`/`person_ids`/`org_id`). Rather than
+remove them (they're genuine, intended business fields — Project predates
+Opportunity's CRM-overlay role and still needs its own status for a non-Sales
+project that never gets an Opportunity), a new `update_project_fields` MCP
+tool was added, mirroring `update_opportunity_fields` exactly. They are no
+longer hidden on the dashboard.
+
+**Dashboard visibility:** `PROJECTS_COLUMN_ORDER` (`app/ui/column_descriptions.py`)
+controls order/visibility — no longer an unfiltered raw dump. `cluster`,
+`objective`, `target`, `collaborators`, `last_movement`, `note_link`, `source`
+remain hidden (real MongoDB fields, confirmed never populated, but not named
+in the product-gap ask as needing a write mechanism — deferred, not removed).
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
@@ -417,14 +476,14 @@ an unfiltered raw dump.
 | `goal_pillar` | string \| null | No | Copied from the triggering email's `goal_pillar` — this is the field that (combined with a resolved project mention) gates Opportunity creation; see "Distinguishing `goal_pillar` and `label_applied`" above | Claude Desktop analysis / internal LLM call | `"Sales"` |
 | `objective` | string \| null | No | Not observed to be set by any current code path (the schema that feeds project creation, `MentionedProject`, has no `objective` field — only `objective_hint`, which is never copied across) | — | `null` |
 | `target` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `status` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `owner` | string \| null | No | Not observed to be set by any current code path | — | `null` |
+| `status` | string \| null | No | Human-managed only, via the `update_project_fields` MCP tool (new). Never inferred from email content | `update_project_fields` (admin/human-invoked) | `"on_track"` |
+| `owner` | string \| null | No | Human-managed only, via `update_project_fields`. Different field from the human-managed `opportunities.owner` | `update_project_fields` (admin/human-invoked) | `"Sandeep"` |
 | `collaborators` | list[string] | No (defaults to `[]`) | Not observed to be set by any current code path | — | `[]` |
 | `person_ids` | list[string] | No (defaults to `[]`) | Every Person already resolved for the same email whose `org` matches this project's `entity` — never inferred from name-text alone | Entity resolution | `["PER-004"]` |
 | `org_id` | string \| null | No | That matching Organization | Entity resolution | `"ORG-002"` |
-| `next_milestone` | string \| null | No | Not observed to be set by any current code path | — | `null` |
-| `due` | string (ISO datetime) \| null | No | Not observed to be set by any current code path | — | `null` |
-| `health` | string \| null | No | Not observed to be set by any current code path | — | `null` |
+| `next_milestone` | string \| null | No | Human-managed only, via `update_project_fields` | `update_project_fields` (admin/human-invoked) | `"Signed contract"` |
+| `due` | string (ISO datetime) \| null | No | Human-managed only, via `update_project_fields` | `update_project_fields` (admin/human-invoked) | `"2026-10-01T00:00:00Z"` |
+| `health` | string \| null | No | Human-managed only, via `update_project_fields` | `update_project_fields` (admin/human-invoked) | `"green"` |
 | `last_movement` | string (ISO datetime) \| null | No | Not observed to be set by any current code path | — | `null` |
 | `note_link` | string \| null | No | Not observed to be set by any current code path | — | `null` |
 | `source` | string | No (defaults to `"gmail"`) | Not observed to be set to anything else | System-generated | `"gmail"` |
@@ -546,8 +605,16 @@ match for stated dates) all match.
 **Purpose:** Chase items derived exclusively from a `"mine"`/`"owed_to_me"`
 Commitment (never from a Meeting or PersonalItem, however "actionable").
 
-**Dashboard visibility:** every field in this table is shown on the Follow-ups tab
-— an unfiltered raw dump.
+**"Follow-up/Commitment product gap" closed, UI-layer only:** this document
+has no `what` text of its own — `app.ui.data.list_follow_ups` resolves it
+live from the parent Commitment (`commitment_id`), plus `person_name`/
+`org_name` resolved from `person_id`/`org_id`, all display-only and never
+written back to MongoDB. The stored schema below is unchanged.
+
+**Dashboard visibility:** `FOLLOW_UPS_COLUMN_ORDER` (`app/ui/column_descriptions.py`)
+controls order/visibility, with the derived `what`/`person_name`/`org_name`
+leading — no longer an unfiltered raw dump. `escalation_level`/`surfaced`
+remain hidden (confirmed never advanced from their constant defaults).
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
@@ -574,8 +641,16 @@ Commitment (never from a Meeting or PersonalItem, however "actionable").
 
 **Purpose:** Meetings mentioned or held, extracted from emails.
 
-**Dashboard visibility:** every field in this table is shown on the Meetings tab —
-an unfiltered raw dump.
+**"Meeting product gap" closed, UI-layer only:** this document has no title/
+subject field of its own — `app.ui.data.list_meetings` derives a display-only
+`title` from the earliest email in the meeting's own `thread_id` (consistent
+with how `threads.normalized_subject` is itself derived from the first
+email), never written back to MongoDB. The stored schema below is unchanged.
+
+**Dashboard visibility:** `MEETINGS_COLUMN_ORDER` (`app/ui/column_descriptions.py`)
+controls order/visibility, with the derived `title` leading — no longer an
+unfiltered raw dump. `minutes_record`, `next_meeting_date`, `agenda_target`,
+`agenda_written` remain hidden (confirmed never set by `resolve_meeting`).
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|

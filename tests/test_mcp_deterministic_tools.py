@@ -123,11 +123,16 @@ def test_ingest_email_persists_raw_email_and_resolves_thread(db):
 def test_ingest_email_returns_human_readable_internal_ids_for_a_new_email(db):
     result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
 
-    assert result["email_internal_id"] == "EML-001"
-    assert result["thread_internal_id"] == "THR-001"
-    # Canonical identity now: message_id/thread_id ARE the internal ids.
+    # Canonical identity: message_id/thread_id ARE the internal ids. There is no
+    # separate email_internal_id/thread_internal_id field anymore -- emails.id
+    # and threads.id were both removed from the schema entirely (true
+    # duplicates of message_id/thread_id respectively); see
+    # scripts/remove_email_id_record_id_date_fields.py and
+    # scripts/remove_thread_id_field.py.
     assert result["message_id"] == "EML-001"
     assert result["thread_id"] == "THR-001"
+    assert "email_internal_id" not in result
+    assert "thread_internal_id" not in result
 
 
 def test_ingest_email_returns_internal_ids_for_an_already_completed_email_too(db, settings):
@@ -137,8 +142,8 @@ def test_ingest_email_returns_internal_ids_for_an_already_completed_email_too(db
     result = tools.ingest_email(db, parse_email(raw))
 
     assert result["already_completed"] is True
-    assert result["email_internal_id"] is not None
-    assert result["thread_internal_id"] is not None
+    assert result["message_id"] is not None
+    assert result["thread_id"] is not None
 
 
 def test_ingest_email_never_calls_llm(db, no_llm_construction):

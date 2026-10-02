@@ -97,6 +97,23 @@ class Settings(BaseSettings):
     dashboard_read_only: bool = False
     dashboard_password: str | None = None
 
+    # React/FastAPI migration (docs/REACT_MIGRATION_PLAN.md) -- a deliberately
+    # separate auth surface from the Streamlit password gate above (which is
+    # plaintext-compared, session-state-only, and explicitly NOT reused as the
+    # API's own mechanism per that plan). api_password_hash is a bcrypt hash
+    # the operator precomputes once (e.g. `python -m app.api.auth hash
+    # "<password>"`), never a plaintext password -- unset (None, the default)
+    # bypasses the API's login requirement entirely, mirroring
+    # dashboard_password's own zero-configuration-for-local-dev contract.
+    # api_secret_key signs the session cookie (JWT) issued on successful
+    # login; required (no default) once api_password_hash is actually set, so
+    # a real deployment can never accidentally run with a hardcoded/guessable
+    # signing key. api_session_ttl_minutes: how long a session cookie stays
+    # valid before a fresh login is required.
+    api_password_hash: str | None = None
+    api_secret_key: str | None = None
+    api_session_ttl_minutes: int = 720
+
     simulation_mode: bool = True
 
     timezone: str = "Asia/Kolkata"

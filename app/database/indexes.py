@@ -7,21 +7,23 @@ def initialize_indexes(db: Database) -> None:
     # so this index remains a valid, meaningful guarantee, not just a legacy one.
     db.emails.create_index("message_id", unique=True)
     db.emails.create_index("processing_status.stage")
-    # Sparse: a pre-existing document that hasn't been backfilled with the new
-    # human-readable EML- id yet (see scripts/backfill_email_thread_internal_ids.py)
-    # simply lacks the field -- a sparse unique index lets any number of documents
-    # omit it, while still enforcing uniqueness among documents that do have it.
-    db.emails.create_index("id", unique=True, sparse=True)
+    # No index on emails.id: that field was removed from the emails schema
+    # entirely (collection-by-collection cleanup, emails first) -- it was a
+    # true duplicate of message_id, verified by searching every reader/writer
+    # across the codebase. See scripts/remove_email_id_record_id_date_fields.py.
     # The TRUE dedup guarantee going forward: source_message_id is the permanent,
     # never-reassigned Gmail/provider identity app.pipeline.ingest_raw_email's
     # dedup check now keys on. Sparse: a not-yet-backfilled historical document may
     # not have this field yet.
     db.emails.create_index("source_message_id", unique=True, sparse=True)
 
-    # thread_id now always holds the canonical THR-nnn value (mirrors id) -- see
+    # thread_id now always holds the canonical THR-nnn value -- see
     # app.pipeline._upsert_thread.
     db.threads.create_index("thread_id", unique=True)
-    db.threads.create_index("id", unique=True, sparse=True)
+    # No index on threads.id: that field was removed from the threads schema
+    # entirely (collection-by-collection cleanup, threads second) -- it was a
+    # true duplicate of thread_id, verified by searching every reader/writer
+    # across the codebase. See scripts/remove_thread_id_field.py.
     # source_thread_id is only ever set when the source actually supplied one --
     # never unique (many threads legitimately have none; see resolve_thread_id).
     db.threads.create_index("source_thread_id", sparse=True)

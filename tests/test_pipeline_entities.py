@@ -61,8 +61,9 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
     run_pipeline(db, MockEmailProvider(payloads=payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
     stored = db.emails.find_one({"source_message_id": "1a08090646ebaa45"}, {"_id": 0})
-    assert stored["record_id"] == "EML-001"
-    assert stored["date"] == "2026-09-13"
+    assert "record_id" not in stored  # removed -- was a true duplicate of message_id
+    assert "date" not in stored  # removed -- was timestamp's date-only component
+    assert stored["message_id"] == "EML-001"
     assert stored["goal_pillar"] == "Sales"
     assert stored["label_applied"] in {"Needs reply: ASAP", "Read only"}
     assert "priority" not in stored

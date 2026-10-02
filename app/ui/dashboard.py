@@ -1,4 +1,9 @@
-"""Streamlit entrypoint for the CoS Sales Agent human-in-the-loop dashboard.
+"""Streamlit entrypoint for the CoS Staff EA Agent human-in-the-loop dashboard.
+
+User-facing branding only: "CoS Staff EA Agent" (page title, headers, nav).
+Backend module/package names, MongoDB collection names, and internal
+identifiers are deliberately left unchanged -- renaming those would be a
+pure-risk refactor with no user-facing benefit.
 
 Run with: `streamlit run app/ui/dashboard.py`
 
@@ -32,12 +37,25 @@ from app.calendar.actions import approve_calendar_action, reject_calendar_action
 from app.calendar.models import CalendarAction
 from app.config.settings import get_settings
 from app.database.mongodb import get_client, initialize_database
-from app.database.repositories import CalendarActionRepository, ReplyDraftRepository
+from app.database.repositories import (
+    CalendarActionRepository,
+    EmailRepository,
+    ReplyDraftRepository,
+)
 from app.providers.factory import ProviderFactory
 from app.replies.approval import approve, edit, reject, simulate_send
 from app.replies.models import ReplyDraft
 from app.ui.column_descriptions import (
+    COMMITMENTS_COLUMN_ORDER,
     DASHBOARD_METRIC_DESCRIPTIONS,
+    EMAIL_COLUMN_ORDER,
+    FOLLOW_UPS_COLUMN_ORDER,
+    MEETINGS_COLUMN_ORDER,
+    OPPORTUNITIES_COLUMN_ORDER,
+    ORGANIZATIONS_COLUMN_ORDER,
+    PEOPLE_COLUMN_ORDER,
+    PERSONAL_ITEMS_COLUMN_ORDER,
+    PROJECTS_COLUMN_ORDER,
     column_config_for,
     field_help,
 )
@@ -57,10 +75,12 @@ from app.ui.data import (
     list_projects,
     list_reply_drafts,
     list_threads,
+    org_label,
+    person_label,
     thread_context_versions,
 )
 
-st.set_page_config(page_title="CoS Sales Agent", layout="wide")
+st.set_page_config(page_title="CoS Staff EA Agent", layout="wide")
 
 
 @st.cache_resource
@@ -86,39 +106,75 @@ def _render_dashboard_tab(db) -> None:
 
 
 def _render_emails_tab(db) -> None:
-    st.dataframe(list_emails(db), column_config=column_config_for("emails"))
+    st.dataframe(
+        list_emails(db),
+        column_config=column_config_for("emails"),
+        column_order=EMAIL_COLUMN_ORDER,
+    )
 
 
 def _render_people_tab(db) -> None:
-    st.dataframe(list_people(db), column_config=column_config_for("people"))
+    st.dataframe(
+        list_people(db),
+        column_config=column_config_for("people"),
+        column_order=PEOPLE_COLUMN_ORDER,
+    )
 
 
 def _render_organizations_tab(db) -> None:
-    st.dataframe(list_organizations(db), column_config=column_config_for("organizations"))
+    st.dataframe(
+        list_organizations(db),
+        column_config=column_config_for("organizations"),
+        column_order=ORGANIZATIONS_COLUMN_ORDER,
+    )
 
 
 def _render_projects_tab(db) -> None:
-    st.dataframe(list_projects(db), column_config=column_config_for("projects"))
+    st.dataframe(
+        list_projects(db),
+        column_config=column_config_for("projects"),
+        column_order=PROJECTS_COLUMN_ORDER,
+    )
 
 
 def _render_opportunities_tab(db) -> None:
-    st.dataframe(list_opportunities(db), column_config=column_config_for("opportunities"))
+    st.dataframe(
+        list_opportunities(db),
+        column_config=column_config_for("opportunities"),
+        column_order=OPPORTUNITIES_COLUMN_ORDER,
+    )
 
 
 def _render_commitments_tab(db) -> None:
-    st.dataframe(list_commitments(db), column_config=column_config_for("commitments"))
+    st.dataframe(
+        list_commitments(db),
+        column_config=column_config_for("commitments"),
+        column_order=COMMITMENTS_COLUMN_ORDER,
+    )
 
 
 def _render_follow_ups_tab(db) -> None:
-    st.dataframe(list_follow_ups(db), column_config=column_config_for("follow_ups"))
+    st.dataframe(
+        list_follow_ups(db),
+        column_config=column_config_for("follow_ups"),
+        column_order=FOLLOW_UPS_COLUMN_ORDER,
+    )
 
 
 def _render_meetings_tab(db) -> None:
-    st.dataframe(list_meetings(db), column_config=column_config_for("meetings"))
+    st.dataframe(
+        list_meetings(db),
+        column_config=column_config_for("meetings"),
+        column_order=MEETINGS_COLUMN_ORDER,
+    )
 
 
 def _render_personal_items_tab(db) -> None:
-    st.dataframe(list_personal_items(db), column_config=column_config_for("personal_items"))
+    st.dataframe(
+        list_personal_items(db),
+        column_config=column_config_for("personal_items"),
+        column_order=PERSONAL_ITEMS_COLUMN_ORDER,
+    )
 
 
 def _render_thread_explorer_tab(db) -> None:
@@ -177,9 +233,33 @@ def _render_knowledge_tab(db) -> None:
 
 
 def _render_reply_approval_tab(db, settings) -> None:
+    # CTO-facing context line, added so this card identifies WHO a draft is to and
+    # WHICH conversation it belongs to -- previously showed only subject/body, with
+    # no recipient/thread/person/org/created-time context visible anywhere.
     repo = ReplyDraftRepository(db)
     for doc in list_reply_drafts(db, status="awaiting_approval"):
         draft = ReplyDraft.model_validate(doc)
+        recipient = person_label(db, draft.person_id)
+        if recipient is None:
+            source_email = EmailRepository(db).find_one({"message_id": draft.source_email_id})
+            if source_email:
+                recipient = source_email["from"].get("name") or source_email["from"].get("email")
+        org = org_label(db, draft.org_id)
+        meta = " · ".join(
+            part for part in (
+                f"To: {recipient}" if recipient else None,
+                org,
+                f"Thread: {draft.thread_id}",
+                f"Drafted: {draft.created_at}" if draft.created_at else None,
+            ) if part
+        )
+        st.caption(
+            meta,
+            help=(
+                f"{field_help('reply_drafts', 'person_id')} {field_help('reply_drafts', 'org_id')} "
+                f"{field_help('reply_drafts', 'thread_id')} {field_help('reply_drafts', 'created_at')}"
+            ),
+        )
         st.markdown(f"**{draft.draft.subject}**", help=field_help("reply_drafts", "draft.subject"))
         st.markdown(draft.draft.body, help=field_help("reply_drafts", "draft.body"))
         if settings.dashboard_read_only:
@@ -213,6 +293,24 @@ def _render_calendar_approval_tab(db, settings) -> None:
         db, status="needs_clarification"
     ):
         action = CalendarAction.model_validate(doc)
+        # Same CTO-facing context addition as the Reply Approval card above -- the
+        # proposed meeting concerns a specific person/org, but that was previously
+        # invisible here (only the underlying thread_id was used, in button keys,
+        # never shown).
+        person = person_label(db, action.person_id)
+        org = org_label(db, action.org_id)
+        meta = " · ".join(
+            part for part in (
+                f"Re: {person}" if person else None,
+                org,
+                f"Thread: {action.thread_id}",
+            ) if part
+        )
+        if meta:
+            st.caption(
+                meta,
+                help=f"{field_help('calendar_actions', 'person_id')} {field_help('calendar_actions', 'org_id')}",
+            )
         st.markdown(f"**{action.event.title}**", help=field_help("calendar_actions", "event.title"))
         st.markdown(
             f"{action.event.start} - {action.event.end} ({action.event.timezone})",
@@ -260,7 +358,8 @@ def _check_password_gate(settings) -> bool:
     if st.session_state.get("dashboard_unlocked"):
         return True
 
-    st.title("CoS Sales Agent")
+    st.title("CoS Staff EA Agent")
+    st.caption("Chief of Staff • Executive Assistant")
     entered = st.text_input("Password", type="password")
     if entered and entered == settings.dashboard_password:
         st.session_state["dashboard_unlocked"] = True
@@ -278,7 +377,8 @@ def main() -> None:
 
     db = _get_db()
 
-    st.title("CoS Sales Agent")
+    st.title("CoS Staff EA Agent")
+    st.caption("Chief of Staff • Executive Assistant")
     tabs = st.tabs(
         [
             "Dashboard",

@@ -318,6 +318,44 @@ repo, same image, different start command:
 4. Deploy. The dashboard is served directly at
    `https://<your-second-render-service>.onrender.com/`.
 
+### FastAPI backend (React/API migration, docs/REACT_MIGRATION_PLAN.md)
+
+A new REST API (`app/api/main.py`) is being built to back a future React
+frontend, migrating off the Streamlit dashboard. **Phase 1-3 of the approved
+plan are implemented and tested** (all 14 dashboard areas' GET endpoints,
+reply/calendar approval mutations, project/opportunity field updates,
+session-cookie auth) — the React frontend itself (Phase 4 onward) has not
+been built yet, and the Streamlit dashboard above remains the production UI
+in the meantime.
+
+Local development:
+```
+uvicorn app.api.main:app --reload --port 8001
+```
+
+Same `$PORT` convention as the MCP server/dashboard for a future Render
+deployment:
+```
+uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
+```
+
+**Auth is opt-in**, mirroring `DASHBOARD_PASSWORD`'s own zero-configuration
+contract: leaving `API_PASSWORD_HASH`/`API_SECRET_KEY` unset means the API
+requires no login at all (fine for local dev or a deployment already behind
+some other access control). To enable it:
+1. Generate a bcrypt hash for your chosen password:
+   `python -m app.api.auth hash "<your password>"`
+2. Set `API_PASSWORD_HASH` to that hash's output (never the plaintext
+   password itself) and `API_SECRET_KEY` to a long random string (used to
+   sign the session cookie) in your environment.
+3. `DASHBOARD_READ_ONLY=true` is honored the same way it already is for the
+   Streamlit dashboard — it disables every mutation endpoint (reply
+   approve/reject/edit, calendar approve/ignore, project/opportunity field
+   updates) with a 403, server-side, regardless of what a client sends.
+
+This API auth is a completely separate mechanism from the MCP server's own
+`MCP_AUTH_TOKEN` bearer-token auth — neither affects the other.
+
 ## Security
 
 - Never commit `.env` (already excluded by `.gitignore`).

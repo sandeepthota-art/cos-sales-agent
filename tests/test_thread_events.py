@@ -451,7 +451,6 @@ def test_raw_gmail_id_that_looks_like_a_canonical_id_is_never_confused_with_one(
     # Thread Event's own canonical thread_id/email_id.
     email_doc = db.emails.find_one({"source_message_id": "EML-999-LOOKALIKE"}, {"_id": 0})
     assert email_doc["message_id"] == "EML-001"
-    assert email_doc["id"] == "EML-001"
     assert get_thread_event_trail(db, "EML-999-LOOKALIKE") == []  # not a real, indexed thread
 
 

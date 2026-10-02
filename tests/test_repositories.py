@@ -18,6 +18,49 @@ def db():
     return database
 
 
+# --- find_many pagination (React/FastAPI migration, additive/backward-compatible) ---
+
+
+def test_find_many_with_no_pagination_args_returns_everything_unordered(db):
+    # Existing contract, must be completely unaffected: skip=0/limit=None by
+    # default reproduce exactly the prior behavior.
+    repo = EmailRepository(db)
+    for i in range(3):
+        repo.upsert_by_key({"message_id": f"m{i}"}, {"message_id": f"m{i}"})
+
+    assert len(repo.find_many({})) == 3
+
+
+def test_find_many_limit_caps_the_result_count(db):
+    repo = EmailRepository(db)
+    for i in range(5):
+        repo.upsert_by_key({"message_id": f"m{i}"}, {"message_id": f"m{i}", "timestamp": f"2026-01-0{i + 1}"})
+
+    assert len(repo.find_many({}, limit=2)) == 2
+
+
+def test_find_many_skip_and_limit_paginate_in_sorted_order(db):
+    repo = EmailRepository(db)
+    for i in range(5):
+        repo.upsert_by_key({"message_id": f"m{i}"}, {"message_id": f"m{i}", "timestamp": f"2026-01-0{i + 1}"})
+
+    page_1 = repo.find_many({}, sort=[("timestamp", 1)], limit=2)
+    page_2 = repo.find_many({}, sort=[("timestamp", 1)], skip=2, limit=2)
+
+    assert [d["message_id"] for d in page_1] == ["m0", "m1"]
+    assert [d["message_id"] for d in page_2] == ["m2", "m3"]
+
+
+def test_find_many_sort_descending(db):
+    repo = EmailRepository(db)
+    for i in range(3):
+        repo.upsert_by_key({"message_id": f"m{i}"}, {"message_id": f"m{i}", "timestamp": f"2026-01-0{i + 1}"})
+
+    results = repo.find_many({}, sort=[("timestamp", -1)])
+
+    assert [d["message_id"] for d in results] == ["m2", "m1", "m0"]
+
+
 def test_email_repository_upsert_is_idempotent(db):
     repo = EmailRepository(db)
     doc = {"message_id": "msg_001", "subject": "Hi"}
@@ -72,8 +115,6 @@ def test_email_repository_set_stage_emits_a_structured_log_record(db, caplog):
 def _set_entity_metadata(repo, message_id, label_applied="Needs reply"):
     repo.set_entity_metadata(
         message_id=message_id,
-        record_id=message_id,
-        date="2026-09-13",
         entities_referenced={},
         goal_pillar="Sales",
         label_applied=label_applied,

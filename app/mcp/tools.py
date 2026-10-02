@@ -255,10 +255,13 @@ def ingest_email(db: Database, email: Email) -> dict[str, Any]:
     662-historical-email baseline (and any other previously completed email) is
     reported back untouched rather than reprocessed.
 
-    email_internal_id/thread_internal_id are the human-readable EML-nnn/THR-nnn ids
-    (None only for a thread/email that predates this feature and hasn't been
-    backfilled yet) -- purely additive traceability alongside message_id/thread_id,
-    which remain the canonical source/dedup identifiers and are never replaced.
+    message_id/thread_id ARE the human-readable EML-nnn/THR-nnn ids -- there is no
+    separate `email_internal_id`/`thread_internal_id` field anymore (emails and
+    threads collection schema cleanup: both were always identical to
+    message_id/thread_id respectively, true duplicates, verified by searching
+    every reader across the codebase; see
+    scripts/remove_email_id_record_id_date_fields.py and
+    scripts/remove_thread_id_field.py).
 
     thread_timeline (only present when already_completed is False) is every PRIOR
     message in this thread, oldest first, capped to the most recent 20 -- read this
@@ -276,21 +279,15 @@ def ingest_email(db: Database, email: Email) -> dict[str, Any]:
     if already_completed:
         thread_id = _thread_id_index(db).get(normalized.message_id)
         snapshot = context_repo.latest_for_thread(thread_id) if thread_id else None
-        stored_email = email_repo.find_one({"message_id": normalized.message_id})
-        stored_thread = thread_repo.find_one({"thread_id": thread_id}) if thread_id else None
         return {
             "message_id": normalized.message_id,
             "thread_id": thread_id,
             "already_completed": True,
             "previous_context": snapshot["context"] if snapshot else None,
-            "email_internal_id": stored_email.get("id") if stored_email else None,
-            "thread_internal_id": stored_thread.get("id") if stored_thread else None,
         }
 
     thread_id = resolve_and_persist_thread(thread_repo, email_repo, normalized, db)
     snapshot = context_repo.latest_for_thread(thread_id)
-    stored_email = email_repo.find_one({"message_id": normalized.message_id})
-    stored_thread = thread_repo.find_one({"thread_id": thread_id})
     thread_timeline = build_thread_timeline(
         email_repo, thread_repo, thread_id, exclude_message_id=normalized.message_id
     )
@@ -300,8 +297,6 @@ def ingest_email(db: Database, email: Email) -> dict[str, Any]:
         "already_completed": False,
         "previous_context": snapshot["context"] if snapshot else None,
         "thread_timeline": thread_timeline,
-        "email_internal_id": stored_email.get("id") if stored_email else None,
-        "thread_internal_id": stored_thread.get("id") if stored_thread else None,
     }
 
 
@@ -361,8 +356,6 @@ def persist_email_analysis(
     )
     email_repo.set_entity_metadata(
         message_id=message_id,
-        record_id=message_id,
-        date=email.timestamp.date().isoformat(),
         entities_referenced=entities_referenced,
         goal_pillar=analysis.goal_pillar,
         label_applied=analysis.label_applied,
@@ -572,8 +565,6 @@ def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]
                 "processing_status": _safe_processing_status(email),
                 "summary": summary_by_thread_id.get(thread_id),
                 "body_preview": email["body"][:_BODY_PREVIEW_LENGTH],
-                "record_id": email.get("record_id"),
-                "date": email.get("date"),
                 "entities_referenced": email.get(
                     "entities_referenced",
                     {
@@ -716,6 +707,57 @@ def list_projects(
         query["goal_pillar"] = goal_pillar
 
     return ProjectRepository(db).find_many(query)[: _clamp_limit(limit)]
+
+
+def update_project_fields(
+    db: Database,
+    project_id: str,
+    status: str | None = None,
+    owner: str | None = None,
+    health: str | None = None,
+    next_milestone: str | None = None,
+    due: str | None = None,
+) -> dict[str, Any]:
+    """The ONLY mechanism for setting a Project's manually-managed fields
+    (status, owner, health, next_milestone, due). Nothing in the pipeline ever
+    infers or writes these -- `app.entities.resolution._resolve_project_impl`
+    only ever sets id/project/entity/goal_pillar/person_ids/org_id at creation.
+    Mirrors `update_opportunity_fields` exactly (closing the "Project product
+    gap": these fields existed on the schema with no way to ever populate
+    them). Deterministic, LLM-free: this tool never reasons about email
+    content, it only persists whatever explicit values the caller supplies.
+
+    Only fields you actually pass (non-None) are updated -- an omitted field
+    is left exactly as it was, never reset to null. There is currently no way
+    to clear an already-set field back to null through this tool, same known
+    V1 limitation as update_opportunity_fields.
+
+    Never touches person_ids/org_id/goal_pillar/project (the name) -- those
+    remain exclusively pipeline-derived.
+
+    due, if given, must be an ISO 8601 date/datetime string.
+    """
+    repo = ProjectRepository(db)
+    existing = repo.find_one({"id": project_id})
+    if existing is None:
+        raise ValueError(f"no project found for id={project_id!r}")
+
+    update: dict[str, Any] = {}
+    if status is not None:
+        update["status"] = status
+    if owner is not None:
+        update["owner"] = owner
+    if health is not None:
+        update["health"] = health
+    if next_milestone is not None:
+        update["next_milestone"] = next_milestone
+    if due is not None:
+        update["due"] = due
+
+    if update:
+        repo.upsert_by_key({"id": project_id}, {**existing, **update})
+
+    return repo.find_one({"id": project_id})
 
 
 def list_opportunities(

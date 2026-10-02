@@ -25,8 +25,32 @@ class _BaseRepository:
     def find_one(self, key: dict[str, Any]) -> dict[str, Any] | None:
         return self._collection.find_one(key, {"_id": 0})
 
-    def find_many(self, key: dict[str, Any]) -> list[dict[str, Any]]:
-        return list(self._collection.find(key, {"_id": 0}))
+    def find_many(
+        self,
+        key: dict[str, Any],
+        *,
+        skip: int = 0,
+        limit: int | None = None,
+        sort: list[tuple[str, int]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """`skip`/`limit`/`sort` are additive (React/FastAPI migration,
+        docs/REACT_MIGRATION_PLAN.md's server-side pagination requirement) --
+        every existing caller that only ever passed `key` positionally is
+        completely unaffected: `skip=0`/`limit=None` reproduce the exact prior
+        behavior (no skip, no cap, Mongo's own natural order), and `sort` stays
+        unapplied unless a caller actually supplies one. `limit=None` passed to
+        pymongo's own `.limit()` means "no limit" (its own documented
+        contract), so this never silently truncates a caller that doesn't ask
+        for pagination.
+        """
+        cursor = self._collection.find(key, {"_id": 0})
+        if sort:
+            cursor = cursor.sort(sort)
+        if skip:
+            cursor = cursor.skip(skip)
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        return list(cursor)
 
 
 class EmailRepository(_BaseRepository):
@@ -78,18 +102,23 @@ class EmailRepository(_BaseRepository):
     def set_entity_metadata(
         self,
         message_id: str,
-        record_id: str,
-        date: str,
         entities_referenced: dict[str, list[str]],
         goal_pillar: str,
         label_applied: str,
     ) -> None:
+        """`record_id`/`date` were removed from this call's parameters and from
+        the emails schema (collection-by-collection cleanup, emails first):
+        both were true duplicates (`record_id` always equaled `message_id`;
+        `date` was always `timestamp`'s date-only component), verified by
+        searching every caller/reader across the pipeline, MCP tools, the
+        query/evidence system, and the dashboard. Existing documents still
+        carrying either field are cleaned up by
+        `scripts/remove_email_id_record_id_date_fields.py`, not by this method.
+        """
         self._collection.update_one(
             {"message_id": message_id},
             {
                 "$set": {
-                    "record_id": record_id,
-                    "date": date,
                     "entities_referenced": entities_referenced,
                     "goal_pillar": goal_pillar,
                     "label_applied": label_applied,

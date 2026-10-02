@@ -17,10 +17,16 @@ def test_initialize_indexes_creates_expected_unique_indexes():
             if spec["key"] != [("_id", 1)] and spec.get("unique", False)
         }
 
+    # No unique index on emails.id: that field was removed from the emails
+    # schema entirely (collection-by-collection cleanup, emails first) -- a
+    # true duplicate of message_id.
     assert index_keys("emails") == {
-        (("message_id", 1),): True, (("id", 1),): True, (("source_message_id", 1),): True,
+        (("message_id", 1),): True, (("source_message_id", 1),): True,
     }
-    assert index_keys("threads") == {(("thread_id", 1),): True, (("id", 1),): True}
+    # No unique index on threads.id: removed from the threads schema entirely
+    # (collection-by-collection cleanup, threads second) -- a true duplicate
+    # of thread_id.
+    assert index_keys("threads") == {(("thread_id", 1),): True}
     assert index_keys("context_snapshots") == {
         (("thread_id", 1), ("triggering_email_id", 1)): True
     }

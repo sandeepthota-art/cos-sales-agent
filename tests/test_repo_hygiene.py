@@ -11,7 +11,16 @@ _FORBIDDEN_PATTERNS = [
 ]
 
 _SCAN_EXTENSIONS = {".py", ".md", ".yml", ".yaml", ".env.example", ".toml", ".txt"}
-_EXCLUDED_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".superpowers"}
+_EXCLUDED_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".superpowers",
+    "node_modules",
+    "dist",
+}
 
 
 def _iter_source_files():

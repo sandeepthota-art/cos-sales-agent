@@ -355,6 +355,43 @@ def test_list_projects_filters_by_goal_pillar(db):
     assert [p["id"] for p in results] == ["PRJ-002"]
 
 
+# --- update_project_fields (closes the "Project product gap": status/owner/
+# health/next_milestone/due existed on the schema with no way to ever be set --
+# mirrors update_opportunity_fields exactly) ---
+
+
+def test_update_project_fields_sets_only_the_manual_fields_supplied(db):
+    ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, _project("PRJ-001"))
+
+    result = tools.update_project_fields(
+        db, "PRJ-001", status="on_track", owner="Sandeep", health="green"
+    )
+
+    assert result["status"] == "on_track"
+    assert result["owner"] == "Sandeep"
+    assert result["health"] == "green"
+    # Untouched fields stay exactly as they were.
+    assert result["next_milestone"] is None
+    assert result["due"] is None
+    # Pipeline-derived fields are never touched by this tool.
+    assert result["entity"] == "Speedvision"
+    assert result["goal_pillar"] == "Sales"
+
+
+def test_update_project_fields_does_not_reset_an_already_set_field_when_omitted(db):
+    ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, _project("PRJ-001", status="on_track"))
+
+    result = tools.update_project_fields(db, "PRJ-001", owner="Sandeep")
+
+    assert result["status"] == "on_track"  # untouched, not reset to null
+    assert result["owner"] == "Sandeep"
+
+
+def test_update_project_fields_raises_for_an_unknown_project_id(db):
+    with pytest.raises(ValueError, match="no project found"):
+        tools.update_project_fields(db, "PRJ-DOES-NOT-EXIST", status="on_track")
+
+
 # --- list_opportunities / update_opportunity_fields ---
 
 

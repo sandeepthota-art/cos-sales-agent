@@ -75,7 +75,9 @@ def test_new_email_gets_an_eml_id_as_its_canonical_message_id(db):
     assert already_completed is False
     assert normalized.message_id == "EML-001"
     stored = db.emails.find_one({"source_message_id": "msg_001"}, {"_id": 0})
-    assert stored["id"] == "EML-001"
+    # No separate `id` field -- removed from the emails schema entirely (a true
+    # duplicate of message_id). See scripts/remove_email_id_record_id_date_fields.py.
+    assert "id" not in stored
     assert stored["message_id"] == "EML-001"
     # The true, permanent Gmail/provider identity is preserved, unchanged, forever.
     assert stored["source_message_id"] == "msg_001"
@@ -95,13 +97,13 @@ def test_retrying_a_not_yet_completed_email_does_not_regenerate_its_eml_id(db):
     email = parse_email(_raw_email("msg_001", "hello"))
 
     ingest_raw_email(email_repo, email, db)
-    first_id = db.emails.find_one({"source_message_id": "msg_001"})["id"]
+    first_id = db.emails.find_one({"source_message_id": "msg_001"})["message_id"]
 
     # Simulate a retry after a mid-pipeline failure: the document exists but was
     # never marked COMPLETED, so ingest_raw_email runs its upsert path again.
     ingest_raw_email(email_repo, email, db)
 
-    assert db.emails.find_one({"source_message_id": "msg_001"})["id"] == first_id
+    assert db.emails.find_one({"source_message_id": "msg_001"})["message_id"] == first_id
     assert db.counters.find_one({"_id": "EML-"})["seq"] == 1
 
 
@@ -128,7 +130,9 @@ def test_new_thread_gets_a_thr_id_as_its_canonical_thread_id(db):
 
     assert thread_id == "THR-001"
     stored_thread = db.threads.find_one({"thread_id": thread_id}, {"_id": 0})
-    assert stored_thread["id"] == "THR-001"
+    # No separate `id` field -- removed from the threads schema entirely (a true
+    # duplicate of thread_id). See scripts/remove_thread_id_field.py.
+    assert "id" not in stored_thread
     assert stored_thread["thread_id"] == "THR-001"
     # No Gmail thread id was ever supplied for this message.
     assert stored_thread.get("source_thread_id") is None
@@ -239,25 +243,26 @@ def test_run_pipeline_assigns_eml_and_thr_ids_as_the_canonical_identity_end_to_e
 
     stored_1 = db.emails.find_one({"source_message_id": "msg_001"})
     stored_2 = db.emails.find_one({"source_message_id": "msg_002"})
-    assert stored_1["message_id"] == "EML-001" == stored_1["id"]
-    assert stored_2["message_id"] == "EML-002" == stored_2["id"]
+    assert stored_1["message_id"] == "EML-001"
+    assert stored_2["message_id"] == "EML-002"
+    assert "id" not in stored_1 and "id" not in stored_2
 
     threads = list(db.threads.find({}, {"_id": 0}))
     assert len(threads) == 1
-    assert threads[0]["id"] == "THR-001"
     assert threads[0]["thread_id"] == "THR-001"
+    assert "id" not in threads[0]
 
 
 def test_rerunning_the_pipeline_never_regenerates_ids(db, settings):
     payloads = [_raw_email("msg_001", "We currently use Salesforce but pricing is a pain point.")]
     run_pipeline(db, _ListEmailProvider(payloads), MockLLMProvider(), MockCalendarProvider(), settings)
-    first_eml_id = db.emails.find_one({"source_message_id": "msg_001"})["id"]
-    first_thr_id = db.threads.find_one({})["id"]
+    first_eml_id = db.emails.find_one({"source_message_id": "msg_001"})["message_id"]
+    first_thr_id = db.threads.find_one({})["thread_id"]
 
     run_pipeline(db, _ListEmailProvider(payloads), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    assert db.emails.find_one({"source_message_id": "msg_001"})["id"] == first_eml_id
-    assert db.threads.find_one({})["id"] == first_thr_id
+    assert db.emails.find_one({"source_message_id": "msg_001"})["message_id"] == first_eml_id
+    assert db.threads.find_one({})["thread_id"] == first_thr_id
     assert db.counters.find_one({"_id": "EML-"})["seq"] == 1
     assert db.counters.find_one({"_id": "THR-"})["seq"] == 1
     assert db.emails.count_documents({}) == 1
@@ -336,8 +341,9 @@ def test_e2e_two_source_messages_same_thread_then_retry_first_produces_no_duplic
 
     email_a = db.emails.find_one({"source_message_id": "gmail_A"}, {"_id": 0})
     email_b = db.emails.find_one({"source_message_id": "gmail_B"}, {"_id": 0})
-    assert email_a["message_id"] == email_a["id"] == "EML-001"
-    assert email_b["message_id"] == email_b["id"] == "EML-002"
+    assert email_a["message_id"] == "EML-001"
+    assert email_b["message_id"] == "EML-002"
+    assert "id" not in email_a and "id" not in email_b
     assert email_a["thread_id"] == email_b["thread_id"] == "THR-001"
 
     thread = db.threads.find_one({"thread_id": "THR-001"}, {"_id": 0})
@@ -369,8 +375,8 @@ def test_e2e_two_source_messages_same_thread_then_retry_first_produces_no_duplic
     # guard fires immediately; nothing anywhere is duplicated or reassigned.
     run_pipeline(db, _ListEmailProvider([message_a]), MockLLMProvider(), MockCalendarProvider(), settings)
 
-    assert db.emails.find_one({"source_message_id": "gmail_A"})["id"] == "EML-001"
-    assert db.threads.find_one({"source_thread_id": "gmail_thread_X"})["id"] == "THR-001"
+    assert db.emails.find_one({"source_message_id": "gmail_A"})["message_id"] == "EML-001"
+    assert db.threads.find_one({"source_thread_id": "gmail_thread_X"})["thread_id"] == "THR-001"
     for collection, before in before_counts.items():
         assert db[collection].count_documents({}) == before, f"{collection} count changed on retry"
 
@@ -398,6 +404,7 @@ def test_reply_threading_via_in_reply_to_resolves_to_the_same_canonical_thread(d
 
     assert db.threads.count_documents({}) == 1
     thread = db.threads.find_one({}, {"_id": 0})
-    assert thread["id"] == "THR-001"
+    assert thread["thread_id"] == "THR-001"
+    assert "id" not in thread
     assert set(thread["source_message_ids"]) == {"gmail_A", "gmail_B", "gmail_C"}
     assert set(thread["message_ids"]) == {"EML-001", "EML-002", "EML-003"}

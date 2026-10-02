@@ -185,10 +185,10 @@ def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
     timestamp, processing_status, the thread's current summary, and a body_preview
     truncated to about 150 characters. The full email body is never returned.
 
-    Each entry also includes record_id, date, goal_pillar, label_applied, and
-    entities_referenced (a dict of people/projects/commitments/
-    follow_ups/meetings/personal id lists) -- these are populated once the email
-    reaches the ENTITIES_PROCESSED stage, and are None (or empty lists, for
+    Each entry also includes goal_pillar, label_applied, and entities_referenced
+    (a dict of people/projects/commitments/follow_ups/meetings/personal id
+    lists) -- these are populated once the email reaches the
+    ENTITIES_PROCESSED stage, and are None (or empty lists, for
     entities_referenced) for an email that hasn't gotten there yet.
     """
     return tools.list_processed_emails(_get_db(), limit)
@@ -243,6 +243,33 @@ def list_projects(
     filters: entity (exact), goal_pillar (exact). Read-only.
     """
     return tools.list_projects(_get_db(), entity, goal_pillar, limit)
+
+
+@mcp.tool()
+def update_project_fields(
+    project_id: str,
+    status: str | None = None,
+    owner: str | None = None,
+    health: str | None = None,
+    next_milestone: str | None = None,
+    due: str | None = None,
+) -> dict[str, Any]:
+    """The ONLY way to set a Project's manually-managed fields: status, owner,
+    health, next_milestone, due. Use this only when the user (or you, on their
+    explicit instruction) is providing this information directly -- never infer
+    any of these from email content yourself. Mirrors update_opportunity_fields
+    exactly. This tool is deterministic and calls no LLM/API; it only persists
+    exactly what you pass it.
+
+    Only fields you actually supply (non-None) are changed -- an omitted field
+    is left untouched, never reset to null. due, if given, must be an ISO 8601
+    date/datetime string. Never touches person_ids/org_id/goal_pillar/project --
+    those remain exclusively pipeline-derived and are not settable through this
+    tool.
+
+    Raises ValueError if project_id doesn't exist.
+    """
+    return tools.update_project_fields(_get_db(), project_id, status, owner, health, next_milestone, due)
 
 
 @mcp.tool()

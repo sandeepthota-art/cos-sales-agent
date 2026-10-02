@@ -183,6 +183,12 @@ def test_update_opportunity_fields_tool_is_registered():
     assert "update_opportunity_fields" in names
 
 
+def test_update_project_fields_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "update_project_fields" in names
+
+
 def test_ask_question_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]

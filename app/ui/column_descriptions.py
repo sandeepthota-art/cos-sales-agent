@@ -30,22 +30,30 @@ _NOT_SET = "Declared on the model; not currently set by any current code path."
 # that collection's documents.
 COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "emails": {
-        "id": "Internal human-readable email identifier (EML-nnn). Additive only -- never used for deduplication; message_id remains the canonical dedup key.",
-        "message_id": "Original source/Gmail message identifier. Used for deduplication and source traceability (MongoDB dedup key).",
-        "thread_id": "Existing resolved thread identifier this email belongs to. May be a source Gmail thread id, an inherited resolved id, or the application's synthetic fallback -- see the threads collection's own thread_id tooltip.",
+        # Corrected against the actual code (app.pipeline.ingest_raw_email), not
+        # the field names alone: message_id is REASSIGNED to the canonical
+        # EML-nnn value at ingestion -- it is no longer the original Gmail id,
+        # despite the name. source_message_id is the field that now holds the
+        # permanent, original Gmail message id. Same pattern for thread_id/
+        # source_thread_id. `id` and `record_id` (both former exact duplicates
+        # of message_id) and `date` (timestamp's date-only component) were
+        # removed from the schema entirely in the emails-collection cleanup --
+        # see scripts/remove_email_id_record_id_date_fields.py.
+        "message_id": "Canonical internal email identifier (EML-nnn). The MongoDB dedup/upsert key, and the value every other collection's reference is built from (reply_drafts.source_email_id, knowledge_items.source_emails, commitments.source_record, etc.).",
+        "thread_id": "Canonical internal thread identifier (THR-nnn) this email belongs to -- see the threads collection's own thread_id tooltip.",
+        "source_message_id": "The original, permanent Gmail/provider message identifier. Never reassigned -- distinct from message_id, which holds the canonical EML-nnn value instead.",
+        "source_thread_id": "The original, permanent Gmail/provider thread identifier, if the source supplied one. Distinct from thread_id, which holds the canonical THR-nnn value instead.",
         "from": "Sender name and email address.",
         "to": "Recipient name(s) and email address(es).",
         "cc": "CC'd recipient name(s) and email address(es).",
         "subject": "Email subject line.",
         "body": "Full email body text.",
-        "timestamp": "When the email was sent.",
+        "timestamp": "When the email was sent. Used for the dashboard's newest-first sort.",
         "in_reply_to": "Threading header: the message id this email replies to.",
         "references": "Threading header: chain of prior message ids in this thread.",
         "attachments": "Attachment filenames.",
         "labels": "Gmail label ids, plus the applied triage label (label_applied) once analysis completes.",
         "processing_status": "Current pipeline stage (e.g. COMPLETED, FAILED), plus any error.",
-        "record_id": "Bookkeeping id; currently always identical to message_id.",
-        "date": "The email's timestamp, date component only (YYYY-MM-DD).",
         "entities_referenced": "IDs of every Person/Project/Commitment/Meeting/etc. this email produced.",
         "goal_pillar": (
             'Business goal category identified during email analysis. Only "Sales" has '
@@ -59,19 +67,28 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
     },
     "people": {
+        # people-collection schema cleanup: `note_link` and `source` were removed
+        # entirely (never read or written by any code path -- source was always
+        # just the Pydantic default "gmail", never branched on) -- see
+        # scripts/remove_person_source_note_link_fields.py. `goal_pillar` is kept
+        # (it IS read by app.entities.person_context.get_bounded_person_context_
+        # for_llm) but hidden from the dashboard via PEOPLE_COLUMN_ORDER below,
+        # since nothing currently populates it.
         "id": "Canonical person id (PER-###).",
         "name": "Display name.",
         "email": "Email address, lowercased. Omitted entirely (not just null) when unknown.",
         "aliases": "Alternate names proven to belong to this person by an actual name/org match.",
-        "org": "Free-text company name, as mentioned in email.",
+        "org": "Free-text company name, as mentioned in email. Also the lookup key used by get_company_summary.",
         "org_id": "Canonical Organization this person belongs to, resolved by email domain.",
         "role": "Professional designation (e.g. \"CTO\", \"Sales Manager\"), stated in an email; unset until one is.",
-        "goal_pillar": _NOT_SET,
+        "goal_pillar": (
+            "Read by the person-context builder feeding the LLM pipeline, but never "
+            "written by any Person-creation path -- always unset today. Hidden from "
+            "the dashboard since it has no current display value."
+        ),
         "last_inbound": "Most recent email known received FROM this person (only ever moves forward in time).",
         "last_outbound": "Most recent email known sent TO this person (only ever moves forward in time).",
         "open_threads": "Every conversation thread this person has been part of.",
-        "note_link": _NOT_SET,
-        "source": 'Where this record originated -- currently always "gmail".',
         "status": '"active", or "merged" if retired into another canonical person by an admin duplicate-consolidation run.',
         "merged_into": 'If status is "merged", the canonical person id this record now points to.',
     },
@@ -94,14 +111,17 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         ),
         "objective": _NOT_SET,
         "target": _NOT_SET,
-        "status": _NOT_SET,
-        "owner": _NOT_SET + " (Different field from the human-managed opportunities.owner on the Opportunities tab.)",
+        "status": "Human-managed only, via the update_project_fields MCP tool. Never inferred from email content.",
+        "owner": (
+            "Human-managed only, via update_project_fields. Different field from "
+            "the human-managed opportunities.owner on the Opportunities tab."
+        ),
         "collaborators": _NOT_SET,
         "person_ids": "People already resolved for the same email whose company matches this project's entity.",
         "org_id": "Organization matched to this project.",
-        "next_milestone": _NOT_SET,
-        "due": _NOT_SET,
-        "health": _NOT_SET,
+        "next_milestone": "Human-managed only, via update_project_fields. Never inferred from email content.",
+        "due": "Human-managed only, via update_project_fields. Never inferred from email content.",
+        "health": "Human-managed only, via update_project_fields. Never inferred from email content.",
         "last_movement": _NOT_SET,
         "note_link": _NOT_SET,
         "source": 'Where this record originated -- currently always "gmail".',
@@ -157,6 +177,13 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "thread_id": "Conversation thread this commitment belongs to.",
     },
     "follow_ups": {
+        "what": (
+            "Display-only, resolved from the parent commitment's own `what` text -- "
+            "FollowUp has no `what` field of its own. Recomputed on every read, never "
+            "persisted."
+        ),
+        "person_name": "Display-only, resolved from person_id. Never persisted.",
+        "org_name": "Display-only, resolved from org_id. Never persisted.",
         "id": "Canonical follow-up id (FUP-###).",
         "commitment_id": "The commitment this follow-up chases.",
         "thread_id": "Conversation thread this follow-up belongs to.",
@@ -176,6 +203,11 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "follow_up_latest_at": "End of the recommended follow-up window.",
     },
     "meetings": {
+        "title": (
+            "Display-only, derived from the earliest email in this meeting's thread -- "
+            "Meeting has no stored title/subject field of its own. Recomputed on every "
+            "read, never persisted."
+        ),
         "id": "Canonical meeting id (MTG-###).",
         "date": "Resolved meeting date, if a date phrase was recognized.",
         "attendees": "Free-text attendee names, as mentioned in email.",
@@ -228,11 +260,17 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "reply_drafts": {
         "draft.subject": "The drafted reply's subject line.",
         "draft.body": "The drafted reply's body text.",
+        "person_id": "The resolved recipient (the email's sender) this draft replies to.",
+        "org_id": "That recipient's resolved Organization, if known.",
+        "thread_id": "Conversation thread this draft belongs to.",
+        "created_at": "When this draft was generated. Absent on a draft persisted before this field existed.",
     },
     "calendar_actions": {
         "event.title": "The proposed meeting's title.",
         "event.time": "The proposed meeting's start and end time.",
         "reason": "Why this proposal needs clarification (shown only when it does).",
+        "person_id": "The resolved person this proposed meeting concerns.",
+        "org_id": "That person's resolved Organization, if known.",
     },
 }
 
@@ -250,6 +288,149 @@ DASHBOARD_METRIC_DESCRIPTIONS: dict[str, str] = {
     ),
     "failures": "Emails whose processing pipeline stopped with an error.",
 }
+
+
+# Emails tab display order (`st.dataframe(..., column_order=...)`). Determines
+# BOTH the left-to-right order AND which columns are visible. As of the
+# emails-collection schema cleanup, this now matches the real schema exactly
+# -- `id` and `record_id` (true duplicates of `message_id`) and `date` (a
+# near-duplicate of `timestamp`) no longer exist as fields at all (see
+# scripts/remove_email_id_record_id_date_fields.py), so there is nothing left
+# to hide for this collection; every field below is both real and visible.
+EMAIL_COLUMN_ORDER: tuple[str, ...] = (
+    # Identifiers (left) -- one visible column per logical identifier
+    "message_id",
+    "thread_id",
+    "source_message_id",
+    "source_thread_id",
+    # Main content
+    "subject",
+    "body",
+    "labels",
+    "from",
+    "to",
+    "cc",
+    # Remaining useful fields
+    "timestamp",
+    "goal_pillar",
+    "label_applied",
+    "entities_referenced",
+    "attachments",
+    "in_reply_to",
+    "references",
+    # Technical/internal (right)
+    "processing_status",
+)
+
+
+# People tab display order (`st.dataframe(..., column_order=...)`). Determines
+# BOTH the left-to-right order AND which columns are visible. `source` and
+# `note_link` are omitted because they were removed from the schema entirely
+# (never read or written by any code path -- see
+# scripts/remove_person_source_note_link_fields.py). `goal_pillar` is omitted
+# from display only -- it stays a real MongoDB field (read by
+# get_bounded_person_context_for_llm) but is never populated today, so it has
+# nothing to show.
+PEOPLE_COLUMN_ORDER: tuple[str, ...] = (
+    # Identifier (left)
+    "id",
+    # Human-readable identity
+    "email",
+    "name",
+    # Activity timestamps
+    "last_inbound",
+    "last_outbound",
+    # Organization
+    "org",
+    "org_id",
+    # Other useful fields
+    "role",
+    # Technical/internal (right)
+    "aliases",
+    "open_threads",
+    "status",
+    "merged_into",
+)
+
+
+# CTO-friendly dashboard column orders for the remaining raw-table collections
+# (full-system schema cleanup pass). Each hides only fields CONFIRMED never
+# populated by any creation/update code path (verified directly in
+# app/entities/resolution.py, not assumed from field names) -- those fields
+# stay in MongoDB untouched, just hidden, since no removal has been proven
+# safe with the same exhaustive cross-reference rigor the emails/threads/
+# people passes required. None of these collections had an emails/threads-
+# style exact-duplicate-identifier pattern -- every "two similar-looking
+# fields" case here (e.g. Project.entity vs Project.org_id,
+# Opportunity.entity vs Opportunity.org_id) is a deliberate, documented
+# free-text-original-vs-canonical-reference pair, not an accidental
+# duplicate, per each model's own inline comments in app/entities/models.py.
+
+ORGANIZATIONS_COLUMN_ORDER: tuple[str, ...] = (
+    "name", "domain", "id", "aliases",
+    # Hidden: `source` is always the unused Pydantic default "gmail", never
+    # read anywhere -- same category as the field removed from People, but
+    # not removed here pending its own dedicated verification pass.
+)
+
+# "Project product gap" closed: status/owner/health/next_milestone/due are now
+# human-settable via the new update_project_fields MCP tool (mirrors
+# update_opportunity_fields) -- shown, not hidden. Still hidden below:
+# cluster, objective, target, collaborators, last_movement, note_link, source
+# -- confirmed directly in app.entities.resolution's Project(...) construction
+# that NONE of these are ever set, and (unlike the five above) none was named
+# in the product-gap ask as needing a write mechanism -- deferred, not removed.
+PROJECTS_COLUMN_ORDER: tuple[str, ...] = (
+    "project", "entity", "status", "owner", "health", "next_milestone", "due",
+    "org_id", "goal_pillar", "person_ids", "id",
+)
+
+# `description` hidden: confirmed never set at creation
+# (app.entities.resolution._resolve_opportunity_impl) nor by
+# update_opportunity_fields (which only ever accepts stage/owner/value/
+# currency/expected_close_date/next_action).
+OPPORTUNITIES_COLUMN_ORDER: tuple[str, ...] = (
+    "name", "entity", "stage", "status", "value", "currency", "expected_close_date",
+    "next_action", "owner", "last_activity_at", "buying_signals",
+    "project_ids", "person_ids", "meeting_ids", "org_id", "id",
+    "source_email_ids", "created_at", "updated_at",
+)
+
+COMMITMENTS_COLUMN_ORDER: tuple[str, ...] = (
+    "what", "class", "status", "owed_by", "owed_to", "person_id", "org_id",
+    "committed_date", "date_type", "made_on", "importance",
+    "project_id", "thread_id", "source_record", "id", "goal_pillar",
+)
+
+# "Follow-up/Commitment product gap" closed at the UI layer only: `what`,
+# `person_name`, `org_name` are derived in app.ui.data.list_follow_ups by
+# resolving commitment_id/person_id/org_id -- never stored on FollowUp itself,
+# recomputed fresh on every read (never duplicating the commitment's own text).
+# Hidden: escalation_level/surfaced are confirmed never advanced by any code
+# path (app.entities.resolution's FollowUp(...) construction never sets
+# either -- they stay at their constant defaults 1/False on every record
+# today), so they carry zero differentiating information currently, per the
+# BRD escalation-ladder design this field exists for but that has no
+# scheduler wired up yet.
+FOLLOW_UPS_COLUMN_ORDER: tuple[str, ...] = (
+    "what", "status", "person_name", "org_name", "audience",
+    "follow_up_earliest_at", "follow_up_latest_at",
+    "person_id", "org_id", "commitment_id", "thread_id", "id",
+)
+
+# "Meeting product gap" closed at the UI layer only: `title` is derived in
+# app.ui.data.list_meetings from the meeting's thread's earliest email subject
+# -- never a stored MongoDB field, recomputed fresh on every read.
+# Hidden: minutes_record, next_meeting_date, agenda_target, agenda_written --
+# confirmed never set by app.entities.resolution's Meeting(...) construction.
+MEETINGS_COLUMN_ORDER: tuple[str, ...] = (
+    "title", "date", "attendees", "actionable", "actions_raised", "project_or_pillar",
+    "person_ids", "org_id", "thread_id", "id",
+)
+
+PERSONAL_ITEMS_COLUMN_ORDER: tuple[str, ...] = (
+    "description", "type", "status", "date_or_deadline", "sender_email", "id",
+)
 
 
 def field_help(collection: str, field: str) -> str:

@@ -79,19 +79,56 @@ def test_list_emails_and_threads_return_stored_documents():
     assert list_threads(db)[0]["thread_id"] == "t1"
 
 
-def test_list_emails_puts_id_message_id_thread_id_first_for_display():
+def test_list_emails_puts_identifier_fields_first_for_display():
+    # Priority order is message_id -> thread_id -> source_message_id ->
+    # source_thread_id. `emails.id` was removed from the schema entirely (a
+    # true duplicate of message_id -- see
+    # scripts/remove_email_id_record_id_date_fields.py); source_message_id/
+    # source_thread_id hold the permanent, original Gmail ids -- the
+    # genuinely distinct information, kept visible alongside the canonical
+    # message_id/thread_id.
     db = _db()
     EmailRepository(db).upsert_by_key(
-        {"message_id": "msg_001"},
-        {"message_id": "msg_001", "subject": "Hi", "thread_id": "t1", "id": "EML-001"},
+        {"message_id": "EML-001"},
+        {
+            "message_id": "EML-001",
+            "subject": "Hi",
+            "thread_id": "THR-001",
+            "source_message_id": "gmail_msg_1",
+            "source_thread_id": "gmail_thread_1",
+        },
     )
 
     keys = list(list_emails(db)[0].keys())
-    assert keys[:3] == ["id", "message_id", "thread_id"]
+    assert keys[:4] == ["message_id", "thread_id", "source_message_id", "source_thread_id"]
     assert "subject" in keys  # every other field still present, just not first
 
 
-def test_list_emails_handles_a_document_with_no_internal_id_yet():
+def test_list_emails_sorts_newest_first_by_timestamp_not_insertion_order():
+    db = _db()
+    # Inserted oldest-first, so a pass here proves the sort is timestamp-based,
+    # not insertion/id order (which would return them in this same order).
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {"message_id": "EML-001", "subject": "Oldest", "timestamp": "2026-01-01T00:00:00+00:00"},
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-002"},
+        {"message_id": "EML-002", "subject": "Newest", "timestamp": "2026-03-01T00:00:00+00:00"},
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-003"},
+        {"message_id": "EML-003", "subject": "Middle", "timestamp": "2026-02-01T00:00:00+00:00"},
+    )
+
+    subjects = [email["subject"] for email in list_emails(db)]
+    assert subjects == ["Newest", "Middle", "Oldest"]
+
+
+def test_list_emails_handles_a_document_with_no_thread_or_source_ids_set():
+    # `id` is no longer a schema field for emails at all (removed entirely --
+    # see scripts/remove_email_id_record_id_date_fields.py), so a document
+    # missing every priority key except message_id must still render sanely.
     db = _db()
     EmailRepository(db).upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "subject": "Hi"})
 
@@ -100,12 +137,19 @@ def test_list_emails_handles_a_document_with_no_internal_id_yet():
     assert list(email.keys())[0] == "message_id"
 
 
-def test_thread_display_label_shows_internal_id_with_source_id_alongside():
-    assert _thread_display_label({"id": "THR-001", "thread_id": "thread_msg_001"}) == "THR-001 (thread_msg_001)"
+def test_thread_display_label_shows_canonical_id_with_source_thread_id_alongside():
+    # Bug fix (threads-collection schema cleanup): this used to combine
+    # thread['id'] with thread['thread_id'] -- always-identical values, so it
+    # rendered a misleading "THR-001 (THR-001)". The genuinely distinct field
+    # is source_thread_id (the real original Gmail thread id).
+    assert _thread_display_label(
+        {"thread_id": "THR-001", "source_thread_id": "gmail_thread_xyz"}
+    ) == "THR-001 (gmail_thread_xyz)"
 
 
-def test_thread_display_label_falls_back_to_source_id_when_not_yet_backfilled():
-    assert _thread_display_label({"thread_id": "thread_msg_002"}) == "thread_msg_002"
+def test_thread_display_label_falls_back_to_just_thread_id_when_no_source_thread_id():
+    assert _thread_display_label({"thread_id": "THR-002"}) == "THR-002"
+    assert _thread_display_label({"thread_id": "THR-003", "source_thread_id": None}) == "THR-003"
 
 
 def test_thread_context_versions_ordered_ascending():
@@ -192,10 +236,79 @@ def test_list_follow_ups_returns_stored_documents():
     assert list_follow_ups(db)[0]["commitment_id"] == "COM-001"
 
 
+def test_list_follow_ups_resolves_what_person_name_and_org_name():
+    # Follow-up/Commitment product gap: the raw FollowUp document has no `what`
+    # text of its own -- it must be resolved from the parent Commitment, and
+    # person_id/org_id resolved to readable names, all at the UI layer only.
+    db = _db()
+    PersonRepository(db).upsert_by_key({"id": "PER-001"}, {"id": "PER-001", "name": "Ashok Ganapam"})
+    OrganizationRepository(db).upsert_by_key({"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat"})
+    CommitmentRepository(db).upsert_by_key(
+        {"id": "COM-001"}, {"id": "COM-001", "what": "Send pricing sheet"}
+    )
+    FollowUpRepository(db).upsert_by_key(
+        {"id": "FUP-001"},
+        {"id": "FUP-001", "commitment_id": "COM-001", "person_id": "PER-001", "org_id": "ORG-001"},
+    )
+
+    result = list_follow_ups(db)[0]
+
+    assert result["what"] == "Send pricing sheet"
+    assert result["person_name"] == "Ashok Ganapam"
+    assert result["org_name"] == "DataBeat"
+    # Underlying ids still present, not replaced.
+    assert result["commitment_id"] == "COM-001"
+    assert result["person_id"] == "PER-001"
+    assert result["org_id"] == "ORG-001"
+
+
+def test_list_follow_ups_handles_a_thread_only_follow_up_with_no_commitment():
+    # FollowUp's own model validator allows thread_id-only (no commitment_id) --
+    # must never fabricate a `what` value in that case.
+    db = _db()
+    FollowUpRepository(db).upsert_by_key({"id": "FUP-001"}, {"id": "FUP-001", "thread_id": "THR-001"})
+
+    result = list_follow_ups(db)[0]
+
+    assert result["what"] is None
+    assert result["person_name"] is None
+    assert result["org_name"] is None
+
+
 def test_list_meetings_returns_stored_documents():
     db = _db()
     MeetingRepository(db).upsert_by_key({"id": "MTG-001"}, {"id": "MTG-001", "title": "Kickoff"})
     assert list_meetings(db)[0]["title"] == "Kickoff"
+
+
+def test_list_meetings_derives_title_from_the_threads_earliest_email_subject():
+    # Meeting product gap: Meeting has no stored title field of its own (a real
+    # pipeline-created Meeting document, unlike the fixture above, never has
+    # one) -- list_meetings must derive a display-only title from the thread's
+    # earliest email, never from insertion order.
+    db = _db()
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-002"},
+        {"message_id": "EML-002", "thread_id": "THR-001", "subject": "Re: Pricing call", "timestamp": "2026-09-14T10:00:00Z"},
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {"message_id": "EML-001", "thread_id": "THR-001", "subject": "Pricing call", "timestamp": "2026-09-13T10:00:00Z"},
+    )
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-001"}, {"id": "MTG-001", "thread_id": "THR-001"}
+    )
+
+    assert list_meetings(db)[0]["title"] == "Pricing call"
+
+
+def test_list_meetings_falls_back_to_thread_id_when_no_matching_email_exists():
+    db = _db()
+    MeetingRepository(db).upsert_by_key(
+        {"id": "MTG-001"}, {"id": "MTG-001", "thread_id": "THR-999-no-emails"}
+    )
+
+    assert list_meetings(db)[0]["title"] == "THR-999-no-emails"
 
 
 def test_list_personal_items_returns_stored_documents():

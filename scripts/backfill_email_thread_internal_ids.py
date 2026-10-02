@@ -1,10 +1,27 @@
-"""One-time backfill: assigns human-readable internal ids (`EML-nnn` to `emails`,
-`THR-nnn` to `threads`) to existing documents that don't have one yet.
+"""OBSOLETE / fully retired, kept only for history -- this script now has no
+targets at all and is a guaranteed no-op if run.
 
-Per the approved ID Architecture Audit, this is purely additive: `message_id`
-(emails) and `thread_id` (threads) -- the canonical source/dedup identifiers --
-are never read, renamed, replaced, or rewritten by this script. Only a new `id`
-field is ever set, and only on a document that doesn't already have one.
+It originally backfilled a human-readable internal id (`EML-nnn`/`THR-nnn`)
+onto `emails`/`threads` documents that didn't have one yet. Both collections
+have since gone through their own collection-by-collection schema cleanup and
+had their `id` field removed entirely -- it was a true duplicate of
+`message_id`/`thread_id` respectively in both cases, verified by searching
+every reader/writer across the codebase:
+
+  - `emails.id` -- removed, see `scripts/remove_email_id_record_id_date_fields.py`.
+  - `threads.id` -- removed, see `scripts/remove_thread_id_field.py`.
+
+Running this script's old logic against either collection today would be
+actively harmful: it would assign a *new*, different id via `next_id` to any
+document "missing" one, which is now *every* document (the field doesn't
+exist at all anymore), and that new id would never match the document's own
+`message_id`/`thread_id`. `_TARGETS` is therefore left empty below -- do not
+add either collection back to it.
+
+Per the approved ID Architecture Audit, this was purely additive: `thread_id`
+-- the canonical source/dedup identifier -- was never read, renamed, replaced,
+or rewritten by this script. Only a new `id` field was ever set, and only on a
+document that didn't already have one.
 
 Uses the exact same atomic `next_id()` counter (`app.entities.ids`, backed by
 MongoDB's `find_one_and_update` on the `counters` collection) that already
@@ -55,16 +72,15 @@ from app.database.mongodb import get_client
 from app.entities.ids import next_id
 
 # (collection name, id prefix, key field used for logging/dedup, sort-by field)
-_TARGETS = (
-    ("emails", "EML-", "message_id", "timestamp"),
-    ("threads", "THR-", "thread_id", "last_message_at"),
-)
+# Empty: both former targets (emails, threads) have had `id` removed from
+# their schema entirely -- see the module docstring. Never repopulate this.
+_TARGETS: tuple[tuple[str, str, str, str], ...] = ()
 _SAMPLE_SIZE = 10
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Backfill EML-/THR- internal ids onto existing emails/threads documents"
+        description="Backfill THR- internal ids onto existing threads documents"
     )
     parser.add_argument("--uri", required=True, help="MongoDB connection string (needs write access for --confirm)")
     parser.add_argument("--db", required=True, help="Database name (e.g. cos_sales_production_v1)")

@@ -9,12 +9,18 @@ from app.entities.models import Commitment, FollowUp, Meeting, Person, PersonalI
 def test_person_defaults():
     person = Person(id="PER-001", name="Jane Doe", email="jane@example.com")
     assert person.aliases == []
-    assert person.source == "gmail"
+    assert person.status == "active"
 
 
 def test_person_has_no_removed_fields():
+    # source/note_link: people-collection schema cleanup -- neither was ever read
+    # or written by any code path (source was always just the unused Pydantic
+    # default "gmail"); see scripts/remove_person_source_note_link_fields.py.
     person = Person(id="PER-001", name="Jane Doe", email="jane@example.com")
-    for removed_field in ("reports_to", "review_flag", "role_in_pillar", "tier", "voice_register", "preferences"):
+    for removed_field in (
+        "reports_to", "review_flag", "role_in_pillar", "tier", "voice_register", "preferences",
+        "source", "note_link",
+    ):
         assert not hasattr(person, removed_field)
 
 

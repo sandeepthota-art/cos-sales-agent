@@ -30,12 +30,17 @@ class Person(BaseModel):
     # app.entities.resolution.resolve_operator_person). Backfill-only on reuse, same
     # as `org`: a later mention never overwrites an already-stated role.
     role: str | None = None
+    # Never written by any Person-creation path (app.entities.resolution) -- but IS
+    # read by app.entities.person_context.get_bounded_person_context_for_llm, which
+    # feeds app.pipeline's real LLM-context step. Kept (people-collection schema
+    # cleanup: proven to be a live reader, not dead code, unlike the removed
+    # note_link/source fields) -- always None in practice today since nothing
+    # populates it yet. Hidden from the dashboard (see PEOPLE_COLUMN_ORDER) since
+    # it never has a real value to show.
     goal_pillar: str | None = None
     last_inbound: datetime | None = None
     last_outbound: datetime | None = None
     open_threads: list[str] = Field(default_factory=list)
-    note_link: str | None = None
-    source: str = "gmail"
     # Phase 18 (app.duplicate_consolidation): a person retired via approved duplicate
     # consolidation is never physically deleted -- it's marked "merged" and points at
     # its canonical replacement, preserving historical identity. "active" (the

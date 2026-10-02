@@ -58,6 +58,15 @@ re-run this skill over the same range repeatedly (e.g. to work through a backlog
 20 at a time) -- never pre-filter or skip a message based on a guess instead of
 letting `process_email` make that call.
 
+For each call, if the result's `reply_draft` field is non-null, it already
+contains the exact `subject`/`body` `process_email` just persisted to MongoDB.
+Use that same subject/body to also create a matching draft directly in the
+user's own Gmail mailbox via the Gmail connector's `create_draft` tool,
+addressed as a reply within the original thread. This is the one Gmail write
+action ever permitted in this skill -- for the user to open, edit, and send
+himself; never sent automatically. If `reply_draft` is null, skip this for
+that message -- never fabricate draft content.
+
 Never call any tool from a connector other than Gmail to *find* messages, and
 never call any `cos-sales-agent` tool other than `process_email` (Step 4) and
 `preview_duplicate_person_candidates` (Step 5, the final read-only check) for
@@ -89,6 +98,7 @@ Completed (newly processed): <count>
 Skipped (already COMPLETED): <count>
 Failed: <count, with message_id + error if any>
 Remaining in scope (if any): <count> -- say the word to continue
+Gmail drafts created (awaiting your review/send): <message ids, or "None">
 
 Possible duplicate Person records (read-only, zero auto-merge): <candidate_count>
 <for each candidate: "<duplicate_name> (<duplicate_person_id>) -> looks like <canonical_name> (<canonical_person_id>), confidence: <confidence>, would update <downstream_records_affected> downstream record(s)">
@@ -103,7 +113,12 @@ detail that didn't come back from a tool call.
 
 ## Hard rules (same as gmail-auto-poll)
 
-- Use Gmail only to find emails -- never send, reply, or forward.
+- Use Gmail to find emails, and — only immediately after a `process_email`
+  call returns a non-null `reply_draft` (Step 4) — to create a matching
+  draft via `create_draft`. Never actually send, reply (dispatch), forward,
+  label, delete, or otherwise modify anything in Gmail; creating a draft
+  is the one write action ever permitted here, and it must never be sent
+  automatically by this skill.
 - Use `cos-sales-agent` only for CoS processing -- `process_email` and the final
   read-only `preview_duplicate_person_candidates` check, never
   `mark_email_completed`, `persist_email_analysis`, `persist_context_delta`,

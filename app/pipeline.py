@@ -89,9 +89,8 @@ def _load_thread_candidates(thread_repo: ThreadRepository) -> list[ThreadCandida
 def _upsert_thread(
     thread_repo: ThreadRepository, resolved_thread_id: str | None, email: Email, db: Database
 ) -> str:
-    """Canonical ID refactor: `thread_id` (and the `id` field, kept as an exact
-    mirror of it for anything already keying off `id`) now ALWAYS holds the
-    canonical `THR-nnn` value -- never the raw/synthetic identifier the old
+    """Canonical ID refactor: `thread_id` now ALWAYS holds the canonical
+    `THR-nnn` value -- never the raw/synthetic identifier the old
     `thread_{message_id}` fallback used to produce. `resolved_thread_id` is
     whatever `app.email.threading.resolve_thread_id` found (an existing
     canonical thread_id) or None (no existing thread matched by any signal,
@@ -99,13 +98,22 @@ def _upsert_thread(
     via the existing atomic next_id counter exactly once, in that case, and
     never regenerated on a later message added to the same thread.
 
-    `source_thread_id` (new field) carries the true Gmail/provider thread
-    identifier (or None, if the source never supplied one) -- set once, at
-    creation, never rewritten on a later message. `message_ids` keeps holding
-    canonical EML- values (unchanged reader contract for existing code); the
-    new `source_message_ids` field exists solely for
-    app.email.threading.resolve_thread_id's in_reply_to/references matching,
-    which must compare against raw Gmail ids, never canonical ones.
+    `source_thread_id` carries the true Gmail/provider thread identifier (or
+    None, if the source never supplied one) -- set once, at creation, never
+    rewritten on a later message. `message_ids` keeps holding canonical EML-
+    values (unchanged reader contract for existing code); `source_message_ids`
+    exists solely for app.email.threading.resolve_thread_id's in_reply_to/
+    references matching, which must compare against raw Gmail ids, never
+    canonical ones.
+
+    Schema cleanup (threads collection, second collection-by-collection pass,
+    after emails): this function used to also write a separate `id` field,
+    always set to this same `thread_id` value -- a true duplicate, verified by
+    searching the whole codebase for any lookup/foreign-key use of
+    `threads.id` (none found; every other collection and the query/evidence
+    system reference `thread_id`, never `threads.id`). Not written on new
+    documents anymore; existing documents still carrying it are cleaned up by
+    `scripts/remove_thread_id_field.py`, not by this function.
     """
     existing = thread_repo.find_one({"thread_id": resolved_thread_id}) if resolved_thread_id else None
     participant_emails = set(existing["participant_emails"]) if existing else set()
@@ -121,9 +129,8 @@ def _upsert_thread(
         existing_last = datetime.fromisoformat(existing["last_message_at"])
         last_message_at = max(last_message_at, existing_last)
 
-    thread_id = existing["id"] if existing else next_id(db, "THR-")
+    thread_id = existing["thread_id"] if existing else next_id(db, "THR-")
     document = {
-        "id": thread_id,
         "thread_id": thread_id,
         "source_thread_id": existing.get("source_thread_id") if existing else email.source_thread_id,
         "normalized_subject": existing["normalized_subject"] if existing else normalize_subject(email.subject),
@@ -154,17 +161,25 @@ def ingest_raw_email(email_repo: EmailRepository, email: Email, db: Database) ->
     on a genuinely new source message) -- every stage downstream of this function
     keeps reading `email.message_id` exactly as before; only the value it holds
     has changed, not its name or role.
+
+    Schema cleanup (emails collection, first of the collection-by-collection
+    pass): this function used to also write a separate `id` field, always set
+    to this same `email_id` value -- a true duplicate of `message_id`, verified
+    by searching the whole codebase for any lookup/foreign-key use of
+    `emails.id` (none found; every other collection and the query/evidence
+    system reference `message_id`, never `emails.id`). Not written on new
+    documents anymore; existing documents still carrying it are cleaned up by
+    `scripts/remove_email_id_record_id_date_fields.py`, not by this function.
     """
     email = normalize_email(email)
 
     existing = email_repo.find_one({"source_message_id": email.source_message_id})
     if existing and existing.get("processing_status", {}).get("stage") == ProcessingStage.COMPLETED.value:
-        return email.model_copy(update={"message_id": existing["id"]}), True
+        return email.model_copy(update={"message_id": existing["message_id"]}), True
 
-    email_id = existing["id"] if existing else next_id(db, "EML-")
+    email_id = existing["message_id"] if existing else next_id(db, "EML-")
     email = email.model_copy(update={"message_id": email_id})
     document = email.model_dump(mode="json", by_alias=True)
-    document["id"] = email_id
     email_repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
     email_repo.set_stage(email.message_id, ProcessingStage.RECEIVED.value)
     email_repo.set_stage(email.message_id, ProcessingStage.VALIDATED.value)
@@ -983,8 +998,6 @@ def run_pipeline(
             )
             email_repo.set_entity_metadata(
                 message_id=email.message_id,
-                record_id=email.message_id,
-                date=email.timestamp.date().isoformat(),
                 entities_referenced=entities_referenced,
                 goal_pillar=analysis.goal_pillar,
                 label_applied=analysis.label_applied,

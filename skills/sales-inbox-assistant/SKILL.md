@@ -34,6 +34,14 @@ more than 15 new candidates exist, process the first 15 and tell the user: "I fo
 than 15 new emails -- I processed the first 15; let me know if you want me to continue
 with the rest."
 
+For each call, if the result's `reply_draft` field is non-null, it already contains the
+exact `subject`/`body` `process_email` just persisted to MongoDB. Use that same
+subject/body to also create a matching draft directly in the user's own Gmail mailbox
+via the Gmail connector's `create_draft` tool, addressed as a reply within the original
+thread -- this is the one Gmail write action ever permitted in this skill, for the user
+to open, edit, and send himself; never sent automatically. If `reply_draft` is null,
+skip this for that email -- never fabricate draft content.
+
 ## Step 4: Answer in plain language
 
 Synthesize the answer from the combined data (already-processed + newly-processed).
@@ -45,4 +53,7 @@ implementation detail.
 If the answer surfaces something actionable -- a reply that could be sent, a meeting that
 could be scheduled -- always present it as a proposal and ask for explicit approval
 before doing anything. Never send an email or create a calendar event without the user
-saying yes first.
+saying yes first. A Gmail draft created in Step 3 is not an exception to this -- it is
+still only a draft sitting in the mailbox, and it must never be sent by this skill; only
+the user sending it himself (from Gmail or via the dashboard's Approve flow) counts as
+approval.
