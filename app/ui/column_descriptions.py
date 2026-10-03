@@ -320,7 +320,6 @@ EMAIL_COLUMN_ORDER: tuple[str, ...] = (
     "source_message_id",
     "source_thread_id",
     "entities_referenced",
-    "in_reply_to",
     "processing_status",
 )
 
