@@ -171,6 +171,51 @@ def test_dashboard_email_lookup_box_shows_reply_withheld_reason_when_no_draft_ex
     assert any("bank account details" in w for w in warnings)
 
 
+def test_dashboard_emails_tab_resolves_in_reply_to_to_the_original_senders_address(monkeypatch):
+    # in_reply_to is a raw Gmail threading header (a message id), never an address --
+    # the Emails tab must resolve it to the sender of the email it actually refers
+    # to, not display the raw id.
+    fake_client = mongomock.MongoClient()
+    db = fake_client["cos_sales_test"]
+    initialize_indexes(db)
+    db.emails.insert_one(
+        {
+            "message_id": "EML-001", "thread_id": "THR-001", "source_message_id": "gmail-src-1",
+            "source_thread_id": "gmail-thread-1",
+            "from": {"name": None, "email": "alice@example.com"}, "to": [], "cc": [],
+            "subject": "Kickoff", "body": "Let's get started.", "timestamp": "2026-09-13T10:00:00Z",
+            "in_reply_to": None, "references": [], "attachments": [], "labels": [],
+            "processing_status": {"stage": "COMPLETED", "error": None, "failed_stage": None,
+                                   "updated_at": "2026-09-13T10:05:00+00:00"},
+            "entities_referenced": {}, "goal_pillar": "", "label_applied": "Read only",
+        }
+    )
+    db.emails.insert_one(
+        {
+            "message_id": "EML-002", "thread_id": "THR-001", "source_message_id": "gmail-src-2",
+            "source_thread_id": "gmail-thread-1",
+            "from": {"name": None, "email": "bob@example.com"}, "to": [], "cc": [],
+            "subject": "Re: Kickoff", "body": "Sounds good.", "timestamp": "2026-09-13T11:00:00Z",
+            "in_reply_to": "gmail-src-1", "references": [], "attachments": [], "labels": [],
+            "processing_status": {"stage": "COMPLETED", "error": None, "failed_stage": None,
+                                   "updated_at": "2026-09-13T11:05:00+00:00"},
+            "entities_referenced": {}, "goal_pillar": "", "label_applied": "Read only",
+        }
+    )
+
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+    assert not at.exception
+
+    email_frames = [df.value for df in at.dataframe if "Re: Kickoff" in df.value.to_string()]
+    assert len(email_frames) == 1
+    reply_row = email_frames[0][email_frames[0]["subject"] == "Re: Kickoff"].iloc[0]
+    assert reply_row["in_reply_to"] == "alice@example.com"
+
+
 def test_dashboard_shows_opportunities_tab_with_real_data(monkeypatch):
     fake_client = mongomock.MongoClient()
     db = fake_client["cos_sales_test"]

@@ -330,11 +330,29 @@ def _render_emails_tab(db) -> None:
     # touched here). This dashboard table alone shows just the plain email
     # address instead of the dict's raw repr, per explicit request.
     emails = list_emails(db)
+
+    # in_reply_to is a raw Gmail threading header (a message id), not an address --
+    # resolve it to the sender of the email it actually refers to. Indexed by both
+    # source_message_id (the real Gmail id a threading header would reference) and
+    # message_id (for data that never went through the canonical-id split), sender
+    # address wins on either key, never fabricated if nothing matches.
+    reply_sender_by_id: dict[str, str] = {}
+    for email in emails:
+        sender_address = _format_participant(email.get("from"))
+        if email.get("source_message_id"):
+            reply_sender_by_id[email["source_message_id"]] = sender_address
+        if email.get("message_id"):
+            reply_sender_by_id.setdefault(email["message_id"], sender_address)
+
     for email in emails:
         sender = email.get("from") or {}
         email["from"] = sender.get("email") or sender.get("name")
         email["processing_status"] = _format_processing_status(email.get("processing_status"))
         email["entities_referenced"] = _format_entities_referenced(email.get("entities_referenced"))
+        in_reply_to = email.get("in_reply_to")
+        # Falls back to the raw header value (real data, not fabricated) when no
+        # matching email is stored -- e.g. a reply to a message outside this pipeline.
+        email["in_reply_to"] = reply_sender_by_id.get(in_reply_to, in_reply_to) if in_reply_to else None
 
     st.dataframe(
         emails,

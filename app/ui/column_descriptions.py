@@ -49,7 +49,9 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "subject": "Email subject line.",
         "body": "Full email body text.",
         "timestamp": "When the email was sent. Used for the dashboard's newest-first sort.",
-        "in_reply_to": "Threading header: the message id this email replies to.",
+        "in_reply_to": "The email address of the sender this message is replying to, "
+        "resolved from the threading header. Shows the raw header value if the "
+        "original message isn't in this pipeline, or blank if this email isn't a reply.",
         "references": "Threading header: chain of prior message ids in this thread.",
         "attachments": "Attachment filenames.",
         "labels": "Gmail label ids, plus the applied triage label (label_applied) once analysis completes.",
@@ -462,6 +464,7 @@ PERSONAL_ITEMS_COLUMN_ORDER: tuple[str, ...] = (
 COLUMN_LABELS: dict[str, dict[str, str]] = {
     "emails": {
         "from": "Sender email",
+        "in_reply_to": "Reply mail",
     },
     "projects": {
         "project": "Project",
