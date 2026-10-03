@@ -365,10 +365,14 @@ PEOPLE_COLUMN_ORDER: tuple[str, ...] = (
 # duplicate, per each model's own inline comments in app/entities/models.py.
 
 ORGANIZATIONS_COLUMN_ORDER: tuple[str, ...] = (
-    "name", "domain", "id", "aliases",
+    "name", "domain", "id",
     # Hidden: `source` is always the unused Pydantic default "gmail", never
     # read anywhere -- same category as the field removed from People, but
     # not removed here pending its own dedicated verification pass.
+    # Hidden (display-only, per explicit request): `aliases` -- still a real,
+    # read MongoDB field (app.query.entity_resolution's org-name matching
+    # checks it as an alias-matching fallback), always empty today since
+    # nothing currently appends to it. Not removed from MongoDB.
 )
 
 # "Project product gap" closed: status/owner/health/next_milestone/due are now
