@@ -241,6 +241,69 @@ def test_dashboard_email_lookup_box_shows_a_prompt_when_no_summary_exists(monkey
     assert any("ask Claude to summarize" in c for c in captions)
 
 
+def test_dashboard_emails_tab_shows_summary_in_body_column_when_present(monkeypatch):
+    fake_client = mongomock.MongoClient()
+    db = fake_client["cos_sales_test"]
+    initialize_indexes(db)
+    db.emails.insert_one(
+        {
+            "message_id": "EML-001", "thread_id": "THR-001", "source_message_id": "gmail-src-1",
+            "source_thread_id": "gmail-thread-1",
+            "from": {"name": None, "email": "alice@example.com"}, "to": [], "cc": [],
+            "subject": "Acme Rollout kickoff",
+            "body": "A much longer raw body that would not fit well in a table cell.",
+            "body_summary": "Ashok is kicking off the Acme rollout project.",
+            "timestamp": "2026-09-13T10:00:00Z", "in_reply_to": None, "references": [],
+            "attachments": [], "labels": [],
+            "processing_status": {"stage": "COMPLETED", "error": None, "failed_stage": None,
+                                   "updated_at": "2026-09-13T10:05:00+00:00"},
+            "entities_referenced": {}, "goal_pillar": "", "label_applied": "Read only",
+        }
+    )
+
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+    assert not at.exception
+
+    email_frames = [df.value for df in at.dataframe if "Acme Rollout kickoff" in df.value.to_string()]
+    assert len(email_frames) == 1
+    row = email_frames[0][email_frames[0]["subject"] == "Acme Rollout kickoff"].iloc[0]
+    assert row["body"] == "Ashok is kicking off the Acme rollout project."
+
+
+def test_dashboard_emails_tab_falls_back_to_raw_body_when_not_summarized(monkeypatch):
+    fake_client = mongomock.MongoClient()
+    db = fake_client["cos_sales_test"]
+    initialize_indexes(db)
+    db.emails.insert_one(
+        {
+            "message_id": "EML-001", "thread_id": "THR-001", "source_message_id": "gmail-src-1",
+            "source_thread_id": "gmail-thread-1",
+            "from": {"name": None, "email": "alice@example.com"}, "to": [], "cc": [],
+            "subject": "Acme Rollout kickoff", "body": "Let's get started on the Acme rollout.",
+            "timestamp": "2026-09-13T10:00:00Z", "in_reply_to": None, "references": [],
+            "attachments": [], "labels": [],
+            "processing_status": {"stage": "COMPLETED", "error": None, "failed_stage": None,
+                                   "updated_at": "2026-09-13T10:05:00+00:00"},
+            "entities_referenced": {}, "goal_pillar": "", "label_applied": "Read only",
+        }
+    )
+
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+    assert not at.exception
+
+    email_frames = [df.value for df in at.dataframe if "Acme Rollout kickoff" in df.value.to_string()]
+    row = email_frames[0][email_frames[0]["subject"] == "Acme Rollout kickoff"].iloc[0]
+    assert row["body"] == "Let's get started on the Acme rollout."
+
+
 def test_dashboard_emails_tab_resolves_in_reply_to_to_the_original_senders_address(monkeypatch):
     # in_reply_to is a raw Gmail threading header (a message id), never an address --
     # the Emails tab must resolve it to the sender of the email it actually refers

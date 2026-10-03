@@ -47,7 +47,8 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "to": "Recipient name(s) and email address(es).",
         "cc": "CC'd recipient name(s) and email address(es).",
         "subject": "Email subject line.",
-        "body": "Full email body text.",
+        "body": "A short summary of the email (authored by Claude after reading it, cached as "
+        "body_summary), or the full raw body text if it hasn't been summarized yet.",
         "timestamp": "When the email was sent. Used for the dashboard's newest-first sort.",
         "in_reply_to": "The email address of the sender this message is replying to, "
         "resolved from the threading header. Shows the raw header value if the "
@@ -463,6 +464,7 @@ PERSONAL_ITEMS_COLUMN_ORDER: tuple[str, ...] = (
 COLUMN_LABELS: dict[str, dict[str, str]] = {
     "emails": {
         "from": "Sender email",
+        "body": "Summary",
         "in_reply_to": "Reply mail",
     },
     "projects": {

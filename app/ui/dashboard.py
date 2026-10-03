@@ -355,6 +355,10 @@ def _render_emails_tab(db) -> None:
         email["from"] = sender.get("email") or sender.get("name")
         email["processing_status"] = _format_processing_status(email.get("processing_status"))
         email["entities_referenced"] = _format_entities_referenced(email.get("entities_referenced"))
+        # Shows the Claude-authored summary (set_email_summary) when one exists, so the
+        # table is scannable at a glance -- falls back to the raw body (real data, never
+        # blank) for an email that hasn't been summarized yet.
+        email["body"] = email.get("body_summary") or email.get("body")
         in_reply_to = email.get("in_reply_to")
         # Falls back to the raw header value (real data, not fabricated) when no
         # matching email is stored -- e.g. a reply to a message outside this pipeline.
