@@ -207,14 +207,8 @@ def _render_email_lookup_box(db) -> None:
         f"· Goal pillar: {email.get('goal_pillar') or '—'}"
     )
 
-    if email.get("body_summary"):
-        st.markdown("**Summary**")
-        st.markdown(email["body_summary"])
-    else:
-        st.caption("No summary yet -- ask Claude to summarize this email.")
-
-    with st.expander("Full email body (original, unsummarized text)"):
-        st.text(email.get("body") or "")
+    st.markdown("**Summary**")
+    st.markdown(email.get("body_summary") or email.get("body") or "")
 
     entities = email.get("entities_referenced") or {}
 

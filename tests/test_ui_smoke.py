@@ -208,7 +208,7 @@ def test_dashboard_email_lookup_box_shows_cached_summary_when_present(monkeypatc
     assert any("Ashok is kicking off the Acme rollout project." in m for m in markdowns)
 
 
-def test_dashboard_email_lookup_box_shows_a_prompt_when_no_summary_exists(monkeypatch):
+def test_dashboard_email_lookup_box_falls_back_to_raw_body_when_no_summary_exists(monkeypatch):
     fake_client = mongomock.MongoClient()
     db = fake_client["cos_sales_test"]
     initialize_indexes(db)
@@ -237,8 +237,8 @@ def test_dashboard_email_lookup_box_shows_a_prompt_when_no_summary_exists(monkey
     select_boxes[0].set_value(target).run()
 
     assert not at.exception
-    captions = [c.value for c in at.caption]
-    assert any("ask Claude to summarize" in c for c in captions)
+    markdowns = [m.value for m in at.markdown]
+    assert any("Let's get started on the Acme rollout." in m for m in markdowns)
 
 
 def test_dashboard_emails_tab_shows_summary_in_body_column_when_present(monkeypatch):
