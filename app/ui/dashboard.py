@@ -15,7 +15,9 @@ via the React ReplyApprovalsPage and the reply-approval MCP tools.
 """
 
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -94,6 +96,32 @@ def _render_dashboard_tab(db) -> None:
         col.metric(label, metrics[key], help=DASHBOARD_METRIC_DESCRIPTIONS.get(key))
 
 
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _format_processing_status(status: dict | None) -> str:
+    """Display-only simplification: processing_status.stage has 11 real pipeline
+    values (see app.processing.models.ProcessingStage), but this table only ever
+    needs to distinguish done/failed/still-running. FAILED is kept distinct from
+    "In Progress" rather than folded into it -- silently hiding a real failure
+    would be misleading. updated_at (always a UTC isoformat string -- see
+    EmailRepository.set_stage) is converted to IST for display, per explicit
+    request; the stored value itself is untouched.
+    """
+    if not status:
+        return "—"
+    stage = status.get("stage")
+    label = {"COMPLETED": "Completed", "FAILED": "Failed"}.get(stage, "In Progress")
+    updated_at = status.get("updated_at")
+    if updated_at:
+        try:
+            ist_time = datetime.fromisoformat(updated_at).astimezone(_IST)
+            return f"{label} · {ist_time.strftime('%d %b %Y, %I:%M %p IST')}"
+        except ValueError:
+            pass
+    return label
+
+
 def _render_emails_tab(db) -> None:
     # Display-only flattening: `from` is a real {name, email} dict on every
     # Email document (frozen schema, untouched) -- the FastAPI/React path
@@ -104,6 +132,7 @@ def _render_emails_tab(db) -> None:
     for email in emails:
         sender = email.get("from") or {}
         email["from"] = sender.get("email") or sender.get("name")
+        email["processing_status"] = _format_processing_status(email.get("processing_status"))
 
     st.dataframe(
         emails,
