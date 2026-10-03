@@ -304,7 +304,8 @@ def _render_email_lookup_box(db) -> None:
     draft = ReplyDraftRepository(db).find_one({"source_email_id": email["message_id"]})
     if draft:
         st.markdown("**Reply Draft**")
-        st.caption(f"Status: {draft.get('status')}")
+        gmail_status = "Synced to Gmail" if draft.get("gmail_draft_id") else "Not yet synced to Gmail"
+        st.caption(f"Status: {draft.get('status')} · {gmail_status}")
         st.markdown(f"**{draft['draft']['subject']}**")
         st.text(draft["draft"]["body"])
 
