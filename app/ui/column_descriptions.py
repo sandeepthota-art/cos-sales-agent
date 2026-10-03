@@ -323,22 +323,20 @@ EMAIL_COLUMN_ORDER: tuple[str, ...] = (
 # scripts/remove_person_source_note_link_fields.py). `goal_pillar` is omitted
 # from display only -- it stays a real MongoDB field (read by
 # get_bounded_person_context_for_llm) but is never populated today, so it has
-# nothing to show.
+# nothing to show. `name` leads (not `id`) per the same executive-readability
+# principle applied to EMAIL_COLUMN_ORDER: business-readable fields left,
+# identifiers/technical fields right.
 PEOPLE_COLUMN_ORDER: tuple[str, ...] = (
-    # Identifier (left)
-    "id",
-    # Human-readable identity
-    "email",
+    # Business-readable (left)
     "name",
-    # Activity timestamps
+    "email",
+    "role",
+    "org",
     "last_inbound",
     "last_outbound",
-    # Organization
-    "org",
+    # Identifiers/technical (right)
+    "id",
     "org_id",
-    # Other useful fields
-    "role",
-    # Technical/internal (right)
     "aliases",
     "open_threads",
     "status",
