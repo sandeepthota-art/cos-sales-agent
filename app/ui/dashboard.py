@@ -176,10 +176,17 @@ def _render_email_lookup_box(db) -> None:
     omitted, never shown as an empty table.
     """
     st.subheader("Look up an email")
-    # .get(...) or "", not e["timestamp"]: a malformed/partially-written email
-    # document (e.g. a retry that left only a processing_status stub behind)
-    # must never crash this box -- it just sorts to the oldest end instead.
-    emails = sorted(list_emails(db), key=lambda e: e.get("timestamp") or "", reverse=True)
+    # A malformed/partially-written email document (e.g. a retry that left
+    # only a processing_status stub behind) has none of the fields this box
+    # displays -- it's excluded here rather than shown with fabricated
+    # placeholder text, consistent with list_processed_emails's own handling
+    # of the same kind of stub document.
+    _REQUIRED_FIELDS = ("message_id", "subject", "from", "thread_id", "timestamp", "body")
+    emails = sorted(
+        (e for e in list_emails(db) if all(field in e for field in _REQUIRED_FIELDS)),
+        key=lambda e: e.get("timestamp") or "",
+        reverse=True,
+    )
     if not emails:
         st.info("No emails yet.")
         return
