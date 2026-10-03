@@ -7,16 +7,14 @@ pure-risk refactor with no user-facing benefit.
 
 Run with: `streamlit run app/ui/dashboard.py`
 
-This is the only place in the system where "send email" and "create calendar
-event" actions are actually triggered. Those side effects are reached
-exclusively through the explicit Approve-button handlers in
-`_render_reply_approval_tab` (via `simulate_send`) and
-`_render_calendar_approval_tab` (via `approve_calendar_action`) — no other
-code path in this module calls into the email/calendar providers.
+"create calendar event" actions are triggered from this module exclusively
+through `_render_calendar_approval_tab`'s explicit Approve-button handler
+(via `approve_calendar_action`). Reply approval/sending has no tab in this
+Streamlit dashboard (removed per explicit request) -- it remains reachable
+via the React ReplyApprovalsPage and the reply-approval MCP tools.
 """
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -37,14 +35,8 @@ from app.calendar.actions import approve_calendar_action, reject_calendar_action
 from app.calendar.models import CalendarAction
 from app.config.settings import get_settings
 from app.database.mongodb import get_client, initialize_database
-from app.database.repositories import (
-    CalendarActionRepository,
-    EmailRepository,
-    ReplyDraftRepository,
-)
+from app.database.repositories import CalendarActionRepository
 from app.providers.factory import ProviderFactory
-from app.replies.approval import approve, edit, reject, simulate_send
-from app.replies.models import ReplyDraft
 from app.ui.column_descriptions import (
     COMMITMENTS_COLUMN_ORDER,
     DASHBOARD_METRIC_DESCRIPTIONS,
@@ -71,7 +63,6 @@ from app.ui.data import (
     list_organizations,
     list_people,
     list_projects,
-    list_reply_drafts,
     list_threads,
     org_label,
     person_label,
@@ -222,59 +213,6 @@ def _render_knowledge_tab(db) -> None:
                 st.write(f"{entry['recorded_at']}: {entry['value']} (source {entry['source_email_id']})")
 
 
-def _render_reply_approval_tab(db, settings) -> None:
-    # CTO-facing context line, added so this card identifies WHO a draft is to and
-    # WHICH conversation it belongs to -- previously showed only subject/body, with
-    # no recipient/thread/person/org/created-time context visible anywhere.
-    repo = ReplyDraftRepository(db)
-    for doc in list_reply_drafts(db, status="awaiting_approval"):
-        draft = ReplyDraft.model_validate(doc)
-        recipient = person_label(db, draft.person_id)
-        if recipient is None:
-            source_email = EmailRepository(db).find_one({"message_id": draft.source_email_id})
-            if source_email:
-                recipient = source_email["from"].get("name") or source_email["from"].get("email")
-        org = org_label(db, draft.org_id)
-        meta = " · ".join(
-            part for part in (
-                f"To: {recipient}" if recipient else None,
-                org,
-                f"Thread: {draft.thread_id}",
-                f"Drafted: {draft.created_at}" if draft.created_at else None,
-            ) if part
-        )
-        st.caption(
-            meta,
-            help=(
-                f"{field_help('reply_drafts', 'person_id')} {field_help('reply_drafts', 'org_id')} "
-                f"{field_help('reply_drafts', 'thread_id')} {field_help('reply_drafts', 'created_at')}"
-            ),
-        )
-        st.markdown(f"**{draft.draft.subject}**", help=field_help("reply_drafts", "draft.subject"))
-        st.markdown(draft.draft.body, help=field_help("reply_drafts", "draft.body"))
-        if settings.dashboard_read_only:
-            st.caption("Read-only view -- approval actions disabled.")
-            continue
-        col1, col2, col3 = st.columns(3)
-        if col1.button("Approve", key=f"approve_{draft.reply_id}"):
-            approved = approve(draft, approved_by="ui_user")
-            sent = simulate_send(approved, now=datetime.now(timezone.utc))
-            repo.upsert_by_key({"source_email_id": sent.source_email_id}, sent.model_dump(mode="json"))
-            st.rerun()
-        if col2.button("Reject", key=f"reject_{draft.reply_id}"):
-            rejected = reject(draft)
-            repo.upsert_by_key({"source_email_id": rejected.source_email_id}, rejected.model_dump(mode="json"))
-            st.rerun()
-        new_body = col3.text_area(
-            "Edit body", value=draft.draft.body, key=f"edit_{draft.reply_id}",
-            help=field_help("reply_drafts", "draft.body"),
-        )
-        if col3.button("Save edit", key=f"save_edit_{draft.reply_id}"):
-            edited = edit(draft, new_subject=draft.draft.subject, new_body=new_body)
-            repo.upsert_by_key({"source_email_id": edited.source_email_id}, edited.model_dump(mode="json"))
-            st.rerun()
-
-
 def _render_calendar_approval_tab(db, settings) -> None:
     repo = CalendarActionRepository(db)
     calendar_provider = None if settings.dashboard_read_only else ProviderFactory.create_calendar_provider(settings)
@@ -383,7 +321,6 @@ def main() -> None:
             "Thread Explorer",
             "Context Evolution",
             "Knowledge",
-            "Reply Approval",
             "Calendar Approval",
         ]
     )
@@ -412,8 +349,6 @@ def main() -> None:
     with tabs[11]:
         _render_knowledge_tab(db)
     with tabs[12]:
-        _render_reply_approval_tab(db, settings)
-    with tabs[13]:
         _render_calendar_approval_tab(db, settings)
 
 

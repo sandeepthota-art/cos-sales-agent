@@ -90,24 +90,16 @@ def test_dashboard_shows_opportunities_tab_with_real_data(monkeypatch):
 
 def test_dashboard_read_only_mode_hides_approval_buttons(monkeypatch):
     # Regression coverage for the public, friend-facing deployment: with
-    # DASHBOARD_READ_ONLY=true, a real pending reply draft and a real pending
-    # calendar action must still be visible, but every action button
-    # (Approve/Reject/Save edit/Create on my calendar/Ignore) must be gone --
-    # this dashboard is the ONLY place those actions can be triggered at all
-    # (see app/ui/dashboard.py's module docstring), so read-only mode is the
-    # entire safety guarantee for a viewer who isn't the operator.
+    # DASHBOARD_READ_ONLY=true, a real pending calendar action must still be
+    # visible, but every action button (Create on my calendar/Ignore) must be
+    # gone -- this dashboard is the ONLY place those actions can be triggered
+    # at all (see app/ui/dashboard.py's module docstring), so read-only mode
+    # is the entire safety guarantee for a viewer who isn't the operator.
+    # (Reply Approval has no tab in this dashboard -- removed per explicit
+    # request; see app/ui/dashboard.py's module docstring.)
     fake_client = mongomock.MongoClient()
     db = fake_client["cos_sales_test"]
     initialize_indexes(db)
-    db.reply_drafts.insert_one(
-        {
-            "reply_id": "reply_msg_001",
-            "thread_id": "t1",
-            "source_email_id": "msg_001",
-            "status": "awaiting_approval",
-            "draft": {"subject": "Re: Hi", "body": "Body text"},
-        }
-    )
     db.calendar_actions.insert_one(
         {
             "thread_id": "t1",
@@ -133,47 +125,9 @@ def test_dashboard_read_only_mode_hides_approval_buttons(monkeypatch):
 
     assert not at.exception
     assert len(at.button) == 0
-    # The records themselves are still genuinely visible, not just absent-with-no-trace.
+    # The record itself is still genuinely visible, not just absent-with-no-trace.
     all_text = " ".join(md.value for md in at.markdown)
-    assert "Re: Hi" in all_text
     assert "Kickoff call" in all_text
-
-
-def test_dashboard_reply_approval_shows_recipient_and_thread_context(monkeypatch):
-    # Full-system schema cleanup pass: the Reply Approval card previously showed
-    # only subject/body, with no way to tell WHO a draft is to or WHICH thread it
-    # belongs to. Proves the new context line actually surfaces person_id (via a
-    # real Person lookup) and org_id (via a real Organization lookup), not just
-    # that the dashboard doesn't crash.
-    fake_client = mongomock.MongoClient()
-    db = fake_client["cos_sales_test"]
-    initialize_indexes(db)
-    db.people.insert_one({"id": "PER-001", "name": "Ashok Ganapam", "email": "ashok@databeat.io"})
-    db.organizations.insert_one({"id": "ORG-001", "name": "DataBeat"})
-    db.reply_drafts.insert_one(
-        {
-            "reply_id": "reply_msg_001",
-            "thread_id": "THR-001",
-            "source_email_id": "EML-001",
-            "status": "awaiting_approval",
-            "draft": {"subject": "Re: Pricing", "body": "Body text"},
-            "person_id": "PER-001",
-            "org_id": "ORG-001",
-            "created_at": "2026-09-13T10:00:00Z",
-        }
-    )
-
-    _set_common_env(monkeypatch)
-    _patch_db(monkeypatch, fake_client)
-
-    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
-    at.run()
-
-    assert not at.exception
-    all_captions = " ".join(c.value for c in at.caption)
-    assert "Ashok Ganapam" in all_captions
-    assert "DataBeat" in all_captions
-    assert "THR-001" in all_captions
 
 
 def test_dashboard_shows_rebranded_product_name(monkeypatch):
