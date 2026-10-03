@@ -419,16 +419,21 @@ COMMITMENTS_COLUMN_ORDER: tuple[str, ...] = (
 # `person_name`, `org_name` are derived in app.ui.data.list_follow_ups by
 # resolving commitment_id/person_id/org_id -- never stored on FollowUp itself,
 # recomputed fresh on every read (never duplicating the commitment's own text).
-# Hidden: escalation_level/surfaced are confirmed never advanced by any code
-# path (app.entities.resolution's FollowUp(...) construction never sets
-# either -- they stay at their constant defaults 1/False on every record
-# today), so they carry zero differentiating information currently, per the
-# BRD escalation-ladder design this field exists for but that has no
-# scheduler wired up yet.
+# Hidden: `surfaced` is confirmed never advanced by any code path
+# (app.entities.resolution's FollowUp(...) construction always leaves it at
+# its constant default False), per the BRD escalation-ladder design this
+# field exists for but that has no scheduler wired up yet. `escalation_level`
+# is NOT in the same category -- it's live, shipped functionality (read via
+# direct bracket access in app.entities.person_context, a real filter
+# parameter on the list_follow_ups MCP tool, and a dedicated query function
+# in app.query.commitments) -- it's simply not relevant to this executive
+# view. commitment_id/thread_id/id lead (left) per explicit request,
+# overriding this file's usual readable-left/technical-right default for
+# this collection. org_id/audience/follow_up_earliest_at/follow_up_latest_at
+# are hidden from this view only -- all four remain real MongoDB fields.
 FOLLOW_UPS_COLUMN_ORDER: tuple[str, ...] = (
-    "what", "status", "person_name", "org_name", "audience",
-    "follow_up_earliest_at", "follow_up_latest_at",
-    "person_id", "org_id", "commitment_id", "thread_id", "id",
+    "commitment_id", "thread_id", "id",
+    "what", "status", "person_name", "org_name", "person_id",
 )
 
 # "Meeting product gap" closed at the UI layer only: `title` is derived in
@@ -465,6 +470,10 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
         "what": "Commitment",
         "class": "Class",
         "status": "Status",
+    },
+    "follow_ups": {
+        "what": "Commitment",
+        "id": "followup_id",
     },
 }
 
