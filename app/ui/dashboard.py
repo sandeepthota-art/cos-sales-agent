@@ -54,7 +54,6 @@ from app.ui.column_descriptions import (
     OPPORTUNITIES_COLUMN_ORDER,
     ORGANIZATIONS_COLUMN_ORDER,
     PEOPLE_COLUMN_ORDER,
-    PERSONAL_ITEMS_COLUMN_ORDER,
     PROJECTS_COLUMN_ORDER,
     column_config_for,
     field_help,
@@ -71,7 +70,6 @@ from app.ui.data import (
     list_opportunities,
     list_organizations,
     list_people,
-    list_personal_items,
     list_projects,
     list_reply_drafts,
     list_threads,
@@ -166,14 +164,6 @@ def _render_meetings_tab(db) -> None:
         list_meetings(db),
         column_config=column_config_for("meetings"),
         column_order=MEETINGS_COLUMN_ORDER,
-    )
-
-
-def _render_personal_items_tab(db) -> None:
-    st.dataframe(
-        list_personal_items(db),
-        column_config=column_config_for("personal_items"),
-        column_order=PERSONAL_ITEMS_COLUMN_ORDER,
     )
 
 
@@ -390,7 +380,6 @@ def main() -> None:
             "Commitments",
             "Follow-ups",
             "Meetings",
-            "Personal Items",
             "Thread Explorer",
             "Context Evolution",
             "Knowledge",
@@ -417,16 +406,14 @@ def main() -> None:
     with tabs[8]:
         _render_meetings_tab(db)
     with tabs[9]:
-        _render_personal_items_tab(db)
-    with tabs[10]:
         _render_thread_explorer_tab(db)
-    with tabs[11]:
+    with tabs[10]:
         _render_context_evolution_tab(db)
-    with tabs[12]:
+    with tabs[11]:
         _render_knowledge_tab(db)
-    with tabs[13]:
+    with tabs[12]:
         _render_reply_approval_tab(db, settings)
-    with tabs[14]:
+    with tabs[13]:
         _render_calendar_approval_tab(db, settings)
 
 
