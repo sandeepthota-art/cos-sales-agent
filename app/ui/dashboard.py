@@ -37,7 +37,16 @@ from app.calendar.actions import approve_calendar_action, reject_calendar_action
 from app.calendar.models import CalendarAction
 from app.config.settings import get_settings
 from app.database.mongodb import get_client, initialize_database
-from app.database.repositories import CalendarActionRepository
+from app.database.repositories import (
+    CalendarActionRepository,
+    CommitmentRepository,
+    FollowUpRepository,
+    MeetingRepository,
+    OpportunityRepository,
+    PersonRepository,
+    ProjectRepository,
+    ReplyDraftRepository,
+)
 from app.providers.factory import ProviderFactory
 from app.ui.column_descriptions import (
     COMMITMENTS_COLUMN_ORDER,
@@ -95,8 +104,24 @@ def _render_dashboard_tab(db) -> None:
     for col, (label, key) in zip(cols, labels):
         col.metric(label, metrics[key], help=DASHBOARD_METRIC_DESCRIPTIONS.get(key))
 
+    st.divider()
+    _render_email_lookup_box(db)
+
 
 _IST = ZoneInfo("Asia/Kolkata")
+_IST_FORMAT = "%d %b %Y, %I:%M %p IST"
+
+
+def _to_ist_string(iso_value: str | None) -> str | None:
+    """Converts a stored UTC isoformat string to an IST display string. Returns
+    None (never a guessed/invented value) if `iso_value` is absent or malformed.
+    """
+    if not iso_value:
+        return None
+    try:
+        return datetime.fromisoformat(iso_value).astimezone(_IST).strftime(_IST_FORMAT)
+    except ValueError:
+        return None
 
 
 def _format_processing_status(status: dict | None) -> str:
@@ -112,14 +137,8 @@ def _format_processing_status(status: dict | None) -> str:
         return "—"
     stage = status.get("stage")
     label = {"COMPLETED": "Completed", "FAILED": "Failed"}.get(stage, "In Progress")
-    updated_at = status.get("updated_at")
-    if updated_at:
-        try:
-            ist_time = datetime.fromisoformat(updated_at).astimezone(_IST)
-            return f"{label} · {ist_time.strftime('%d %b %Y, %I:%M %p IST')}"
-        except ValueError:
-            pass
-    return label
+    ist_time = _to_ist_string(status.get("updated_at"))
+    return f"{label} · {ist_time}" if ist_time else label
 
 
 def _format_entities_referenced(entities: dict | None) -> str:
@@ -133,6 +152,161 @@ def _format_entities_referenced(entities: dict | None) -> str:
         return "—"
     parts = [f"{category}: {', '.join(ids)}" for category, ids in entities.items() if ids]
     return " · ".join(parts) if parts else "—"
+
+
+def _format_participant(participant: dict | None) -> str:
+    if not participant:
+        return "—"
+    return participant.get("email") or participant.get("name") or "—"
+
+
+def _format_participants(participants: list[dict] | None) -> str:
+    if not participants:
+        return "—"
+    return ", ".join(_format_participant(p) for p in participants) or "—"
+
+
+def _render_email_lookup_box(db) -> None:
+    """A CTO-facing "look up one email" box: pick a message from a dropdown, see
+    every real, related piece of information about it in one place -- the email
+    itself plus everything the pipeline actually derived from it (people,
+    projects, commitments, follow-ups, meetings, opportunities, any reply draft,
+    any calendar action). Every section is resolved from entities_referenced's
+    real ids (never guessed), and a category with nothing in it is simply
+    omitted, never shown as an empty table.
+    """
+    st.subheader("Look up an email")
+    emails = sorted(list_emails(db), key=lambda e: e["timestamp"], reverse=True)
+    if not emails:
+        st.info("No emails yet.")
+        return
+
+    options = {f"{e['message_id']} — {e['subject']}": e for e in emails}
+    choice = st.selectbox("Select a message", list(options.keys()), key="email_lookup_select")
+    email = options[choice]
+
+    st.markdown(f"#### {email['subject']}")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.markdown(f"**From**  \n{_format_participant(email.get('from'))}")
+    col2.markdown(f"**To**  \n{_format_participants(email.get('to'))}")
+    col3.markdown(f"**Received**  \n{_to_ist_string(email.get('timestamp')) or '—'}")
+    col4.markdown(f"**Status**  \n{_format_processing_status(email.get('processing_status'))}")
+
+    st.caption(
+        f"Thread: {email['thread_id']} · Label: {email.get('label_applied') or '—'} "
+        f"· Goal pillar: {email.get('goal_pillar') or '—'}"
+    )
+
+    with st.expander("Full email body"):
+        st.text(email.get("body") or "")
+
+    entities = email.get("entities_referenced") or {}
+
+    people_ids = entities.get("people") or []
+    if people_ids:
+        people = [p for p in (PersonRepository(db).find_one({"id": pid}) for pid in people_ids) if p]
+        st.markdown("**Related People**")
+        st.dataframe(
+            [{"Name": p.get("name"), "Email": p.get("email"), "Role": p.get("role")} for p in people],
+            hide_index=True,
+        )
+
+    project_ids = entities.get("projects") or []
+    if project_ids:
+        projects = [p for p in (ProjectRepository(db).find_one({"id": pid}) for pid in project_ids) if p]
+        st.markdown("**Related Projects**")
+        st.dataframe(
+            [
+                {"Project": p.get("project"), "Company": p.get("entity"), "Status": p.get("status")}
+                for p in projects
+            ],
+            hide_index=True,
+        )
+
+    opportunity_ids = entities.get("opportunities") or []
+    if opportunity_ids:
+        opportunities = [
+            o for o in (OpportunityRepository(db).find_one({"id": oid}) for oid in opportunity_ids) if o
+        ]
+        st.markdown("**Related Opportunities**")
+        st.dataframe(
+            [
+                {
+                    "Deal name": o.get("name"), "Stage": o.get("stage"), "Status": o.get("status"),
+                    "Value": o.get("value"), "Currency": o.get("currency"),
+                }
+                for o in opportunities
+            ],
+            hide_index=True,
+        )
+
+    commitment_ids = entities.get("commitments") or []
+    if commitment_ids:
+        commitments = [
+            c for c in (CommitmentRepository(db).find_one({"id": cid}) for cid in commitment_ids) if c
+        ]
+        st.markdown("**Related Commitments**")
+        st.dataframe(
+            [
+                {
+                    "Commitment": c.get("what"), "Class": c.get("class"),
+                    "Owed by": c.get("owed_by"), "Owed to": c.get("owed_to"), "Status": c.get("status"),
+                }
+                for c in commitments
+            ],
+            hide_index=True,
+        )
+
+    follow_up_ids = entities.get("follow_ups") or []
+    if follow_up_ids:
+        follow_ups = [
+            f for f in (FollowUpRepository(db).find_one({"id": fid}) for fid in follow_up_ids) if f
+        ]
+        rows = []
+        for f in follow_ups:
+            commitment = (
+                CommitmentRepository(db).find_one({"id": f["commitment_id"]}) if f.get("commitment_id") else None
+            )
+            rows.append(
+                {
+                    "Commitment": commitment["what"] if commitment else None,
+                    "Status": f.get("status"), "Audience": f.get("audience"),
+                }
+            )
+        st.markdown("**Related Follow-ups**")
+        st.dataframe(rows, hide_index=True)
+
+    meeting_ids = entities.get("meetings") or []
+    if meeting_ids:
+        meetings = [m for m in (MeetingRepository(db).find_one({"id": mid}) for mid in meeting_ids) if m]
+        st.markdown("**Related Meetings**")
+        st.dataframe(
+            [
+                {
+                    "Date": m.get("date"), "Attendees": ", ".join(m.get("attendees") or []),
+                    "Actionable": m.get("actionable"),
+                }
+                for m in meetings
+            ],
+            hide_index=True,
+        )
+
+    draft = ReplyDraftRepository(db).find_one({"source_email_id": email["message_id"]})
+    if draft:
+        st.markdown("**Reply Draft**")
+        st.caption(f"Status: {draft.get('status')}")
+        st.markdown(f"**{draft['draft']['subject']}**")
+        st.text(draft["draft"]["body"])
+
+    calendar_action = CalendarActionRepository(db).find_one({"thread_id": email["thread_id"]})
+    if calendar_action:
+        st.markdown("**Calendar Action**")
+        event = calendar_action.get("event") or {}
+        st.caption(
+            f"Status: {calendar_action.get('status')} · {event.get('title')} · "
+            f"{_to_ist_string(event.get('start')) or event.get('start')} – "
+            f"{_to_ist_string(event.get('end')) or event.get('end')}"
+        )
 
 
 def _render_emails_tab(db) -> None:
