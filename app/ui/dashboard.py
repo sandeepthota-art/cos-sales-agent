@@ -176,7 +176,10 @@ def _render_email_lookup_box(db) -> None:
     omitted, never shown as an empty table.
     """
     st.subheader("Look up an email")
-    emails = sorted(list_emails(db), key=lambda e: e["timestamp"], reverse=True)
+    # .get(...) or "", not e["timestamp"]: a malformed/partially-written email
+    # document (e.g. a retry that left only a processing_status stub behind)
+    # must never crash this box -- it just sorts to the oldest end instead.
+    emails = sorted(list_emails(db), key=lambda e: e.get("timestamp") or "", reverse=True)
     if not emails:
         st.info("No emails yet.")
         return

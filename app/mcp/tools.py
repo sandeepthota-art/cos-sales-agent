@@ -539,15 +539,28 @@ def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]
         for message_id in thread["message_ids"]:
             thread_id_by_message_id[message_id] = thread["thread_id"]
 
+    # .get(...) or "", not e["timestamp"]: a malformed/partially-written email
+    # document (e.g. a retry that left only a processing_status stub behind)
+    # must never crash this listing -- it just sorts to the oldest end instead.
     emails = sorted(
-        EmailRepository(db).find_many({}), key=lambda e: e["timestamp"], reverse=True
+        EmailRepository(db).find_many({}), key=lambda e: e.get("timestamp") or "", reverse=True
     )[:limit]
 
     context_repo = ContextSnapshotRepository(db)
     summary_by_thread_id: dict[str, str | None] = {}
 
+    _REQUIRED_FIELDS = ("from", "to", "cc", "subject", "timestamp", "body")
+
     results: list[dict[str, Any]] = []
     for email in emails:
+        # A malformed/partially-written document (e.g. a retry that left only a
+        # processing_status stub behind, with no subject/body/from/to at all)
+        # never actually completed ingestion -- it isn't a real "processed
+        # email" to report on, so it's skipped rather than shown with
+        # fabricated placeholder values for the fields it's missing.
+        if any(field not in email for field in _REQUIRED_FIELDS):
+            continue
+
         thread_id = thread_id_by_message_id.get(email["message_id"])
         if thread_id is not None and thread_id not in summary_by_thread_id:
             snapshot = context_repo.latest_for_thread(thread_id)
@@ -605,8 +618,9 @@ def search_emails(
     if label_applied:
         query["label_applied"] = label_applied
 
+    # .get(...) or "" -- same defensive reasoning as list_processed_emails above.
     emails = sorted(
-        EmailRepository(db).find_many(query), key=lambda e: e["timestamp"], reverse=True
+        EmailRepository(db).find_many(query), key=lambda e: e.get("timestamp") or "", reverse=True
     )[:limit]
 
     thread_index = _thread_id_index(db)
@@ -648,9 +662,10 @@ def get_thread(db: Database, thread_id: str) -> dict[str, Any] | None:
     if thread is None:
         return None
 
+    # .get(...) or "" -- same defensive reasoning as list_processed_emails above.
     emails = sorted(
         EmailRepository(db).find_many({"message_id": {"$in": thread["message_ids"]}}),
-        key=lambda e: e["timestamp"],
+        key=lambda e: e.get("timestamp") or "",
     )
     latest_context = ContextSnapshotRepository(db).latest_for_thread(thread_id)
 

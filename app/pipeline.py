@@ -235,9 +235,10 @@ def build_thread_timeline(
         return []
 
     other_message_ids = [m for m in thread["message_ids"] if m != exclude_message_id]
+    # .get(...) or "" -- same defensive reasoning as app.mcp.tools.list_processed_emails.
     emails = sorted(
         email_repo.find_many({"message_id": {"$in": other_message_ids}}),
-        key=lambda e: e["timestamp"],
+        key=lambda e: e.get("timestamp") or "",
     )
     capped = emails[-limit:] if limit else emails
     return [

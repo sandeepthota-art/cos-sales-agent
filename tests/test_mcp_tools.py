@@ -307,6 +307,31 @@ def test_list_processed_emails_handles_mixed_raw_and_processed_emails_without_cr
     assert by_id["msg_raw"]["processing_status"] == {"stage": None, "error": None}
 
 
+def test_list_processed_emails_skips_a_malformed_stub_document_instead_of_crashing(db, settings):
+    # Real-world case: an interrupted/retried ingest_email call can leave behind a
+    # document with only message_id + processing_status -- no subject/body/from/
+    # to/timestamp at all. That was never a genuinely processed email, so it's
+    # skipped entirely rather than shown with fabricated placeholder values for
+    # the fields it's missing.
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "stub_from_failed_retry"},
+        {"message_id": "stub_from_failed_retry",
+         "processing_status": {"stage": "CONTEXT_BUILT", "error": None, "failed_stage": None,
+                                "updated_at": "2026-09-13T10:00:00Z"}},
+    )
+    process_email(
+        db,
+        parse_email(_raw_email("msg_processed", "Body.")),
+        MockLLMProvider(),
+        MockCalendarProvider(),
+        settings,
+    )
+
+    results = list_processed_emails(db, limit=50)
+
+    assert [r["message_id"] for r in results] == ["EML-001"]
+
+
 # --- preview_duplicate_person_candidates (Task 2: read-only safety-net report) ---------
 
 
