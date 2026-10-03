@@ -122,6 +122,19 @@ def _format_processing_status(status: dict | None) -> str:
     return label
 
 
+def _format_entities_referenced(entities: dict | None) -> str:
+    """Display-only: entities_referenced is a real {category: [ids]} dict on
+    every Email document (e.g. {"people": [...], "projects": [...], "meetings":
+    [], ...}) -- most categories are empty for any given email. Rather than show
+    the raw dict (braces, empty-list categories included), this renders only the
+    categories that actually have ids, as plain "category: id, id" text.
+    """
+    if not entities:
+        return "—"
+    parts = [f"{category}: {', '.join(ids)}" for category, ids in entities.items() if ids]
+    return " · ".join(parts) if parts else "—"
+
+
 def _render_emails_tab(db) -> None:
     # Display-only flattening: `from` is a real {name, email} dict on every
     # Email document (frozen schema, untouched) -- the FastAPI/React path
@@ -133,6 +146,7 @@ def _render_emails_tab(db) -> None:
         sender = email.get("from") or {}
         email["from"] = sender.get("email") or sender.get("name")
         email["processing_status"] = _format_processing_status(email.get("processing_status"))
+        email["entities_referenced"] = _format_entities_referenced(email.get("entities_referenced"))
 
     st.dataframe(
         emails,
