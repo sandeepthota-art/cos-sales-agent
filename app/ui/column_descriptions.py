@@ -78,7 +78,14 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "name": "Display name.",
         "email": "Email address, lowercased. Omitted entirely (not just null) when unknown.",
         "aliases": "Alternate names proven to belong to this person by an actual name/org match.",
-        "org": "Free-text company name, as mentioned in email. Also the lookup key used by get_company_summary.",
+        "org": "Free-text company name, as mentioned in email. Never actually populated by any resolution path -- always unset. Also the lookup key used by get_company_summary.",
+        "company": (
+            "Display-only, resolved from org_id to the canonical Organization's real "
+            "name -- Person.org (the free-text field) is never populated by any "
+            "resolution path. Recomputed on every read, never persisted. Empty when "
+            "org_id is absent or doesn't resolve to a real Organization -- never a "
+            "guessed value."
+        ),
         "org_id": "Canonical Organization this person belongs to, resolved by email domain.",
         "role": "Professional designation (e.g. \"CTO\", \"Sales Manager\"), stated in an email; unset until one is.",
         "goal_pillar": (
@@ -320,25 +327,28 @@ EMAIL_COLUMN_ORDER: tuple[str, ...] = (
 # BOTH the left-to-right order AND which columns are visible. `source` and
 # `note_link` are omitted because they were removed from the schema entirely
 # (never read or written by any code path -- see
-# scripts/remove_person_source_note_link_fields.py). `goal_pillar` is omitted
-# from display only -- it stays a real MongoDB field (read by
-# get_bounded_person_context_for_llm) but is never populated today, so it has
-# nothing to show. `name` leads (not `id`) per the same executive-readability
-# principle applied to EMAIL_COLUMN_ORDER: business-readable fields left,
-# identifiers/technical fields right.
+# scripts/remove_person_source_note_link_fields.py). `goal_pillar` and `role`
+# are omitted from display only -- both stay real MongoDB fields, just never
+# populated by any current code path, so they have nothing to show. `aliases`
+# is also omitted from display only, but for a different reason -- unlike
+# `role`/`goal_pillar` it IS populated for real (appended to during an admin
+# duplicate-person-consolidation merge, app.entities.resolution.py:371-373);
+# it's just not relevant to this executive view. `org` (the free-text field,
+# always unset) is omitted in favor of `company`, a UI-layer-only derived
+# field (see list_people) that resolves the canonical org_id to a real
+# Organization name instead.
 PEOPLE_COLUMN_ORDER: tuple[str, ...] = (
     # Business-readable (left)
     "name",
     "email",
-    "role",
-    "org",
-    "last_inbound",
-    "last_outbound",
-    # Identifiers/technical (right)
+    "company",
+    # Identifiers
     "id",
     "org_id",
-    "aliases",
     "open_threads",
+    # Remaining (right)
+    "last_inbound",
+    "last_outbound",
     "status",
     "merged_into",
 )

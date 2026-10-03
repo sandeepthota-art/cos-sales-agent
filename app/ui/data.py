@@ -121,7 +121,22 @@ def list_calendar_actions(
 
 
 def list_people(db, *, limit: int | None = None, offset: int = 0) -> list[dict]:
-    return PersonRepository(db).find_many({}, skip=offset, limit=limit)
+    """`company` is derived here, at the UI layer only -- never persisted back to
+    MongoDB, recomputed fresh on every read. Person.org (the free-text field) is
+    never actually populated by any resolution path (confirmed: always None), so
+    the dashboard's "Company" column instead resolves the canonical org_id to its
+    Organization's real name. If org_id is absent, or doesn't resolve to a real
+    Organization, `company` is simply None -- never falls back to showing the raw
+    id or any other guessed value.
+    """
+    people = PersonRepository(db).find_many({}, skip=offset, limit=limit)
+    org_repo = OrganizationRepository(db)
+
+    enriched = []
+    for person in people:
+        organization = org_repo.find_one({"id": person["org_id"]}) if person.get("org_id") else None
+        enriched.append({**person, "company": organization["name"] if organization else None})
+    return enriched
 
 
 def list_organizations(db, *, limit: int | None = None, offset: int = 0) -> list[dict]:
