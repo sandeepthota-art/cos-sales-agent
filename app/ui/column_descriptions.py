@@ -375,16 +375,18 @@ ORGANIZATIONS_COLUMN_ORDER: tuple[str, ...] = (
     # nothing currently appends to it. Not removed from MongoDB.
 )
 
-# "Project product gap" closed: status/owner/health/next_milestone/due are now
-# human-settable via the new update_project_fields MCP tool (mirrors
-# update_opportunity_fields) -- shown, not hidden. Still hidden below:
-# cluster, objective, target, collaborators, last_movement, note_link, source
-# -- confirmed directly in app.entities.resolution's Project(...) construction
+# "Project product gap" closed: status/owner/health/next_milestone/due are
+# human-settable via the update_project_fields MCP tool (mirrors
+# update_opportunity_fields) -- the mechanism is real and unaffected by this
+# column order. They're hidden from THIS dashboard view only, per explicit
+# request (status/owner/health/next_milestone/due remain fully editable via
+# the React app's PATCH endpoint regardless). Still hidden below: cluster,
+# objective, target, collaborators, last_movement, note_link, source --
+# confirmed directly in app.entities.resolution's Project(...) construction
 # that NONE of these are ever set, and (unlike the five above) none was named
 # in the product-gap ask as needing a write mechanism -- deferred, not removed.
 PROJECTS_COLUMN_ORDER: tuple[str, ...] = (
-    "project", "entity", "status", "owner", "health", "next_milestone", "due",
-    "org_id", "goal_pillar", "person_ids", "id",
+    "id", "project", "entity", "org_id", "goal_pillar", "person_ids",
 )
 
 # `description` hidden: confirmed never set at creation
@@ -435,6 +437,19 @@ PERSONAL_ITEMS_COLUMN_ORDER: tuple[str, ...] = (
 )
 
 
+# Per-field display-label overrides (header text only -- never changes the
+# underlying dict key list_X() returns, never touches MongoDB). Only
+# collections/fields with an explicit override need an entry here; every
+# other column falls back to Streamlit's own default header rendering.
+COLUMN_LABELS: dict[str, dict[str, str]] = {
+    "projects": {
+        "project": "Project",
+        "entity": "Company Name",
+        "goal_pillar": "Goal_pillar",
+    },
+}
+
+
 def field_help(collection: str, field: str) -> str:
     """The tooltip text for one field, or an explicit "undocumented" notice --
     never a guessed/invented description. Callers pass this straight into a
@@ -447,13 +462,16 @@ def field_help(collection: str, field: str) -> str:
 
 def column_config_for(collection: str) -> dict[str, "st.column_config.Column"]:
     """Builds a `column_config` dict for `st.dataframe(..., column_config=...)`.
-    Only sets `help` -- column order, labels, formatting, sorting, and the
-    download/search toolbar are all left exactly as Streamlit's defaults
-    already render them.
+    Sets `help` for every documented field, plus `label` for any field with an
+    explicit override in COLUMN_LABELS -- a header-text-only change, never the
+    underlying data key. Column order, formatting, sorting, and the download/
+    search toolbar are all left exactly as Streamlit's defaults already render
+    them.
     """
     import streamlit as st  # local import: keeps this module importable/testable without Streamlit installed
 
+    labels = COLUMN_LABELS.get(collection, {})
     return {
-        field: st.column_config.Column(help=description)
+        field: st.column_config.Column(label=labels.get(field), help=description)
         for field, description in COLUMN_DESCRIPTIONS.get(collection, {}).items()
     }
