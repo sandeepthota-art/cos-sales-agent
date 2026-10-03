@@ -213,7 +213,7 @@ def _render_email_lookup_box(db) -> None:
     else:
         st.caption("No summary yet -- ask Claude to summarize this email.")
 
-    with st.expander("Full email body"):
+    with st.expander("Full email body (original, unsummarized text)"):
         st.text(email.get("body") or "")
 
     entities = email.get("entities_referenced") or {}
