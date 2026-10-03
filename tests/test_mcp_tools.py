@@ -3,10 +3,21 @@ import pytest
 
 from app.config.settings import Settings
 from app.database.indexes import initialize_indexes
-from app.database.repositories import EmailRepository, OrganizationRepository, PersonRepository
+from app.database.repositories import (
+    CalendarActionRepository,
+    CommitmentRepository,
+    EmailRepository,
+    OrganizationRepository,
+    PersonRepository,
+)
 from app.email.models import parse_email
 from app.interfaces.llm_provider import LLMProvider
-from app.mcp.tools import list_processed_emails, preview_duplicate_person_candidates, process_email
+from app.mcp.tools import (
+    list_processed_emails,
+    merge_person_records,
+    preview_duplicate_person_candidates,
+    process_email,
+)
 from app.providers.calendar.mock import MockCalendarProvider
 from app.providers.llm.mock import MockLLMProvider
 
@@ -391,3 +402,87 @@ def test_preview_duplicate_person_candidates_is_empty_when_no_duplicates_exist(d
     result = preview_duplicate_person_candidates(db)
 
     assert result == {"candidate_count": 0, "candidates": []}
+
+
+# --- merge_person_records (direct, caller-confirmed merge -- no plan/approval gate) -----
+
+
+def test_merge_person_records_repoints_a_commitment_and_retires_the_duplicate(db):
+    _seed_duplicate_pair(db)
+    CommitmentRepository(db).upsert_by_key(
+        {"id": "CMT-1"},
+        {"id": "CMT-1", "what": "Send pricing", "person_id": "PER-390", "status": "open"},
+    )
+
+    result = merge_person_records(db, "PER-390", "PER-391", "Same person, confirmed from email signature")
+
+    assert result["status"] == "COMPLETED"
+    assert result["updated_counts"]["commitments"] == 1
+    commitment = CommitmentRepository(db).find_one({"id": "CMT-1"})
+    assert commitment["person_id"] == "PER-391"
+    duplicate = PersonRepository(db).find_one({"id": "PER-390"})
+    assert duplicate["status"] == "merged"
+    assert duplicate["merged_into"] == "PER-391"
+    assert duplicate["merge_reason"] == "Same person, confirmed from email signature"
+    assert duplicate["merged_at"]
+
+
+def test_merge_person_records_repoints_entities_referenced_on_emails(db):
+    _seed_duplicate_pair(db)
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {
+            "message_id": "EML-001", "subject": "Hi",
+            "entities_referenced": {"people": ["PER-390"], "projects": []},
+        },
+    )
+
+    result = merge_person_records(db, "PER-390", "PER-391", "Same person")
+
+    assert result["updated_counts"]["emails"] == 1
+    email = EmailRepository(db).find_one({"message_id": "EML-001"})
+    assert email["entities_referenced"]["people"] == ["PER-391"]
+
+
+def test_merge_person_records_raises_for_unknown_duplicate_id(db):
+    _seed_duplicate_pair(db)
+    with pytest.raises(ValueError, match="PER-999"):
+        merge_person_records(db, "PER-999", "PER-391", "reason")
+
+
+def test_merge_person_records_raises_for_unknown_canonical_id(db):
+    _seed_duplicate_pair(db)
+    with pytest.raises(ValueError, match="PER-999"):
+        merge_person_records(db, "PER-390", "PER-999", "reason")
+
+
+def test_merge_person_records_raises_when_ids_are_the_same(db):
+    _seed_duplicate_pair(db)
+    with pytest.raises(ValueError, match="must be different"):
+        merge_person_records(db, "PER-390", "PER-390", "reason")
+
+
+def test_merge_person_records_raises_when_duplicate_already_merged(db):
+    _seed_duplicate_pair(db)
+    merge_person_records(db, "PER-390", "PER-391", "first merge")
+
+    with pytest.raises(ValueError, match="already merged"):
+        merge_person_records(db, "PER-390", "PER-391", "second attempt")
+
+
+def test_merge_person_records_blocks_on_external_calendar_attendee_conflict(db):
+    _seed_duplicate_pair(db)
+    CalendarActionRepository(db).upsert_by_key(
+        {"thread_id": "thread_anchor", "meeting_fingerprint": "fp1"},
+        {
+            "thread_id": "thread_anchor", "meeting_fingerprint": "fp1", "person_id": "PER-390",
+            "org_id": None, "meeting_id": None, "event": {"attendees": ["external@customer.com"]},
+        },
+    )
+
+    result = merge_person_records(db, "PER-390", "PER-391", "reason")
+
+    assert result["status"] == "BLOCKED"
+    duplicate = PersonRepository(db).find_one({"id": "PER-390"})
+    assert duplicate["status"] == "active"
+    assert duplicate.get("merged_into") is None

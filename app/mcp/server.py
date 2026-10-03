@@ -502,6 +502,30 @@ def preview_duplicate_person_candidates() -> dict[str, Any]:
 
 
 @mcp.tool()
+def merge_person_records(duplicate_person_id: str, canonical_person_id: str, reason: str) -> dict[str, Any]:
+    """Merges one Person record into another -- use only when you (Claude, having
+    read the actual emails) are genuinely confident two Person records are the same
+    real person. preview_duplicate_person_candidates only catches matches with
+    similar email/org signals; it will NOT surface every real duplicate (e.g. two
+    records with no email at all, or the same person under two unrelated
+    addresses) -- this tool is for exactly that gap, based on your own judgment
+    rather than that classifier.
+
+    Repoints every downstream reference (threads, commitments, meetings,
+    follow_ups, projects, knowledge_items, reply_drafts, calendar_actions, and
+    emails' entities_referenced.people) from duplicate_person_id to
+    canonical_person_id, then marks duplicate_person_id merged (status="merged",
+    merged_into=canonical_person_id) -- it is never deleted, only retired.
+
+    Refuses (returns status="BLOCKED") if a calendar action tied to either person
+    already has external attendee data, rather than risk silently corrupting a
+    real calendar event. Raises ValueError if either id doesn't exist, they're the
+    same id, or duplicate_person_id is already merged into someone else.
+    """
+    return tools.merge_person_records(_get_db(), duplicate_person_id, canonical_person_id, reason)
+
+
+@mcp.tool()
 def ask_question(text: str, timezone: str | None = None) -> dict[str, Any]:
     """BRD gap-analysis FR-01: answer an executive-style natural-language question
     (e.g. "What meetings do I have today?", "What follow-ups are overdue?", "What

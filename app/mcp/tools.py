@@ -8,7 +8,7 @@ from app.analysis.schemas import EmailAnalysis
 from app.calendar.actions import build_calendar_action
 from app.calendar.detector import detect_meeting
 from app.config.settings import Settings
-from app.duplicate_consolidation import generate_merge_plan
+from app.duplicate_consolidation import _execute_one_mapping, generate_merge_plan
 from app.context.diff import diff_context
 from app.context.engine import apply_context_delta
 from app.context.models import ContextDelta, ThreadContext
@@ -1222,6 +1222,94 @@ def preview_duplicate_person_candidates(db: Database) -> dict[str, Any]:
             }
         )
     return {"candidate_count": len(candidates), "candidates": candidates}
+
+
+def merge_person_records(
+    db: Database, duplicate_person_id: str, canonical_person_id: str, reason: str
+) -> dict[str, Any]:
+    """Merges one Person record into another, for a caller (a human, or Claude having
+    read the actual email evidence) who has independently identified two Person
+    records as the same real person. Reuses app.duplicate_consolidation's vetted
+    single-mapping execution (_execute_one_mapping) exactly as-is -- same
+    calendar-safety gate (refuses the whole merge if a calendar action already has
+    external attendee data for either person), same collections repointed (threads,
+    commitments, meetings, follow_ups, projects, knowledge_items, reply_drafts,
+    calendar_actions), same `merged_into` lineage every other Person-merge path uses
+    (app.entities.lifecycle.is_person_merged).
+
+    Unlike that module's full Phase 18 workflow (generate_merge_plan -> human
+    review -> approved plan file -> execute_merge_plan), this tool executes one,
+    explicitly-named pair immediately -- no plan file, no separate approval step.
+    generate_merge_plan's classifier only catches candidates with matching
+    email/org signals; it does NOT catch every real duplicate (confirmed directly
+    against production data: two "Ashok" records with no email at all, and the same
+    real person under two unrelated email addresses, neither surfaced by
+    preview_duplicate_person_candidates). This tool exists to close exactly that
+    gap -- it trades generate_merge_plan's automatic review for the caller's own
+    judgment, so call it only when genuinely confident; there is no second check.
+
+    Also repoints emails.entities_referenced.people -- a real gap in
+    _execute_one_mapping itself (it never touches the emails collection at all),
+    left uncorrected there since it's only ever invoked through the slower,
+    reviewed plan path. Closed here because the dashboard's email lookup box
+    resolves people directly from this field, and a stale duplicate id there
+    would keep showing the retired record after a merge.
+
+    Raises ValueError if either id doesn't exist, if they're the same id, or if
+    duplicate_person_id is already merged into someone else -- never silently
+    re-merges or fabricates a person. Returns {status, updated_counts,
+    duplicate_person_id, canonical_person_id}; if the calendar-safety gate blocks
+    the merge, returns _execute_one_mapping's own {status: "BLOCKED", reason,
+    detail} unchanged and touches nothing.
+    """
+    person_repo = PersonRepository(db)
+    duplicate = person_repo.find_one({"id": duplicate_person_id})
+    canonical = person_repo.find_one({"id": canonical_person_id})
+    if duplicate is None:
+        raise ValueError(f"no person found for duplicate_person_id={duplicate_person_id!r}")
+    if canonical is None:
+        raise ValueError(f"no person found for canonical_person_id={canonical_person_id!r}")
+    if duplicate_person_id == canonical_person_id:
+        raise ValueError("duplicate_person_id and canonical_person_id must be different")
+    if duplicate.get("status") == "merged":
+        raise ValueError(
+            f"person_id={duplicate_person_id!r} is already merged into {duplicate.get('merged_into')!r}"
+        )
+
+    result = _execute_one_mapping(
+        db, {"duplicate_person_id": duplicate_person_id, "canonical_person_id": canonical_person_id}
+    )
+    if result["status"] != "COMPLETED":
+        return result
+
+    updated_counts = dict(result["updated_counts"])
+    email_repo = EmailRepository(db)
+    emails_updated = 0
+    for email in email_repo.find_many({"entities_referenced.people": duplicate_person_id}):
+        people = email.get("entities_referenced", {}).get("people", [])
+        new_people = list(dict.fromkeys(canonical_person_id if p == duplicate_person_id else p for p in people))
+        email_repo.upsert_by_key(
+            {"message_id": email["message_id"]},
+            {"entities_referenced": {**email["entities_referenced"], "people": new_people}},
+        )
+        emails_updated += 1
+    if emails_updated:
+        updated_counts["emails"] = emails_updated
+
+    person_repo.upsert_by_key(
+        {"id": duplicate_person_id},
+        {
+            "merge_reason": reason,
+            "merged_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return {
+        "status": "COMPLETED",
+        "updated_counts": updated_counts,
+        "duplicate_person_id": duplicate_person_id,
+        "canonical_person_id": canonical_person_id,
+    }
 
 
 def ask_question(db: Database, settings: Settings, text: str, timezone_name: str | None = None) -> dict[str, Any]:
