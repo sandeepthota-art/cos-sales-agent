@@ -38,13 +38,13 @@ def test_dry_run_writes_nothing(db, capsys):
     output = capsys.readouterr().out
     assert "DRY RUN" in output
     assert "Dry run only -- no write performed" in output
-    assert "Documents currently carrying aliases and/or source: 2" in output
+    assert "Documents currently carrying source: 2" in output
     for org_id in ("ORG-001", "ORG-002"):
         stored = db.organizations.find_one({"id": org_id})
         assert stored["source"] == "gmail"
 
 
-def test_no_op_when_nothing_has_the_legacy_fields(db, capsys):
+def test_no_op_when_nothing_has_the_legacy_field(db, capsys):
     db.organizations.insert_one({"id": "ORG-clean", "name": "s", "domain": "s.com"})
 
     exit_code = cleanup.main(["--uri", "mongodb://irrelevant", "--db", "cleanup_test", "--confirm"])
@@ -53,7 +53,7 @@ def test_no_op_when_nothing_has_the_legacy_fields(db, capsys):
     assert "Nothing to do" in capsys.readouterr().out
 
 
-def test_confirmed_run_unsets_only_aliases_and_source(db, capsys):
+def test_confirmed_run_unsets_only_source(db, capsys):
     db.organizations.insert_one(_org_doc("ORG-001"))
     db.organizations.insert_one(_org_doc("ORG-002"))
     db.organizations.insert_one({"id": "no-legacy-fields", "name": "s", "domain": "s.com"})
@@ -63,16 +63,14 @@ def test_confirmed_run_unsets_only_aliases_and_source(db, capsys):
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "Documents modified: 2" in output
-    assert "Documents remaining with aliases/source: 0" in output
+    assert "Documents remaining with source: 0" in output
     assert "Total organizations document count unchanged: True" in output
     assert "Failures: none" in output
 
     for org_id in ("ORG-001", "ORG-002"):
         stored = db.organizations.find_one({"id": org_id}, {"_id": 0})
-        assert "aliases" not in stored
         assert "source" not in stored
         expected = _org_doc(org_id)
-        del expected["aliases"]
         del expected["source"]
         assert stored == expected
 
@@ -102,7 +100,10 @@ def test_rerunning_after_cleanup_is_a_safe_no_op(db, capsys):
     assert "Nothing to do" in capsys.readouterr().out
 
 
-def test_name_and_domain_are_never_touched(db):
+def test_name_domain_and_aliases_are_never_touched(db):
+    # aliases is deliberately NOT removed -- it's read by
+    # app.query.entity_resolution's organization-name matching, unlike
+    # source which has no reader anywhere.
     db.organizations.insert_one(_org_doc("ORG-001"))
 
     cleanup.main(["--uri", "mongodb://irrelevant", "--db", "cleanup_test", "--confirm"])
@@ -110,6 +111,7 @@ def test_name_and_domain_are_never_touched(db):
     stored = db.organizations.find_one({"id": "ORG-001"})
     assert stored["name"] == "Acme Corp"
     assert stored["domain"] == "acme.com"
+    assert stored["aliases"] == []
 
 
 def test_emails_and_threads_collections_are_never_touched(db):

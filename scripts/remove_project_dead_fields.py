@@ -13,6 +13,25 @@ feature to build, so they are dead schema weight, not a missing mechanism.
 See app/ui/column_descriptions.py's PROJECTS_COLUMN_ORDER comment, which
 already reasoned through this distinction field-by-field.
 
+A full-codebase re-check (not just the construction/write code) found two of
+these seven ARE read, with safe fallbacks, so the picture is "never written,
+read with a harmless default" rather than "never referenced at all":
+  - `source`: `app.knowledge_projector.render_project` reads
+    `project.get('source', 'unknown')` for a "Provenance" line in generated
+    knowledge markdown (served through the `lookup_knowledge` MCP tool).
+    Since `source` is only ever `"gmail"` today, removing it only changes
+    that one rendered line from "Source: gmail" to "Source: unknown" --
+    same zero-information value, no exception, no behavior change beyond
+    that cosmetic text.
+  - `collaborators`: `app.entities.context.get_person_context` reads it via
+    `_legacy_name_match(..., ["collaborators"])` as a last-resort fallback
+    when resolving a person's projects. `_legacy_name_match` uses
+    `doc.get(field)` (safe on a missing key) and `collaborators` is always
+    `[]` today, so this fallback already matches nothing via collaborators
+    -- removing the field changes nothing observable.
+`cluster`, `objective`, `target`, `last_movement`, `note_link` remain
+confirmed zero-reference fields with no caveat.
+
 None of these fields were removed from `app.entities.models.Project` yet --
 this script is prepared but intentionally not yet wired to a model change,
 per explicit instruction to implement/verify first and only clean up after

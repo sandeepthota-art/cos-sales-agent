@@ -44,12 +44,12 @@ def test_dry_run_writes_nothing(db, capsys):
     output = capsys.readouterr().out
     assert "DRY RUN" in output
     assert "Dry run only -- no write performed" in output
-    assert "Documents currently carrying escalation_level and/or surfaced: 2" in output
+    assert "Documents currently carrying surfaced: 2" in output
     stored = db.follow_ups.find_one({"id": "FUP-001"})
-    assert stored["escalation_level"] == 1
+    assert stored["surfaced"] is False
 
 
-def test_no_op_when_nothing_has_the_legacy_fields(db, capsys):
+def test_no_op_when_nothing_has_the_legacy_field(db, capsys):
     db.follow_ups.insert_one({"id": "FUP-clean", "commitment_id": "CMT-001", "status": "active"})
 
     exit_code = cleanup.main(["--uri", "mongodb://irrelevant", "--db", "cleanup_test", "--confirm"])
@@ -58,7 +58,7 @@ def test_no_op_when_nothing_has_the_legacy_fields(db, capsys):
     assert "Nothing to do" in capsys.readouterr().out
 
 
-def test_confirmed_run_unsets_only_escalation_level_and_surfaced(db, capsys):
+def test_confirmed_run_unsets_only_surfaced(db, capsys):
     db.follow_ups.insert_one(_follow_up_doc("FUP-001"))
     db.follow_ups.insert_one({"id": "no-legacy-fields", "commitment_id": "CMT-001", "status": "active"})
 
@@ -67,15 +67,13 @@ def test_confirmed_run_unsets_only_escalation_level_and_surfaced(db, capsys):
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "Documents modified: 1" in output
-    assert "Documents remaining with escalation_level/surfaced: 0" in output
+    assert "Documents remaining with surfaced: 0" in output
     assert "Total follow_ups document count unchanged: True" in output
     assert "Failures: none" in output
 
     stored = db.follow_ups.find_one({"id": "FUP-001"}, {"_id": 0})
-    assert "escalation_level" not in stored
     assert "surfaced" not in stored
     expected = _follow_up_doc("FUP-001")
-    del expected["escalation_level"]
     del expected["surfaced"]
     assert stored == expected
 
@@ -105,12 +103,18 @@ def test_rerunning_after_cleanup_is_a_safe_no_op(db, capsys):
     assert "Nothing to do" in capsys.readouterr().out
 
 
-def test_status_audience_and_windows_are_never_touched(db):
+def test_escalation_level_status_audience_and_windows_are_never_touched(db):
+    # escalation_level is deliberately NOT removed -- it's read by
+    # app.entities.person_context (direct bracket access, KeyError risk),
+    # app.mcp.tools.list_follow_ups (a real filter parameter), and
+    # app.query.commitments (a dedicated filter function). Unlike
+    # `surfaced`, it is live, shipped functionality.
     db.follow_ups.insert_one(_follow_up_doc("FUP-001"))
 
     cleanup.main(["--uri", "mongodb://irrelevant", "--db", "cleanup_test", "--confirm"])
 
     stored = db.follow_ups.find_one({"id": "FUP-001"})
+    assert stored["escalation_level"] == 1
     assert stored["status"] == "active"
     assert stored["audience"] == "internal"
     assert stored["follow_up_earliest_at"] == "2026-02-01T00:00:00Z"
