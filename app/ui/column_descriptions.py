@@ -441,9 +441,13 @@ FOLLOW_UPS_COLUMN_ORDER: tuple[str, ...] = (
 # -- never a stored MongoDB field, recomputed fresh on every read.
 # Hidden: minutes_record, next_meeting_date, agenda_target, agenda_written --
 # confirmed never set by app.entities.resolution's Meeting(...) construction.
+# id/person_ids/org_id/thread_id lead (left) per explicit request, overriding
+# this file's usual readable-left/technical-right default for this
+# collection. `actionable` is hidden from this view only -- it remains a
+# real, actively-used MongoDB field (app.mcp.tools.list_meetings filter).
 MEETINGS_COLUMN_ORDER: tuple[str, ...] = (
-    "title", "date", "attendees", "actionable", "actions_raised", "project_or_pillar",
-    "person_ids", "org_id", "thread_id", "id",
+    "id", "person_ids", "org_id", "thread_id",
+    "title", "date", "attendees", "actions_raised", "project_or_pillar",
 )
 
 PERSONAL_ITEMS_COLUMN_ORDER: tuple[str, ...] = (
@@ -474,6 +478,10 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
     "follow_ups": {
         "what": "Commitment",
         "id": "followup_id",
+    },
+    "meetings": {
+        "id": "meeting_id",
+        "project_or_pillar": "Goal_pillar",
     },
 }
 
