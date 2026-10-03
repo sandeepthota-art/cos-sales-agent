@@ -460,6 +460,9 @@ PERSONAL_ITEMS_COLUMN_ORDER: tuple[str, ...] = (
 # collections/fields with an explicit override need an entry here; every
 # other column falls back to Streamlit's own default header rendering.
 COLUMN_LABELS: dict[str, dict[str, str]] = {
+    "emails": {
+        "from": "Sender email",
+    },
     "projects": {
         "project": "Project",
         "entity": "Company Name",

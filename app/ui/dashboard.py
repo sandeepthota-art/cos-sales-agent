@@ -95,8 +95,18 @@ def _render_dashboard_tab(db) -> None:
 
 
 def _render_emails_tab(db) -> None:
+    # Display-only flattening: `from` is a real {name, email} dict on every
+    # Email document (frozen schema, untouched) -- the FastAPI/React path
+    # still receives that full dict unchanged (app.ui.data.list_emails is not
+    # touched here). This dashboard table alone shows just the plain email
+    # address instead of the dict's raw repr, per explicit request.
+    emails = list_emails(db)
+    for email in emails:
+        sender = email.get("from") or {}
+        email["from"] = sender.get("email") or sender.get("name")
+
     st.dataframe(
-        list_emails(db),
+        emails,
         column_config=column_config_for("emails"),
         column_order=EMAIL_COLUMN_ORDER,
     )
