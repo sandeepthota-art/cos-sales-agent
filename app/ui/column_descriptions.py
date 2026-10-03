@@ -405,10 +405,14 @@ OPPORTUNITIES_COLUMN_ORDER: tuple[str, ...] = (
     "created_at", "updated_at",
 )
 
+# thread_id/source_record/id/goal_pillar lead (left) per explicit request,
+# overriding this file's usual readable-left/technical-right default for this
+# collection specifically. owed_to/made_on/date_type/importance are hidden
+# from this view only -- all four remain real, untouched MongoDB fields.
 COMMITMENTS_COLUMN_ORDER: tuple[str, ...] = (
-    "what", "class", "status", "owed_by", "owed_to", "person_id", "org_id",
-    "committed_date", "date_type", "made_on", "importance",
-    "project_id", "thread_id", "source_record", "id", "goal_pillar",
+    "thread_id", "source_record", "id", "goal_pillar",
+    "what", "class", "status", "owed_by", "person_id", "org_id",
+    "committed_date", "project_id",
 )
 
 # "Follow-up/Commitment product gap" closed at the UI layer only: `what`,
@@ -456,6 +460,11 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
         "name": "Deal name",
         "entity": "Company name",
         "expected_close_date": "Expected close date",
+    },
+    "commitments": {
+        "what": "Commitment",
+        "class": "Class",
+        "status": "Status",
     },
 }
 
