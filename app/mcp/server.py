@@ -408,6 +408,18 @@ def get_reply_draft(reply_id: str) -> dict[str, Any] | None:
 
 
 @mcp.tool()
+def set_reply_draft_gmail_id(reply_id: str, gmail_draft_id: str) -> dict[str, Any]:
+    """Records the real Gmail draft id a human (via Claude's own Gmail connector)
+    already created for this reply draft -- see
+    skills/sync-reply-drafts-to-gmail/SKILL.md. Never creates, edits, or sends
+    anything in Gmail itself; only persists an id that already exists, so a later
+    sync pass can tell this reply draft already has a matching Gmail draft and skip
+    it. Raises if reply_id doesn't exist.
+    """
+    return tools.set_reply_draft_gmail_id(_get_db(), reply_id, gmail_draft_id)
+
+
+@mcp.tool()
 def get_project_summary(project_id: str) -> dict[str, Any] | None:
     """Read-only cross-collection summary for one project (PRJ-xxx): the project
     itself, plus related commitments/follow-ups found via real stored references.

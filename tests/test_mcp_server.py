@@ -195,6 +195,12 @@ def test_ask_question_tool_is_registered():
     assert "ask_question" in names
 
 
+def test_set_reply_draft_gmail_id_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "set_reply_draft_gmail_id" in names
+
+
 def test_whats_on_my_table_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]

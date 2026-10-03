@@ -301,25 +301,26 @@ score and a full edit history, deduplicated per thread.
 **Purpose:** One draft reply per email that warranted one, plus its approval-workflow
 state.
 
-**Dashboard visibility:** only `draft.subject` and `draft.body` are shown as values
-on the Reply Approval tab; `status` is used only to filter which drafts appear there
-(only `"awaiting_approval"` drafts are shown), not displayed as a column. Every other
-field (`reply_id`, `thread_id`, `source_email_id`, `person_id`, `org_id`,
-`created_by`, `created_at`, `approved_by`, `sent_at`) is Backend-only.
+**Dashboard visibility:** this collection has no tab in the Streamlit dashboard
+(Reply Approval was removed per explicit request — see app/ui/dashboard.py's module
+docstring). It remains reachable via the React ReplyApprovalsPage (which shows
+`draft.subject`/`draft.body` plus a resolved recipient/org/thread-id context line)
+and the reply-draft MCP tools. Every field is effectively backend/API-only now.
 
 | Field | Type | Required | Description | Populated By | Example |
 |---|---|---|---|---|---|
 | `reply_id` | string | Yes | `reply_{message_id}` | System-generated | `"reply_18f2a9b1c3d4e5f6"` |
 | `thread_id` | string | Yes | Thread this reply belongs to | Deterministic pipeline | `"thread_18f2a9b1c3d4e5f6"` |
 | `source_email_id` | string | Yes | The email being replied to (the upsert key) | Deterministic pipeline | `"18f2a9b1c3d4e5f6"` |
-| `status` | string, one of: `"no_reply_required"`, `"awaiting_approval"`, `"approved"`, `"edited"`, `"rejected"`, `"cancelled"`, `"simulated_sent"`, `"sent"` | Yes | Approval-workflow state. **In this codebase's actual code paths, only `"awaiting_approval"` (on creation), `"approved"`, `"edited"` (→ back to `"awaiting_approval"`), `"rejected"`, and `"simulated_sent"` are ever produced** — `"no_reply_required"`, `"cancelled"`, and a literal `"sent"` (as opposed to `"simulated_sent"`) are declared but not set anywhere in this repository | Deterministic pipeline (create); human/MCP update (Approve/Reject/Edit, via the dashboard buttons — the only human-facing UI for this) | `"awaiting_approval"` |
+| `status` | string, one of: `"no_reply_required"`, `"awaiting_approval"`, `"approved"`, `"edited"`, `"rejected"`, `"cancelled"`, `"simulated_sent"`, `"sent"` | Yes | Approval-workflow state. **In this codebase's actual code paths, only `"awaiting_approval"` (on creation), `"approved"`, `"edited"` (→ back to `"awaiting_approval"`), `"rejected"`, and `"simulated_sent"` are ever produced** — `"no_reply_required"`, `"cancelled"`, and a literal `"sent"` (as opposed to `"simulated_sent"`) are declared but not set anywhere in this repository | Deterministic pipeline (create); human/MCP update (Approve/Reject/Edit, via the React app's PATCH routes or MCP tools) | `"awaiting_approval"` |
 | `draft` | object `{subject, body}` | Yes | The reply text itself | Claude Desktop analysis / internal LLM call | `{"subject": "Re: Pricing for Q3", "body": "Hi Ashok, ..."}` |
 | `person_id` | string \| null | No | The sender's canonical Person (via `resolve_canonical_person_for_email`, lifecycle-aware — never a raw email lookup) | Entity resolution | `"PER-004"` |
 | `org_id` | string \| null | No | That person's Organization | Entity resolution | `"ORG-002"` |
 | `created_by` | string | No (defaults to `"sales_agent"`) | Not observed to be set to anything else | System-generated | `"sales_agent"` |
 | `created_at` | string (ISO datetime) \| null | No | When the draft was created. Optional because a draft persisted before this field existed has none in MongoDB at all, and it is never backfilled | System-generated | `"2026-03-04T14:02:20Z"` |
-| `approved_by` | string \| null | No | Set to `"ui_user"` by the dashboard's Approve button; otherwise null | Human/MCP update | `"ui_user"` |
-| `sent_at` | string (ISO datetime) \| null | No | Set when `simulate_send` runs (dashboard Approve button). **This is a simulated send — it never calls a real email-sending API; see the dashboard reference for detail** | System-generated | `"2026-03-04T15:00:00Z"` |
+| `approved_by` | string \| null | No | Set to `"api_user"` by the FastAPI approve route; otherwise null | Human/MCP update | `"api_user"` |
+| `sent_at` | string (ISO datetime) \| null | No | Set when `simulate_send` runs. **This is a simulated send — it never calls a real email-sending API; see `app/replies/approval.py`'s own docstring for detail** | System-generated | `"2026-03-04T15:00:00Z"` |
+| `gmail_draft_id` | string \| null | No | The real Gmail draft id, once `skills/sync-reply-drafts-to-gmail/SKILL.md` has mirrored this draft into the CTO's actual Gmail account via Claude's Gmail connector. Never set by any code path in this repository — this project has no backend Gmail API integration of its own | Human/Claude (via `set_reply_draft_gmail_id`) | `"r-1234567890abcdef"` |
 
 ### Relationships
 

@@ -254,6 +254,30 @@ def test_get_thread_returns_existing_thread_with_messages_ordered(db):
     assert result["messages"][0]["body"] == "Let's talk renewal terms next week."
 
 
+def test_get_thread_exposes_source_message_id_for_gmail_threading(db):
+    # Needed by skills/sync-reply-drafts-to-gmail/SKILL.md to create a properly
+    # threaded Gmail draft (Gmail's replyToMessageId) -- distinct from message_id,
+    # the canonical EML-nnn.
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "m1"},
+        _email("m1", thread_id="t1", source_message_id="18f123456789abcd"),
+    )
+    ThreadRepository(db).upsert_by_key({"thread_id": "t1"}, _thread("t1", ["m1"]))
+
+    result = tools.get_thread(db, "t1")
+
+    assert result["messages"][0]["source_message_id"] == "18f123456789abcd"
+
+
+def test_get_thread_source_message_id_is_none_when_never_set(db):
+    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1", thread_id="t1"))
+    ThreadRepository(db).upsert_by_key({"thread_id": "t1"}, _thread("t1", ["m1"]))
+
+    result = tools.get_thread(db, "t1")
+
+    assert result["messages"][0]["source_message_id"] is None
+
+
 def test_get_thread_includes_latest_context_snapshot_when_present(db):
     EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1", thread_id="t1"))
     ThreadRepository(db).upsert_by_key({"thread_id": "t1"}, _thread("t1", ["m1"]))
@@ -941,6 +965,32 @@ def test_get_reply_draft_returns_none_for_nonexistent_draft(db):
     result = tools.get_reply_draft(db, "reply_999")
 
     assert result is None
+
+
+def test_set_reply_draft_gmail_id_records_the_id_and_preserves_other_fields(db):
+    ReplyDraftRepository(db).upsert_by_key({"reply_id": "reply_001"}, _reply_draft("reply_001"))
+
+    result = tools.set_reply_draft_gmail_id(db, "reply_001", "gmail-draft-abc123")
+
+    assert result["gmail_draft_id"] == "gmail-draft-abc123"
+    assert result["reply_id"] == "reply_001"
+    assert result["status"] == "awaiting_approval"
+    assert result["draft"]["body"] == "Thanks for the note."
+
+
+def test_set_reply_draft_gmail_id_raises_for_an_unknown_reply_id(db):
+    with pytest.raises(ValueError, match="reply_999"):
+        tools.set_reply_draft_gmail_id(db, "reply_999", "gmail-draft-abc123")
+
+
+def test_set_reply_draft_gmail_id_does_not_touch_other_drafts(db):
+    ReplyDraftRepository(db).upsert_by_key({"reply_id": "reply_001"}, _reply_draft("reply_001"))
+    ReplyDraftRepository(db).upsert_by_key({"reply_id": "reply_002"}, _reply_draft("reply_002"))
+
+    tools.set_reply_draft_gmail_id(db, "reply_001", "gmail-draft-abc123")
+
+    untouched = tools.get_reply_draft(db, "reply_002")
+    assert untouched.get("gmail_draft_id") is None
 
 
 # --- Cross-cutting guarantees ---

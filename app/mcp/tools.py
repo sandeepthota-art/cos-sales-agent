@@ -637,6 +637,12 @@ def get_thread(db: Database, thread_id: str) -> dict[str, Any] | None:
     already-recorded Thread Events audit trail (app.entities.thread_events.
     get_thread_event_trail) -- integrated into this existing thread-retrieval surface
     rather than a new, duplicate MCP tool; [] for a thread with no recorded events.
+
+    Each message's `source_message_id` is the original, permanent Gmail/provider
+    message id (distinct from `message_id`, the canonical EML-nnn) -- needed by
+    skills/sync-reply-drafts-to-gmail/SKILL.md to create a properly-threaded Gmail
+    draft reply (Gmail's `replyToMessageId`). None for a message whose source never
+    supplied one -- never fabricated.
     """
     thread = ThreadRepository(db).find_one({"thread_id": thread_id})
     if thread is None:
@@ -657,6 +663,7 @@ def get_thread(db: Database, thread_id: str) -> dict[str, Any] | None:
         "messages": [
             {
                 "message_id": e["message_id"],
+                "source_message_id": e.get("source_message_id"),
                 "from": e["from"],
                 "to": e["to"],
                 "cc": e["cc"],
@@ -972,6 +979,30 @@ def get_reply_draft(db: Database, reply_id: str) -> dict[str, Any] | None:
     creates a draft.
     """
     return ReplyDraftRepository(db).find_one({"reply_id": reply_id})
+
+
+def set_reply_draft_gmail_id(db: Database, reply_id: str, gmail_draft_id: str) -> dict[str, Any]:
+    """Records the real Gmail draft id a human (via Claude's own Gmail connector --
+    see skills/sync-reply-drafts-to-gmail/SKILL.md) already created for this reply
+    draft, so a later sync pass knows not to create a duplicate Gmail draft for the
+    same reply.
+
+    This tool never creates, edits, or sends anything in Gmail itself -- this
+    codebase has no real email-sending/draft-creation integration of its own (see
+    app.replies.approval.simulate_send's own docstring). It only persists the id a
+    Gmail draft already has, exactly the same "record what already happened
+    elsewhere" role app.mcp.tools.set_reply_draft_gmail_id's sibling tools play for
+    other externally-performed actions.
+
+    Raises ValueError if reply_id doesn't exist -- never silently creates one.
+    """
+    repo = ReplyDraftRepository(db)
+    existing = repo.find_one({"reply_id": reply_id})
+    if existing is None:
+        raise ValueError(f"no reply draft found for reply_id={reply_id!r}")
+
+    repo.upsert_by_key({"reply_id": reply_id}, {**existing, "gmail_draft_id": gmail_draft_id})
+    return repo.find_one({"reply_id": reply_id})
 
 
 def get_project_summary(db: Database, project_id: str) -> dict[str, Any] | None:

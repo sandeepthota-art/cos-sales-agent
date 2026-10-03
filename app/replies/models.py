@@ -41,3 +41,11 @@ class ReplyDraft(BaseModel):
     created_at: datetime | None = None
     approved_by: str | None = None
     sent_at: datetime | None = None
+    # Set only by app.mcp.tools.set_reply_draft_gmail_id, after a human (via Claude's
+    # own Gmail connector, following the same skill-driven pattern as every other
+    # Gmail interaction in this codebase) actually creates a matching draft in the
+    # CTO's real Gmail mailbox. This project has no real email-sending/draft-creation
+    # integration of its own -- nothing here ever calls the Gmail API directly. None
+    # until that sync has happened; used only to avoid creating a duplicate Gmail
+    # draft on a repeated sync pass, never to gate anything else.
+    gmail_draft_id: str | None = None
