@@ -1020,6 +1020,28 @@ def set_reply_draft_gmail_id(db: Database, reply_id: str, gmail_draft_id: str) -
     return repo.find_one({"reply_id": reply_id})
 
 
+def set_reply_withheld_reason(db: Database, message_id: str, reason: str) -> dict[str, Any]:
+    """Records why a message that was classified as needing a reply did not get
+    a reply draft -- e.g. the request asks for sensitive data (bank details,
+    credentials), the thread shows phishing/spoofing red flags, or a human/Claude
+    judgment call decided an automated draft wasn't appropriate. Persisted directly
+    on the Email document as `reply_withheld_reason`, so the dashboard's email
+    lookup box and anyone querying `emails` can see the reason instead of an
+    unexplained gap between label_applied="Needs reply" and no reply_drafts record.
+
+    This tool never creates or edits a reply draft itself, and never overwrites
+    label_applied, processing_status, or entities_referenced -- purely additive.
+    Raises ValueError if message_id doesn't exist, never silently fabricates one.
+    """
+    email_repo = EmailRepository(db)
+    stored = email_repo.find_one({"message_id": message_id})
+    if stored is None:
+        raise ValueError(f"no email found for message_id={message_id!r}")
+
+    email_repo.upsert_by_key({"message_id": message_id}, {"reply_withheld_reason": reason})
+    return email_repo.find_one({"message_id": message_id})
+
+
 def get_project_summary(db: Database, project_id: str) -> dict[str, Any] | None:
     """Read-only cross-collection summary, assembled with plain Mongo queries in
     application code -- no LLM involved. Returns None if the project doesn't exist.

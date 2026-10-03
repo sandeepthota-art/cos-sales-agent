@@ -121,6 +121,56 @@ def test_dashboard_email_lookup_box_resolves_related_entities(monkeypatch):
     assert len(project_frames) >= 1
 
 
+def test_dashboard_email_lookup_box_shows_reply_withheld_reason_when_no_draft_exists(monkeypatch):
+    # An email labeled "Needs reply" with no reply_drafts record but a
+    # reply_withheld_reason set (e.g. a sensitive-data request, withheld on
+    # purpose) must show that reason -- never silently look like an
+    # unexplained gap.
+    fake_client = mongomock.MongoClient()
+    db = fake_client["cos_sales_test"]
+    initialize_indexes(db)
+    db.emails.insert_one(
+        {
+            "message_id": "EML-018",
+            "thread_id": "THR-018",
+            "source_message_id": "src-18",
+            "source_thread_id": "src-thread-18",
+            "from": {"name": "Mohammed Fahad", "email": "fahad.mohammed@databeat.io"},
+            "to": [{"name": None, "email": "sandeep.thota@databeat.io"}],
+            "cc": [],
+            "subject": "DOCUMENTS",
+            "body": "Please send me your bank account details.",
+            "timestamp": "2026-09-13T10:00:00Z",
+            "in_reply_to": None,
+            "references": [],
+            "attachments": [],
+            "labels": [],
+            "processing_status": {"stage": "COMPLETED", "error": None, "failed_stage": None,
+                                   "updated_at": "2026-09-13T10:05:00+00:00"},
+            "entities_referenced": {"people": [], "projects": [], "commitments": [],
+                                     "follow_ups": [], "meetings": [], "personal": [], "opportunities": []},
+            "goal_pillar": "",
+            "label_applied": "Needs reply",
+            "reply_withheld_reason": "Requests bank account details -- withheld, sensitive data.",
+        }
+    )
+
+    _set_common_env(monkeypatch)
+    _patch_db(monkeypatch, fake_client)
+
+    at = AppTest.from_file(str(DASHBOARD_SCRIPT))
+    at.run()
+    assert not at.exception
+
+    select_boxes = [sb for sb in at.selectbox if sb.key == "email_lookup_select"]
+    target = next(o for o in select_boxes[0].options if "EML-018" in o)
+    select_boxes[0].set_value(target).run()
+
+    assert not at.exception
+    warnings = [w.value for w in at.warning]
+    assert any("bank account details" in w for w in warnings)
+
+
 def test_dashboard_shows_opportunities_tab_with_real_data(monkeypatch):
     fake_client = mongomock.MongoClient()
     db = fake_client["cos_sales_test"]

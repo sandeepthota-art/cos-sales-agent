@@ -32,7 +32,8 @@ still handles exactly one named message), and it is not `cos-new-email-check`
 - **Never call `process_email`.** Always use the granular tools, in this
   exact order, per message: `ingest_email` -> (you read and classify the
   message) -> `persist_email_analysis` -> `persist_context_delta` ->
-  (`create_reply_draft` if warranted) -> `mark_email_completed`.
+  (`create_reply_draft` if warranted, or `set_reply_withheld_reason` if a
+  reply is needed but deliberately not drafted) -> `mark_email_completed`.
 - Process exactly one thread per run. If the user's request could match more
   than one thread, ask which one they mean rather than guessing.
 - Within that thread, process only messages that are not already
@@ -97,14 +98,19 @@ still handles exactly one named message), and it is not `cos-new-email-check`
         this message, then call `persist_email_analysis`.
       - Produce a bounded `ContextDelta` (only what this message changes)
         and call `persist_context_delta`.
-   3. If the message genuinely needs a reply, first check for
-      phishing/spoofing red flags across the whole thread so far (a sender
-      domain mismatch, implausible contact details, unfilled template
-      placeholders like `[Target Date]` still present anywhere in the
-      thread) -- if any are present, never draft a committal reply; either
-      skip the draft or keep it strictly non-committal, and flag the
-      suspicion in the final report. Otherwise draft a reasonable reply and
-      call `create_reply_draft`. Skip this step if no reply is warranted.
+   3. If the message genuinely needs a reply, first check whether drafting
+      one is actually appropriate: phishing/spoofing red flags across the
+      whole thread so far (a sender domain mismatch, implausible contact
+      details, unfilled template placeholders like `[Target Date]` still
+      present anywhere in the thread), a request for sensitive data (bank
+      details, credentials, passwords, government IDs), or any other reason
+      a drafted reply would be unsafe or premature. If any apply, do not
+      draft a committal reply -- either skip the draft or keep it strictly
+      non-committal, call `set_reply_withheld_reason` with the message_id
+      and a concise, specific reason, and flag the suspicion in the final
+      report. Otherwise draft a reasonable reply and call
+      `create_reply_draft`. Skip this entire step if no reply is warranted
+      at all.
       - **Immediately after `create_reply_draft` succeeds**, also create a
         matching draft directly in the user's own Gmail mailbox: call the
         Gmail connector's `create_draft` tool with the exact same subject
@@ -126,6 +132,7 @@ Skipped (already completed): <message ids, or "None">
 Failed: <message id + error, if the loop stopped early -- "None" otherwise>
 Remaining unprocessed in this thread (if stopped early): <count, or "None">
 Gmail drafts created (awaiting your review/send): <message ids, or "None">
+Needs reply but withheld (message id + reason, or "None"):
 ```
 
 Report only what the tools' own results actually show. Never add a person,

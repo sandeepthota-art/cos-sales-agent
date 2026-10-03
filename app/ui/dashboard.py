@@ -308,6 +308,9 @@ def _render_email_lookup_box(db) -> None:
         st.caption(f"Status: {draft.get('status')} · {gmail_status}")
         st.markdown(f"**{draft['draft']['subject']}**")
         st.text(draft["draft"]["body"])
+    elif email.get("reply_withheld_reason"):
+        st.markdown("**Reply Draft**")
+        st.warning(f"No draft was created. Reason: {email['reply_withheld_reason']}")
 
     calendar_action = CalendarActionRepository(db).find_one({"thread_id": email["thread_id"]})
     if calendar_action:

@@ -25,7 +25,8 @@ explicitly asks not to use "the API"/`process_email`.
   job. Never call `process_email` -- always the granular tools, in this
   exact order: `ingest_email` -> (you read and classify the message) ->
   `persist_email_analysis` -> `persist_context_delta` -> (`create_reply_draft`
-  if warranted) -> `mark_email_completed`.
+  if warranted, or `set_reply_withheld_reason` if a reply is needed but
+  deliberately not drafted) -> `mark_email_completed`.
 - Use Gmail to *find* the one email the user means and to *read* it, and —
   only immediately after `create_reply_draft` succeeds — to *create a
   draft* via the Gmail connector's `create_draft` tool. Never actually
@@ -78,13 +79,18 @@ explicitly asks not to use "the API"/`process_email`.
      this message, then call `persist_email_analysis`.
    - Produce a bounded `ContextDelta` (only what this message changes)
      and call `persist_context_delta`.
-4. **If the message genuinely needs a reply**, first check for
-   phishing/spoofing red flags across the thread so far (a sender domain
-   mismatch, implausible contact details, unfilled template placeholders
-   still present) -- if any are present, never draft a committal reply;
-   either skip the draft or keep it strictly non-committal, and flag the
-   suspicion in the final report. Otherwise draft a reasonable reply and
-   call `create_reply_draft`. Skip this step if no reply is warranted.
+4. **If the message genuinely needs a reply**, first check whether drafting
+   one is actually appropriate: phishing/spoofing red flags across the
+   thread so far (a sender domain mismatch, implausible contact details,
+   unfilled template placeholders still present), a request for sensitive
+   data (bank details, credentials, passwords, government IDs), or any
+   other reason a drafted reply would be unsafe or premature. If any apply,
+   never draft a committal reply -- either skip the draft or keep it
+   strictly non-committal, call `set_reply_withheld_reason` with the
+   message_id and a concise, specific reason, and flag the suspicion in the
+   final report. Otherwise draft a reasonable reply and call
+   `create_reply_draft`. Skip this entire step if no reply is warranted at
+   all.
    - **Immediately after `create_reply_draft` succeeds**, also create a
      matching draft directly in the user's own Gmail mailbox via the
      Gmail connector's `create_draft` tool, using the exact same subject
@@ -96,9 +102,9 @@ explicitly asks not to use "the API"/`process_email`.
 6. **Report back in plain English** -- who the email is from, what it's
    about, the label/classification given, what was created (people,
    commitments, follow-ups, a meeting, a project), whether a reply draft
-   was generated and a matching Gmail draft created, and whether it
-   showed any phishing/spoofing red flags. Do not dump raw JSON/tool
-   output.
+   was generated and a matching Gmail draft created, whether a reply was
+   needed but withheld (and why), and whether it showed any
+   phishing/spoofing red flags. Do not dump raw JSON/tool output.
 
 ## Relationship to the other email skills
 

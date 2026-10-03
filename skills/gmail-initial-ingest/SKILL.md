@@ -44,7 +44,8 @@ confirm:
   for this pipeline job. Never call `process_email` -- always the granular
   tools, in this exact order, per message: `ingest_email` -> (you read and
   classify the message) -> `persist_email_analysis` -> `persist_context_delta`
-  -> (`create_reply_draft` if warranted) -> `mark_email_completed`.
+  -> (`create_reply_draft` if warranted, or `set_reply_withheld_reason` if a
+  reply is needed but deliberately not drafted) -> `mark_email_completed`.
 - **Process exactly the requested count** (default 50 if the user just
   says "my last emails" and doesn't restate a number) of the most
   recent messages in the inbox -- never more, never fewer. If Gmail
@@ -109,13 +110,22 @@ confirm:
         this message, then call `persist_email_analysis`.
       - Produce a bounded `ContextDelta` (only what this message changes)
         and call `persist_context_delta`.
-   3. If the message genuinely needs a reply, first check for
-      phishing/spoofing red flags (sender domain mismatch, implausible
-      contact details, unfilled template placeholders) -- if present,
-      never draft a committal reply; skip the draft or keep it strictly
-      non-committal, and flag the suspicion in the final report.
-      Otherwise draft a reasonable reply and call `create_reply_draft`.
-      Skip this step if no reply is warranted.
+   3. If the message genuinely needs a reply, first check whether drafting
+      one is actually appropriate: phishing/spoofing red flags (sender
+      domain mismatch, implausible contact details, unfilled template
+      placeholders), a request for sensitive data (bank details,
+      credentials, passwords, government IDs), or any other reason a
+      drafted reply would be unsafe or premature. If any of those apply,
+      do not draft a committal reply -- skip the draft (or keep it strictly
+      non-committal) and call `set_reply_withheld_reason` with the specific
+      message_id and a concise, one-sentence reason (e.g. "Requests bank
+      account details -- withheld, sensitive data." or "Sender domain
+      doesn't match claimed identity -- withheld, suspected phishing.").
+      Also flag the suspicion in the final report. Otherwise draft a
+      reasonable reply and call `create_reply_draft`. Skip this entire step
+      if no reply is warranted at all (e.g. the label itself shouldn't have
+      been "Needs reply" -- re-check your classification instead of
+      withholding a reply for a message that never needed one).
       - **Immediately after `create_reply_draft` succeeds**, also create a
         matching draft directly in the user's own Gmail mailbox via the
         Gmail connector's `create_draft` tool, using the exact same
@@ -140,6 +150,7 @@ Processed (newly completed): <message ids, one-line summary each>
 Skipped (already completed): <message ids, or "None">
 Failed: <message id + error, for each failure, or "None">
 Gmail drafts created (awaiting your review/send): <message ids, or "None">
+Needs reply but withheld (message id + reason, or "None"):
 ```
 
 Report only what the tools' own results actually show. Never add a

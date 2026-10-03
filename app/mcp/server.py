@@ -420,6 +420,17 @@ def set_reply_draft_gmail_id(reply_id: str, gmail_draft_id: str) -> dict[str, An
 
 
 @mcp.tool()
+def set_reply_withheld_reason(message_id: str, reason: str) -> dict[str, Any]:
+    """Records why a message classified as needing a reply did not get a reply
+    draft -- e.g. a sensitive-data request, phishing/spoofing red flags, or a
+    deliberate judgment call. Persisted on the Email document as
+    `reply_withheld_reason`, surfaced in the dashboard's email lookup box. Never
+    creates or edits a reply draft. Raises if message_id doesn't exist.
+    """
+    return tools.set_reply_withheld_reason(_get_db(), message_id, reason)
+
+
+@mcp.tool()
 def get_project_summary(project_id: str) -> dict[str, Any] | None:
     """Read-only cross-collection summary for one project (PRJ-xxx): the project
     itself, plus related commitments/follow-ups found via real stored references.

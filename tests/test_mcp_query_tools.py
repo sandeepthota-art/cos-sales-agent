@@ -993,6 +993,33 @@ def test_set_reply_draft_gmail_id_does_not_touch_other_drafts(db):
     assert untouched.get("gmail_draft_id") is None
 
 
+def test_set_reply_withheld_reason_records_the_reason_and_preserves_other_fields(db):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "m1"}, _email("m1", label_applied="Needs reply")
+    )
+
+    result = tools.set_reply_withheld_reason(db, "m1", "Requests bank account details -- withheld, sensitive data.")
+
+    assert result["reply_withheld_reason"] == "Requests bank account details -- withheld, sensitive data."
+    assert result["message_id"] == "m1"
+    assert result["label_applied"] == "Needs reply"
+
+
+def test_set_reply_withheld_reason_raises_for_an_unknown_message_id(db):
+    with pytest.raises(ValueError, match="m999"):
+        tools.set_reply_withheld_reason(db, "m999", "some reason")
+
+
+def test_set_reply_withheld_reason_does_not_touch_other_emails(db):
+    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1"))
+    EmailRepository(db).upsert_by_key({"message_id": "m2"}, _email("m2"))
+
+    tools.set_reply_withheld_reason(db, "m1", "some reason")
+
+    untouched = EmailRepository(db).find_one({"message_id": "m2"})
+    assert untouched.get("reply_withheld_reason") is None
+
+
 # --- Cross-cutting guarantees ---
 
 
