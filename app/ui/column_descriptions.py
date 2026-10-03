@@ -392,12 +392,17 @@ PROJECTS_COLUMN_ORDER: tuple[str, ...] = (
 # `description` hidden: confirmed never set at creation
 # (app.entities.resolution._resolve_opportunity_impl) nor by
 # update_opportunity_fields (which only ever accepts stage/owner/value/
-# currency/expected_close_date/next_action).
+# currency/expected_close_date/next_action). stage/value/currency/
+# next_action/owner/org_id are hidden from THIS dashboard view only, per
+# explicit request -- all remain real, fully editable (via
+# update_opportunity_fields/the React PATCH endpoint) or queryable fields in
+# MongoDB.
 OPPORTUNITIES_COLUMN_ORDER: tuple[str, ...] = (
-    "name", "entity", "stage", "status", "value", "currency", "expected_close_date",
-    "next_action", "owner", "last_activity_at", "buying_signals",
-    "project_ids", "person_ids", "meeting_ids", "org_id", "id",
-    "source_email_ids", "created_at", "updated_at",
+    "id", "source_email_ids",
+    "name", "entity", "status", "expected_close_date",
+    "last_activity_at", "buying_signals",
+    "project_ids", "person_ids", "meeting_ids",
+    "created_at", "updated_at",
 )
 
 COMMITMENTS_COLUMN_ORDER: tuple[str, ...] = (
@@ -446,6 +451,11 @@ COLUMN_LABELS: dict[str, dict[str, str]] = {
         "project": "Project",
         "entity": "Company Name",
         "goal_pillar": "Goal_pillar",
+    },
+    "opportunities": {
+        "name": "Deal name",
+        "entity": "Company name",
+        "expected_close_date": "Expected close date",
     },
 }
 
