@@ -95,3 +95,20 @@ def test_reset_demo_clears_ingested_files(monkeypatch, _patch_mongo_client):
 
     assert exit_code == 0
     assert db.ingested_files.count_documents({}) == 0
+
+
+def test_reset_demo_clears_organizations_and_thread_events(monkeypatch, _patch_mongo_client):
+    # organizations and thread_events were missing from the original collection
+    # list -- a "full reset" that silently left real data behind in either one
+    # is exactly the kind of gap this regression test guards against.
+    monkeypatch.setenv("SIMULATION_MODE", "true")
+    settings = Settings()
+    db = _patch_mongo_client[settings.mongodb_database]
+    db.organizations.insert_one({"id": "ORG-001", "name": "Acme"})
+    db.thread_events.insert_one({"thread_id": "THR-001", "event": "created"})
+
+    exit_code = main_module.main(["--reset-demo"])
+
+    assert exit_code == 0
+    assert db.organizations.count_documents({}) == 0
+    assert db.thread_events.count_documents({}) == 0

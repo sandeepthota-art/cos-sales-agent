@@ -66,6 +66,7 @@ def run_reset_demo(db, settings) -> None:
         "opportunities",
         "activities",
         "people",
+        "organizations",
         "projects",
         "commitments",
         "follow_ups",
@@ -73,6 +74,9 @@ def run_reset_demo(db, settings) -> None:
         "personal_items",
         "counters",
         "ingested_files",
+        "migration_runs",
+        "person_context_snapshots",
+        "thread_events",
     ]:
         db[collection_name].delete_many({})
 
