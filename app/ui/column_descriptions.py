@@ -291,34 +291,27 @@ DASHBOARD_METRIC_DESCRIPTIONS: dict[str, str] = {
 
 
 # Emails tab display order (`st.dataframe(..., column_order=...)`). Determines
-# BOTH the left-to-right order AND which columns are visible. As of the
-# emails-collection schema cleanup, this now matches the real schema exactly
-# -- `id` and `record_id` (true duplicates of `message_id`) and `date` (a
-# near-duplicate of `timestamp`) no longer exist as fields at all (see
-# scripts/remove_email_id_record_id_date_fields.py), so there is nothing left
-# to hide for this collection; every field below is both real and visible.
+# BOTH the left-to-right order AND which columns are visible. The underlying
+# emails schema itself is unchanged and FROZEN -- `to`, `cc`, `timestamp`,
+# `attachments`, and `references` are still real, untouched fields on every
+# email document; this is a display-only decision (executive-readability
+# polish) to hide them from this table, not a schema change. Business-
+# readable fields lead (left); identifiers/technical fields trail (right).
 EMAIL_COLUMN_ORDER: tuple[str, ...] = (
-    # Identifiers (left) -- one visible column per logical identifier
+    # Business-readable (left)
+    "subject",
+    "body",
+    "from",
+    "labels",
+    "goal_pillar",
+    "label_applied",
+    # Identifiers/technical (right)
     "message_id",
     "thread_id",
     "source_message_id",
     "source_thread_id",
-    # Main content
-    "subject",
-    "body",
-    "labels",
-    "from",
-    "to",
-    "cc",
-    # Remaining useful fields
-    "timestamp",
-    "goal_pillar",
-    "label_applied",
     "entities_referenced",
-    "attachments",
     "in_reply_to",
-    "references",
-    # Technical/internal (right)
     "processing_status",
 )
 
