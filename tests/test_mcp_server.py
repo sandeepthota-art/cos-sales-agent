@@ -213,6 +213,12 @@ def test_merge_person_records_tool_is_registered():
     assert "merge_person_records" in names
 
 
+def test_set_email_summary_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "set_email_summary" in names
+
+
 def test_whats_on_my_table_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]

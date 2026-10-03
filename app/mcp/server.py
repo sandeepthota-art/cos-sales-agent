@@ -431,6 +431,17 @@ def set_reply_withheld_reason(message_id: str, reason: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def set_email_summary(message_id: str, summary: str) -> dict[str, Any]:
+    """Records a short summary of an email's body for the dashboard's "Look up an
+    email" box -- you (Claude) write the summary yourself after reading the email;
+    this tool never calls an LLM API itself (there is none in this codebase's live
+    path). Persisted on the Email document as `body_summary`, cached and reused on
+    every future dashboard view. Raises if message_id doesn't exist.
+    """
+    return tools.set_email_summary(_get_db(), message_id, summary)
+
+
+@mcp.tool()
 def get_project_summary(project_id: str) -> dict[str, Any] | None:
     """Read-only cross-collection summary for one project (PRJ-xxx): the project
     itself, plus related commitments/follow-ups found via real stored references.

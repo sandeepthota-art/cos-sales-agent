@@ -1020,6 +1020,31 @@ def test_set_reply_withheld_reason_does_not_touch_other_emails(db):
     assert untouched.get("reply_withheld_reason") is None
 
 
+def test_set_email_summary_records_the_summary_and_preserves_other_fields(db):
+    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1", subject="Q3 Renewal Terms"))
+
+    result = tools.set_email_summary(db, "m1", "Acme asks for a 15% expansion ahead of their renewal.")
+
+    assert result["body_summary"] == "Acme asks for a 15% expansion ahead of their renewal."
+    assert result["message_id"] == "m1"
+    assert result["subject"] == "Q3 Renewal Terms"
+
+
+def test_set_email_summary_raises_for_an_unknown_message_id(db):
+    with pytest.raises(ValueError, match="m999"):
+        tools.set_email_summary(db, "m999", "some summary")
+
+
+def test_set_email_summary_does_not_touch_other_emails(db):
+    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1"))
+    EmailRepository(db).upsert_by_key({"message_id": "m2"}, _email("m2"))
+
+    tools.set_email_summary(db, "m1", "some summary")
+
+    untouched = EmailRepository(db).find_one({"message_id": "m2"})
+    assert untouched.get("body_summary") is None
+
+
 # --- Cross-cutting guarantees ---
 
 
