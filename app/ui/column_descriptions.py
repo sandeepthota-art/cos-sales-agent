@@ -336,21 +336,18 @@ EMAIL_COLUMN_ORDER: tuple[str, ...] = (
 # it's just not relevant to this executive view. `org` (the free-text field,
 # always unset) is omitted in favor of `company`, a UI-layer-only derived
 # field (see list_people) that resolves the canonical org_id to a real
-# Organization name instead.
+# Organization name instead. `last_inbound`/`last_outbound`/`status`/
+# `merged_into` are also omitted from display only, per explicit request --
+# all four remain real, untouched MongoDB fields (status/merged_into in
+# particular are load-bearing for duplicate-person-consolidation), just not
+# shown on this executive view.
 PEOPLE_COLUMN_ORDER: tuple[str, ...] = (
-    # Business-readable (left)
     "name",
     "email",
     "company",
-    # Identifiers
     "id",
     "org_id",
     "open_threads",
-    # Remaining (right)
-    "last_inbound",
-    "last_outbound",
-    "status",
-    "merged_into",
 )
 
 
