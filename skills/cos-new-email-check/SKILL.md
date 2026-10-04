@@ -11,11 +11,12 @@ Trigger phrases: "what new email did I get", "check my inbox", "anything new fro
 
 - Only ever use the `cos-sales-agent` connector's tools (`mcp__remote-devices__cos-sales-agent__*`). No other MCP connector is used for this skill's CoS processing job.
 - Never call `process_email`. Always use the granular Phase 1 tools instead: `ingest_email` → `persist_email_analysis` → `persist_context_delta` → (`create_reply_draft` if warranted, or `set_reply_withheld_reason` if a reply is needed but deliberately not drafted) → `mark_email_completed`.
-- Never send, reply (dispatch), or forward an email. The one Gmail write
-  action ever permitted is *creating a draft* (via `create_draft`), and
-  only immediately after `create_reply_draft` succeeds in step 4 below --
-  never a send/reply/forward call, and the draft must never be sent
-  automatically by this skill.
+- Never send, reply (dispatch), forward, delete, trash, or mark spam.
+  The two Gmail write actions ever permitted are *labeling* a message
+  (step 4 below, via `create_label`/`label_message`) and *creating a
+  draft* (via `create_draft`), only immediately after `create_reply_draft`
+  succeeds in step 5 below -- never a send/reply/forward call, and a
+  draft must never be sent automatically by this skill.
 - Never create a calendar event.
 - Only touch one email at a time unless the user explicitly asks for more than one.
 - Never invent people, commitments, meetings, projects, or reply content that isn't genuinely present in the email. If nothing warrants a reply, don't fabricate one.
@@ -38,7 +39,8 @@ Trigger phrases: "what new email did I get", "check my inbox", "anything new fro
    - If not Sales: leave `goal_pillar: ""` and do not add a `projects_mentioned` entry.
    - Produce the full `EmailAnalysis` (people_mentioned, projects_mentioned, commitments_mentioned, meetings_mentioned, personal_items_mentioned, goal_pillar, label_applied, etc.) reflecting only what's actually in the email — then call `persist_email_analysis`.
    - A bounded `ContextDelta` (only what this email changes, never a full rewrite of context) — then call `persist_context_delta`.
-4. **If the email genuinely needs a reply** (a real question, request, or open item directed at the user), first check whether drafting one is actually appropriate: phishing/spoofing red flags (a sender domain that doesn't match the identity/company they claim, fabricated or implausible contact details, unfilled template placeholders like `[Product/Service Name]`, `[Target Date]` still present in the body), a request for sensitive data (bank details, credentials, passwords, government IDs), or any other reason a drafted reply would be unsafe or premature. If any apply, never draft a committal reply (agreeing to next steps, a call, signature, or kickoff) — either skip the draft or keep it strictly non-committal, call `set_reply_withheld_reason` with the message_id and a concise, specific reason, and always flag the suspicion in your report (step 6). Otherwise, draft a reasonable reply and call `create_reply_draft`. If no reply is warranted, skip this step entirely — don't create a draft just to have one.
+4. **Apply the matching Gmail label.** Call the Gmail connector's `list_labels`; if the label name matching this email's own `label_applied` value (exactly one of `Needs reply: ASAP`, `Needs reply`, `Needs reply: mention`, `Read only`, `Delete`, `Undecided`) isn't already present, call `create_label` with that exact string as `displayName` first. Then call `label_message` with this email's real Gmail id (never the canonical `EML-nnn`) and that label's id.
+5. **If the email genuinely needs a reply** (a real question, request, or open item directed at the user), first check whether drafting one is actually appropriate: phishing/spoofing red flags (a sender domain that doesn't match the identity/company they claim, fabricated or implausible contact details, unfilled template placeholders like `[Product/Service Name]`, `[Target Date]` still present in the body), a request for sensitive data (bank details, credentials, passwords, government IDs), or any other reason a drafted reply would be unsafe or premature. If any apply, never draft a committal reply (agreeing to next steps, a call, signature, or kickoff) — either skip the draft or keep it strictly non-committal, call `set_reply_withheld_reason` with the message_id and a concise, specific reason, and always flag the suspicion in your report (step 7). Otherwise, draft a reasonable reply and call `create_reply_draft`. If no reply is warranted, skip this step entirely — don't create a draft just to have one.
    - **Immediately after `create_reply_draft` succeeds**, also create a
      matching draft directly in the user's own Gmail mailbox via the Gmail
      connector's `create_draft` tool, using the exact same subject and
@@ -46,8 +48,8 @@ Trigger phrases: "what new email did I get", "check my inbox", "anything new fro
      thread/message identifiers so it nests correctly under the original
      conversation). This is for the user to open, edit, and send himself
      from Gmail — never sent automatically by this skill.
-5. **Call `mark_email_completed`** for the message once analysis has been persisted.
-6. **Report back in plain English** — what came in, who it's from, what it's about, whether it was classified as a sales opportunity, what (if anything) was created (people, commitments, follow-ups, meetings, a reply draft and whether a matching Gmail draft was also created), whether a reply was needed but withheld (and why), whether it showed any phishing/spoofing red flags, and what needs the user's attention. Do not dump raw JSON/tool output.
+6. **Call `mark_email_completed`** for the message once analysis has been persisted.
+7. **Report back in plain English** — what came in, who it's from, what it's about, whether it was classified as a sales opportunity, what (if anything) was created (people, commitments, follow-ups, meetings, a reply draft and whether a matching Gmail draft was also created), the Gmail label applied, whether a reply was needed but withheld (and why), whether it showed any phishing/spoofing red flags, and what needs the user's attention. Do not dump raw JSON/tool output.
 
 ## Verifying "is this really new"
 

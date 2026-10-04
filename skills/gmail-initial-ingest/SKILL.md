@@ -34,12 +34,14 @@ confirm:
 
 ## Hard rules
 
-- Use the Gmail connector to *read*, and — only immediately after
-  `create_reply_draft` succeeds in step 5.3 below — to *create a draft*
-  via the Gmail connector's `create_draft` tool. Never actually send,
-  reply (dispatch), forward, label, delete, or otherwise modify anything
-  in Gmail; creating a draft is the one write action ever permitted here,
-  and it must never be sent automatically by this skill.
+- Use the Gmail connector to *read*; to *label* a message (step 5's
+  one-time setup, then step 6.3 per message, via `create_label`/
+  `label_message`); and — only immediately after `create_reply_draft`
+  succeeds in step 6.4 below — to *create a draft* via `create_draft`.
+  Never actually send, reply (dispatch), forward, delete, trash, or mark
+  spam; labeling and draft-creation are the only write actions ever
+  permitted here, and a draft must never be sent automatically by this
+  skill.
 - Only ever use the one confirmed cos-sales-agent MCP connector's tools
   for this pipeline job. Never call `process_email` -- always the granular
   tools, in this exact order, per message: `ingest_email` -> (you read and
@@ -90,7 +92,14 @@ confirm:
    candidates.
 4. **Cap and sort**: take exactly the requested count of the most recent
    messages, then sort that batch oldest to newest by timestamp.
-5. **For each message in that batch, in order:**
+5. **Set up the six Gmail labels once, before the per-message loop.** Call
+   the Gmail connector's `list_labels`. For each of the six label names --
+   `Needs reply: ASAP`, `Needs reply`, `Needs reply: mention`, `Read only`,
+   `Delete`, `Undecided` -- not already present, call `create_label` with
+   that exact string as `displayName` (plain text, no color needed). Keep
+   a name -> label id map in memory for the rest of this run; never create
+   the same label twice, and never create a label under any other name.
+6. **For each message in that batch, in order:**
    1. Call `ingest_email` (map Gmail id -> `message_id`, threadId ->
       `thread_id`, sender/recipients -> `from`/`to`/`cc`, date ->
       `timestamp`, include `in_reply_to`/`references` if available).
@@ -110,7 +119,12 @@ confirm:
         this message, then call `persist_email_analysis`.
       - Produce a bounded `ContextDelta` (only what this message changes)
         and call `persist_context_delta`.
-   3. If the message genuinely needs a reply, first check whether drafting
+   3. **Apply the matching Gmail label**: call the Gmail connector's
+      `label_message` with this message's real Gmail id (the same id you
+      passed as `message_id` to `ingest_email` -- never the canonical
+      `EML-nnn`) and the label id from step 5's map matching this
+      message's own `label_applied` value exactly (one of the six).
+   4. If the message genuinely needs a reply, first check whether drafting
       one is actually appropriate: phishing/spoofing red flags (sender
       domain mismatch, implausible contact details, unfilled template
       placeholders), a request for sensitive data (bank details,
@@ -134,11 +148,11 @@ confirm:
         the original conversation). This is for the user to open, edit,
         and send himself from Gmail -- never sent automatically by this
         skill.
-   4. Call `mark_email_completed`.
-   5. **If any of steps 1-4 fails**, record the message id, timestamp, and
+   5. Call `mark_email_completed`.
+   6. **If any of steps 1-5 fails**, record the message id, timestamp, and
       error under "failed" in the final report, and continue to the next
       message in the batch -- do not stop the run.
-6. **Report the run**, in this form:
+7. **Report the run**, in this form:
 
 ```
 Gmail initial ingest @ <current time>
@@ -151,6 +165,7 @@ Skipped (already completed): <message ids, or "None">
 Failed: <message id + error, for each failure, or "None">
 Gmail drafts created (awaiting your review/send): <message ids, or "None">
 Needs reply but withheld (message id + reason, or "None"):
+Gmail labels applied: <count, and any newly created label names, or "None">
 ```
 
 Report only what the tools' own results actually show. Never add a

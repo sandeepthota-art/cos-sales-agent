@@ -27,12 +27,13 @@ explicitly asks not to use "the API"/`process_email`.
   `persist_email_analysis` -> `persist_context_delta` -> (`create_reply_draft`
   if warranted, or `set_reply_withheld_reason` if a reply is needed but
   deliberately not drafted) -> `mark_email_completed`.
-- Use Gmail to *find* the one email the user means and to *read* it, and —
+- Use Gmail to *find* the one email the user means and to *read* it; to
+  *label* it (step 4 below, via `create_label`/`label_message`); and —
   only immediately after `create_reply_draft` succeeds — to *create a
-  draft* via the Gmail connector's `create_draft` tool. Never actually
-  send, reply (dispatch), forward, label, delete, or otherwise modify
-  anything in Gmail; creating a draft is the one write action ever
-  permitted here, and it must never be sent automatically by this skill.
+  draft* via `create_draft`. Never actually send, reply (dispatch),
+  forward, delete, trash, or mark spam. Labeling and draft-creation are
+  the only write actions ever permitted here, and a draft must never be
+  sent automatically by this skill.
 - Process exactly the one email the user identified. If their request is
   ambiguous (matches more than one email, or none), ask which one they
   mean rather than guessing or processing multiple.
@@ -79,7 +80,15 @@ explicitly asks not to use "the API"/`process_email`.
      this message, then call `persist_email_analysis`.
    - Produce a bounded `ContextDelta` (only what this message changes)
      and call `persist_context_delta`.
-4. **If the message genuinely needs a reply**, first check whether drafting
+4. **Apply the matching Gmail label.** Call the Gmail connector's
+   `list_labels`; if the label name matching this email's own
+   `label_applied` value (exactly one of `Needs reply: ASAP`,
+   `Needs reply`, `Needs reply: mention`, `Read only`, `Delete`,
+   `Undecided`) isn't already present, call `create_label` with that
+   exact string as `displayName` first. Then call `label_message` with
+   this email's real Gmail id (never the canonical `EML-nnn`) and that
+   label's id.
+5. **If the message genuinely needs a reply**, first check whether drafting
    one is actually appropriate: phishing/spoofing red flags across the
    thread so far (a sender domain mismatch, implausible contact details,
    unfilled template placeholders still present), a request for sensitive
@@ -98,13 +107,14 @@ explicitly asks not to use "the API"/`process_email`.
      thread/message identifiers so it nests correctly under the original
      conversation). This is for the user to open, edit, and send himself
      from Gmail -- never sent automatically by this skill.
-5. **Call `mark_email_completed`**.
-6. **Report back in plain English** -- who the email is from, what it's
-   about, the label/classification given, what was created (people,
-   commitments, follow-ups, a meeting, a project), whether a reply draft
-   was generated and a matching Gmail draft created, whether a reply was
-   needed but withheld (and why), and whether it showed any
-   phishing/spoofing red flags. Do not dump raw JSON/tool output.
+6. **Call `mark_email_completed`**.
+7. **Report back in plain English** -- who the email is from, what it's
+   about, the label/classification given and the matching Gmail label
+   applied, what was created (people, commitments, follow-ups, a meeting,
+   a project), whether a reply draft was generated and a matching Gmail
+   draft created, whether a reply was needed but withheld (and why), and
+   whether it showed any phishing/spoofing red flags. Do not dump raw
+   JSON/tool output.
 
 ## Relationship to the other email skills
 

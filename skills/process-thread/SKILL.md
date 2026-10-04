@@ -23,12 +23,13 @@ still handles exactly one named message), and it is not `cos-new-email-check`
 - Only ever use the `cos-sales-agent` connector's tools
   (`mcp__remote-devices__cos-sales-agent__*`). No other MCP connector is used
   for this skill's CoS processing job.
-- Use Gmail to *read* the thread's messages, and — only when a reply is
-  warranted per step 5.iii below — to *create a draft* via the Gmail
-  connector's `create_draft` tool. Never actually send, reply (dispatch),
-  forward, label, delete, or otherwise modify anything in Gmail. Creating
-  a draft is the one write action ever permitted here, and the draft must
-  never be sent automatically by this skill.
+- Use Gmail to *read* the thread's messages; to *label* a message (step
+  5's one-time setup, then step 6.3 per message, via `create_label`/
+  `label_message`); and — only when a reply is warranted per step 6.4
+  below — to *create a draft* via `create_draft`. Never actually send,
+  reply (dispatch), forward, delete, trash, or mark spam. Labeling and
+  draft-creation are the only write actions ever permitted here, and a
+  draft must never be sent automatically by this skill.
 - **Never call `process_email`.** Always use the granular tools, in this
   exact order, per message: `ingest_email` -> (you read and classify the
   message) -> `persist_email_analysis` -> `persist_context_delta` ->
@@ -77,7 +78,13 @@ still handles exactly one named message), and it is not `cos-new-email-check`
    matching by sender, subject, and timestamp -- a message is unprocessed if
    no matching record exists or its status isn't `COMPLETED`.
 4. **Sort the unprocessed messages strictly oldest to newest** by timestamp.
-5. **For each unprocessed message, in that order:**
+5. **Set up the six Gmail labels once, before the per-message loop.** Call
+   the Gmail connector's `list_labels`. For each of the six label names --
+   `Needs reply: ASAP`, `Needs reply`, `Needs reply: mention`, `Read only`,
+   `Delete`, `Undecided` -- not already present, call `create_label` with
+   that exact string as `displayName` (plain text, no color needed). Keep
+   a name -> label id map in memory for the rest of this run.
+6. **For each unprocessed message, in that order:**
    1. Call `ingest_email`.
       - If it unexpectedly returns `already_completed: true` (e.g. a race
         with something else that just processed it), skip this one,
@@ -98,7 +105,11 @@ still handles exactly one named message), and it is not `cos-new-email-check`
         this message, then call `persist_email_analysis`.
       - Produce a bounded `ContextDelta` (only what this message changes)
         and call `persist_context_delta`.
-   3. If the message genuinely needs a reply, first check whether drafting
+   3. **Apply the matching Gmail label**: call the Gmail connector's
+      `label_message` with this message's real Gmail id (never the
+      canonical `EML-nnn`) and the label id from step 5's map matching
+      this message's own `label_applied` value exactly.
+   4. If the message genuinely needs a reply, first check whether drafting
       one is actually appropriate: phishing/spoofing red flags across the
       whole thread so far (a sender domain mismatch, implausible contact
       details, unfilled template placeholders like `[Target Date]` still
@@ -120,10 +131,10 @@ still handles exactly one named message), and it is not `cos-new-email-check`
         unthreaded draft). This lets the user open it directly in Gmail,
         edit it, and send it himself -- it is still never sent
         automatically by this skill, in Gmail or anywhere else.
-   4. Call `mark_email_completed`.
-   5. **If any of steps 1-4 fails**, stop the loop immediately -- do not
+   5. Call `mark_email_completed`.
+   6. **If any of steps 1-5 fails**, stop the loop immediately -- do not
       attempt the next message in this run.
-6. **Report the run**, in this form:
+7. **Report the run**, in this form:
 
 ```
 Thread <THR-id> processed.
@@ -133,6 +144,7 @@ Failed: <message id + error, if the loop stopped early -- "None" otherwise>
 Remaining unprocessed in this thread (if stopped early): <count, or "None">
 Gmail drafts created (awaiting your review/send): <message ids, or "None">
 Needs reply but withheld (message id + reason, or "None"):
+Gmail labels applied: <count, and any newly created label names, or "None">
 ```
 
 Report only what the tools' own results actually show. Never add a person,
