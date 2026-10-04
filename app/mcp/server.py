@@ -93,7 +93,12 @@ def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str
     This tool never calls analyze_email, update_context, draft_reply, or any real LLM
     provider -- it only persists structured data you supply.
 
-    Returns {message_id, thread_id, entities_referenced, calendar_proposal}.
+    Returns {message_id, thread_id, entities_referenced, possible_missed_commitment,
+    calendar_proposal}. possible_missed_commitment is a non-authoritative heuristic
+    (null when nothing is flagged) -- it fires when commitments_mentioned was left
+    empty but the body contains commitment-shaped language ("I'll...", "could
+    you..."). It's a prompt to double-check, not proof you missed one -- re-read the
+    email if it fires, but don't treat it as an error.
     """
     return tools.persist_email_analysis(_get_db(), message_id, analysis, get_settings())
 

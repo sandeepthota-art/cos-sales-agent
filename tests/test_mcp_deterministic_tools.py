@@ -287,6 +287,48 @@ def test_persist_email_analysis_creates_commitment_and_follow_up_with_matching_t
     assert commitment["committed_date"] is not None  # "tomorrow" resolved deterministically
 
 
+def test_persist_email_analysis_flags_possible_missed_commitment_when_body_suggests_one(db, settings):
+    # Real gap found in production: an email stating two explicit, dated
+    # commitments ("I'll send X by Oct 6") reached COMPLETED with
+    # commitments_mentioned=[] and nothing caught it until a manual DB check
+    # days later. This heuristic (reusing MockLLMProvider's own commitment-
+    # language regex) surfaces it immediately instead.
+    tools.ingest_email(
+        db, parse_email(_raw_email("msg_001", "I'll send the proposal over by Friday."))
+    )
+    analysis = _analysis(message_id="EML-001", commitments_mentioned=[])
+
+    result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
+
+    assert result["possible_missed_commitment"] is not None
+    assert "commitment" in result["possible_missed_commitment"].lower()
+
+
+def test_persist_email_analysis_does_not_flag_when_a_commitment_was_actually_extracted(db, settings):
+    tools.ingest_email(
+        db, parse_email(_raw_email("msg_001", "I'll send the proposal over by Friday."))
+    )
+    analysis = _analysis(
+        message_id="EML-001",
+        commitments_mentioned=[
+            RawCommitment.model_validate({"what": "send the proposal", "class": "mine", "date_phrase": "Friday"})
+        ],
+    )
+
+    result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
+
+    assert result["possible_missed_commitment"] is None
+
+
+def test_persist_email_analysis_does_not_flag_when_body_has_no_commitment_language(db, settings):
+    tools.ingest_email(db, parse_email(_raw_email("msg_001", "Just checking in, no action needed.")))
+    analysis = _analysis(message_id="EML-001", commitments_mentioned=[])
+
+    result = tools.persist_email_analysis(db, "EML-001", analysis, settings)
+
+    assert result["possible_missed_commitment"] is None
+
+
 def test_persist_email_analysis_creates_meeting_entity_and_calendar_proposal(db, settings):
     tools.ingest_email(
         db, parse_email(_raw_email("msg_001", "Let's meet Tuesday at 3 PM for 30 minutes."))

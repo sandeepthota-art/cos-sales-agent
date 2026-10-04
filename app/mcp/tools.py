@@ -46,7 +46,7 @@ from app.pipeline import (
     resolve_and_persist_thread,
 )
 from app.processing.models import ProcessingStage
-from app.providers.llm.mock import MockLLMProvider
+from app.providers.llm.mock import _MINE_COMMITMENT_PATTERN, _OWED_TO_ME_COMMITMENT_PATTERN, MockLLMProvider
 from app.replies.models import ReplyDraft, ReplyDraftContent
 
 _BODY_PREVIEW_LENGTH = 150
@@ -306,10 +306,34 @@ def persist_email_analysis(
             calendar_repo.upsert_by_key(calendar_key, action.model_dump(mode="json"))
     email_repo.set_stage(message_id, ProcessingStage.MEETING_PROCESSED.value)
 
+    # Non-authoritative sanity check, never a fabrication: the same lightweight
+    # regex MockLLMProvider itself uses to decide whether a body reads as a
+    # commitment ("I will"/"I'll"/"we will", "could you"/"can you") -- surfaced
+    # here only as a prompt to double-check, never used to invent a commitment.
+    # Added after a real gap: an email stating two explicit, dated commitments
+    # ("I'll send X by Oct 6", "could you share Y by Oct 9") reached COMPLETED
+    # with commitments_mentioned=[] and nothing caught it until a manual DB
+    # check days later. This can't fire a false negative that matters (it only
+    # ever adds a warning, never blocks or alters persistence), but it CAN
+    # false-positive on body text that merely resembles commitment language
+    # without being one -- treat it as "double-check this," not "this is wrong."
+    possible_missed_commitment = None
+    if not analysis.commitments_mentioned and (
+        _MINE_COMMITMENT_PATTERN.search(email.body) or _OWED_TO_ME_COMMITMENT_PATTERN.search(email.body)
+    ):
+        possible_missed_commitment = (
+            "This email's body contains commitment-shaped language (e.g. \"I'll...\"/"
+            "\"could you...\") but commitments_mentioned was empty. Re-read the email "
+            "for a commitment you may have missed before calling mark_email_completed -- "
+            "or ignore this if there genuinely isn't one (the check is a heuristic, not "
+            "authoritative)."
+        )
+
     return {
         "message_id": message_id,
         "thread_id": thread_id,
         "entities_referenced": entities_referenced,
+        "possible_missed_commitment": possible_missed_commitment,
         "calendar_proposal": (
             {
                 "status": action.status,

@@ -131,7 +131,17 @@ For each message, in order (oldest to newest within a batch):
      supplies the name. Only ever use a name/org/role genuinely stated or
      clearly signed in the email -- never guess one.
    - Produce the full `EmailAnalysis` reflecting only what's actually in the
-     message, then call `persist_email_analysis`.
+     message, then call `persist_email_analysis`. **If the result's
+     `possible_missed_commitment` field is non-null**, re-read the email
+     before moving on -- it means the body contains commitment-shaped
+     language ("I'll...", "could you...") but `commitments_mentioned` came
+     back empty. If there really is a commitment you missed, call
+     `persist_email_analysis` again with the same analysis plus the missing
+     commitment included -- commitments are deduped by normalized text +
+     class + date within the thread, so people/projects/commitments already
+     resolved the first time are reused, not duplicated, and only the new
+     commitment gets created. If there genuinely isn't one, ignore the
+     warning and continue; it's a heuristic, not proof.
    - Produce a bounded `ContextDelta` (only what this message changes -- a
      real object matching `app.context.models.ContextDelta`'s shape, never
      an empty/placeholder one) and call `persist_context_delta`.
