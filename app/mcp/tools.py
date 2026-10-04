@@ -29,6 +29,7 @@ from app.database.repositories import (
     ThreadRepository,
 )
 from app.email.models import Email, parse_email
+from app.entities.person_context import enrich_person_context_from_email
 from app.entities.resolution import resolve_canonical_person_for_email
 from app.entities.thread_events import get_thread_event_trail
 from app.query import retrieval
@@ -285,6 +286,15 @@ def persist_email_analysis(
     # Same additive linking passes run_pipeline itself runs, after entity resolution.
     _link_knowledge_to_entities(db, thread_id, message_id)
     _link_thread_to_entities(db, thread_id)
+
+    # Person Context, Phase 2/5: after entity resolution AND knowledge linking (so
+    # KnowledgeItem.person_id is already set for this email's facts) -- one
+    # incremental, idempotent snapshot per person this email actually involved.
+    # Bug fix: this previously only ran inside run_pipeline (file-mode/demo/
+    # scheduler ingestion), never from this granular path -- which is what the
+    # real Gmail-driven skill actually calls -- so no PersonContextSnapshot was
+    # ever built for a real, Gmail-ingested email.
+    enrich_person_context_from_email(db, thread_id, email, analysis, entities_referenced, reference_now)
 
     # New organizations needing research (Knowledge Layer): collect every org_id
     # this email's resolved people actually belong to, then surface whichever of

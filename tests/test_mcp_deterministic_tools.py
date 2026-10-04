@@ -33,6 +33,7 @@ from app.database.repositories import (
     KnowledgeRepository,
     MeetingRepository,
     OrganizationRepository,
+    PersonContextSnapshotRepository,
     PersonRepository,
     ReplyDraftRepository,
     ThreadRepository,
@@ -946,3 +947,43 @@ def test_merge_organization_records_raises_if_source_already_merged(db):
 
     with pytest.raises(ValueError, match="already merged"):
         tools.merge_organization_records(db, "ORG-002", "ORG-003")
+
+
+# --- Person context enrichment (wired into the real Gmail-driven ingestion path) ---
+
+
+def test_persist_email_analysis_enriches_person_context(db, settings):
+    # Bug fix: enrich_person_context_from_email was only ever called from
+    # run_pipeline (file-mode/demo/scheduler ingestion) -- never from
+    # persist_email_analysis, which is what the actual Gmail-driven skill calls.
+    # So PersonContextSnapshot was never built for a single real Gmail email.
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    snapshot = PersonContextSnapshotRepository(db).find_one(
+        {"person_id": person["id"], "source_email_id": ingest_result["message_id"]}
+    )
+    assert snapshot is not None
+
+
+def test_persist_email_analysis_person_context_enrichment_is_idempotent(db, settings):
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+    tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    snapshots = PersonContextSnapshotRepository(db).find_many(
+        {"person_id": person["id"], "source_email_id": ingest_result["message_id"]}
+    )
+    assert len(snapshots) == 1
