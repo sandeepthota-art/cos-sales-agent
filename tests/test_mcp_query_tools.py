@@ -9,8 +9,10 @@ from app.database.repositories import (
     ContextSnapshotRepository,
     EmailRepository,
     FollowUpRepository,
+    KnowledgeRepository,
     MeetingRepository,
     OpportunityRepository,
+    OrganizationRepository,
     PersonRepository,
     ProjectRepository,
     ReplyDraftRepository,
@@ -851,37 +853,67 @@ def test_get_project_summary_returns_none_for_nonexistent_project(db):
 # --- get_company_summary ---
 
 
-def test_get_company_summary_returns_people_and_projects_for_org(db):
-    PersonRepository(db).upsert_by_key({"id": "PER-001"}, _person("PER-001", org="Speedvision"))
-    PersonRepository(db).upsert_by_key({"id": "PER-002"}, _person("PER-002", org="Other Co"))
-    ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, _project("PRJ-001", entity="Speedvision"))
-    ProjectRepository(db).upsert_by_key({"id": "PRJ-002"}, _project("PRJ-002", entity="Other Co"))
+def test_get_company_summary_returns_people_and_projects_by_org_id(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "Speedvision", "domain": "speedvision.com", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "Other Co", "domain": "otherco.com", "aliases": [], "source": "gmail"}
+    )
+    PersonRepository(db).upsert_by_key({"id": "PER-001"}, _person("PER-001", org_id="ORG-001"))
+    PersonRepository(db).upsert_by_key({"id": "PER-002"}, _person("PER-002", org_id="ORG-002"))
+    ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, _project("PRJ-001", org_id="ORG-001"))
+    ProjectRepository(db).upsert_by_key({"id": "PRJ-002"}, _project("PRJ-002", org_id="ORG-002"))
 
-    result = tools.get_company_summary(db, "Speedvision")
+    result = tools.get_company_summary(db, "ORG-001")
 
     assert [p["id"] for p in result["people"]] == ["PER-001"]
     assert [p["id"] for p in result["projects"]] == ["PRJ-001"]
 
 
-def test_get_company_summary_finds_commitments_indirectly_through_matching_projects(db):
-    ProjectRepository(db).upsert_by_key({"id": "PRJ-001"}, _project("PRJ-001", entity="Speedvision"))
-    CommitmentRepository(db).upsert_by_key(
-        {"id": "COM-001"}, _commitment("COM-001", "t1", project_id="PRJ-001")
+def test_get_company_summary_finds_commitments_meetings_and_knowledge_directly_by_org_id(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "Speedvision", "domain": "speedvision.com", "aliases": [], "source": "gmail"}
+    )
+    CommitmentRepository(db).upsert_by_key({"id": "COM-001"}, _commitment("COM-001", "t1", org_id="ORG-001"))
+    FollowUpRepository(db).upsert_by_key({"id": "FUP-001"}, _follow_up("FUP-001", org_id="ORG-001", thread_id="t1"))
+    MeetingRepository(db).upsert_by_key({"id": "MTG-001"}, _meeting("MTG-001", "t1", org_id="ORG-001"))
+    KnowledgeRepository(db).upsert_by_key(
+        {"knowledge_id": "KNOW-001"},
+        {
+            "knowledge_id": "KNOW-001", "thread_id": "t1", "subject_key": "speedvision", "predicate": "has",
+            "fact_key": "employee_count", "current_value": "500", "person_id": None, "org_id": "ORG-001",
+            "history": [], "source_emails": ["m1"], "basis": "stated",
+            "first_seen_at": "2026-09-10T09:00:00", "last_confirmed_at": "2026-09-10T09:00:00",
+            "confidence": 0.9, "status": "active",
+        },
     )
 
-    result = tools.get_company_summary(db, "Speedvision")
+    result = tools.get_company_summary(db, "ORG-001")
 
     assert [c["id"] for c in result["related_commitments"]] == ["COM-001"]
+    assert [f["id"] for f in result["related_follow_ups"]] == ["FUP-001"]
+    assert [m["id"] for m in result["related_meetings"]] == ["MTG-001"]
+    assert [k["knowledge_id"] for k in result["related_knowledge_items"]] == ["KNOW-001"]
 
 
-def test_get_company_summary_returns_empty_lists_for_unknown_org_never_erroring(db):
-    result = tools.get_company_summary(db, "Nobody Inc")
+def test_get_company_summary_returns_empty_lists_for_a_real_org_with_no_related_records(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "Nobody Inc", "domain": "nobody.example", "aliases": [], "source": "gmail"}
+    )
 
+    result = tools.get_company_summary(db, "ORG-001")
+
+    assert result is not None
     assert result["people"] == []
     assert result["projects"] == []
     assert result["related_commitments"] == []
     assert result["related_meetings"] == []
     assert result["related_knowledge_items"] == []
+
+
+def test_get_company_summary_returns_none_for_unknown_org_id(db):
+    assert tools.get_company_summary(db, "ORG-999") is None
 
 
 # --- list_reply_drafts / get_reply_draft ---
@@ -1071,7 +1103,7 @@ def test_no_query_tool_source_references_an_llm_provider_or_api():
         lambda db: tools.get_reply_draft(db, "nope"),
         lambda db: tools.get_thread(db, "nope"),
         lambda db: tools.get_project_summary(db, "PRJ-999"),
-        lambda db: tools.get_company_summary(db, "Nobody"),
+        lambda db: tools.get_company_summary(db, "ORG-999"),
     ],
 )
 def test_query_tools_never_write_to_mongodb(db, call):

@@ -1170,53 +1170,41 @@ def list_unresearched_organizations(db: Database) -> list[dict[str, Any]]:
     ]
 
 
-def get_company_summary(db: Database, org: str) -> dict[str, Any]:
-    """Read-only cross-collection summary for an organization/company name, assembled
-    with plain Mongo queries in application code -- no LLM involved.
+def get_company_summary(db: Database, org_id: str) -> dict[str, Any] | None:
+    """Read-only cross-collection summary for an organization, assembled with
+    plain Mongo queries in application code -- no LLM involved. Returns None
+    for an org_id that doesn't exist, matching get_project_summary's own
+    convention for an unknown id.
 
-    Relationship honesty: Person.org == org and Project.entity == org are direct
-    stored-field matches. Commitments/follow-ups are only reachable indirectly, through
-    a project whose entity matches -- and in the current pipeline, Commitment.project_id
-    is not actually populated (app/pipeline.py always passes project_id=None to
-    resolve_commitment), so this indirect path is usually empty today even though the
-    query itself is correct. Meeting and KnowledgeItem have no org/company reference of
-    any kind and are always returned empty.
+    Takes a canonical org_id (not a free-text name): every related collection
+    (Person, Project, Commitment, FollowUp, Meeting, KnowledgeItem) already
+    carries a real org_id reference, populated by the pipeline's own entity
+    resolution -- this function joins on that FK directly. An earlier version
+    of this tool matched Person.org/Project.entity by free-text string
+    equality; Person.org is confirmed never populated by any resolution path,
+    so that version silently returned an empty people list for every real
+    organization, and hardcoded related_meetings/related_knowledge_items to []
+    with a docstring claiming the schema couldn't support them -- both
+    Meeting.org_id and KnowledgeItem.org_id already exist and are populated.
     """
-    people = PersonRepository(db).find_many({"org": org})
-    projects = ProjectRepository(db).find_many({"entity": org})
-
-    project_ids = [p["id"] for p in projects]
-    related_commitments = (
-        CommitmentRepository(db).find_many({"project_id": {"$in": project_ids}})
-        if project_ids
-        else []
-    )
-    commitment_ids = [c["id"] for c in related_commitments]
-    related_follow_ups = (
-        FollowUpRepository(db).find_many({"commitment_id": {"$in": commitment_ids}})
-        if commitment_ids
-        else []
-    )
+    org = OrganizationRepository(db).find_one({"id": org_id})
+    if org is None:
+        return None
 
     return {
-        "org": org,
-        "people": people,
-        "projects": projects,
-        "related_commitments": related_commitments,
-        "related_follow_ups": related_follow_ups,
-        "related_meetings": [],
-        "related_knowledge_items": [],
+        "people": PersonRepository(db).find_many({"org_id": org_id}),
+        "projects": ProjectRepository(db).find_many({"org_id": org_id}),
+        "related_commitments": CommitmentRepository(db).find_many({"org_id": org_id}),
+        "related_follow_ups": FollowUpRepository(db).find_many({"org_id": org_id}),
+        "related_meetings": MeetingRepository(db).find_many({"org_id": org_id}),
+        "related_knowledge_items": KnowledgeRepository(db).find_many({"org_id": org_id}),
         "relationship_notes": {
-            "people": "direct: Person.org == org",
-            "projects": "direct: Project.entity == org",
-            "related_commitments": (
-                "indirect: Commitment.project_id references a Project whose entity == org "
-                "-- in practice usually empty, since the pipeline does not currently "
-                "populate Commitment.project_id"
-            ),
-            "related_follow_ups": "indirect: derived from related_commitments above",
-            "related_meetings": "NOT SUPPORTED by the current schema: Meeting has no org/company reference",
-            "related_knowledge_items": "NOT SUPPORTED by the current schema: KnowledgeItem has no org/company reference",
+            "people": "direct: Person.org_id == org_id",
+            "projects": "direct: Project.org_id == org_id",
+            "related_commitments": "direct: Commitment.org_id == org_id",
+            "related_follow_ups": "direct: FollowUp.org_id == org_id",
+            "related_meetings": "direct: Meeting.org_id == org_id",
+            "related_knowledge_items": "direct: KnowledgeItem.org_id == org_id",
         },
     }
 

@@ -122,7 +122,6 @@ export interface OrganizationRow {
 export interface OrganizationSummary {
   organization: OrganizationRow
   summary: {
-    org: string
     people: PersonRow[]
     projects: ProjectRow[]
     related_commitments: Record<string, unknown>[]

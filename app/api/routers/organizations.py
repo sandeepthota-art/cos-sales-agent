@@ -19,12 +19,11 @@ def list_organizations_route(
 
 @router.get("/{org_id}")
 def get_organization_route(org_id: str, db=Depends(get_db)) -> dict[str, Any]:
-    """360 view -- reuses app.mcp.tools.get_company_summary. That function
-    takes the organization's NAME (free-text org field), not its id -- this
-    route looks up the Organization by id first, then passes its name
-    through, so the frontend only ever deals in ids, matching every other
-    entity-detail route's contract."""
+    """360 view -- reuses app.mcp.tools.get_company_summary directly by org_id,
+    the same id this route itself takes (get_company_summary used to require
+    the organization's free-text name instead; that round-trip is gone now
+    that the tool joins on org_id directly)."""
     org = OrganizationRepository(db).find_one({"id": org_id})
     if org is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no organization found for id={org_id!r}")
-    return {"organization": org, "summary": get_company_summary(db, org["name"])}
+    return {"organization": org, "summary": get_company_summary(db, org_id)}

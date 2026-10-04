@@ -421,15 +421,14 @@ def get_project_summary(project_id: str) -> dict[str, Any] | None:
 
 
 @mcp.tool()
-def get_company_summary(org: str) -> dict[str, Any]:
-    """Read-only cross-collection summary for an organization name: people and
-    projects with a direct field match on `org`, plus commitments/follow-ups reachable
-    indirectly through those projects. Meetings and knowledge items are always empty --
-    the current schema has no org/company reference for either. See
-    `relationship_notes` in the response for exactly which relationships are direct,
-    indirect, or unsupported. No LLM involved -- deterministic MongoDB queries only.
+def get_company_summary(org_id: str) -> dict[str, Any] | None:
+    """Read-only cross-collection summary for one organization (ORG-xxx): people,
+    projects, commitments, follow-ups, meetings, and knowledge items with a direct
+    org_id reference. See `relationship_notes` in the response for exactly which
+    relationship each list represents. Returns None if the organization doesn't
+    exist. No LLM involved -- deterministic MongoDB queries only.
     """
-    return tools.get_company_summary(_get_db(), org)
+    return tools.get_company_summary(_get_db(), org_id)
 
 
 @mcp.tool()
