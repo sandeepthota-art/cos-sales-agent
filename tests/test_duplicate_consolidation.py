@@ -587,3 +587,74 @@ def test_execute_one_org_mapping_unions_aliases_and_backfills_blank_profile_fiel
     target = OrganizationRepository(db).find_one({"id": "ORG-001"})
     assert set(target["aliases"]) == {"DB", "DataBeat Analytics"}
     assert target["industry"] == "Data Analytics"
+
+
+def test_execute_one_org_mapping_repoints_threads_org_ids_list_field(db):
+    # Review finding I1: threads.org_ids is a list-valued org reference (written by
+    # app.pipeline._link_thread_to_entities, read by get_organization_context) --
+    # it must be repointed exactly like Person-merge already repoints
+    # threads.person_ids, not skipped as if no list-valued org_id field existed.
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [], "source": "gmail"}
+    )
+    ThreadRepository(db).upsert_by_key(
+        {"thread_id": "t1"},
+        {"thread_id": "t1", "message_ids": ["m1"], "person_ids": [], "org_ids": ["ORG-002"]},
+    )
+    ThreadRepository(db).upsert_by_key(
+        {"thread_id": "t2"},
+        {"thread_id": "t2", "message_ids": ["m2"], "person_ids": [], "org_ids": ["ORG-001", "ORG-002"]},
+    )
+
+    result = _execute_one_org_mapping(db, "ORG-002", "ORG-001")
+
+    assert result["updated_counts"]["threads"] == 2
+    assert ThreadRepository(db).find_one({"thread_id": "t1"})["org_ids"] == ["ORG-001"]
+    assert ThreadRepository(db).find_one({"thread_id": "t2"})["org_ids"] == ["ORG-001"]
+
+
+def test_execute_one_org_mapping_rewrites_works_at_current_value_to_the_target_name(db):
+    # Review finding I3: repointing knowledge_items.org_id alone leaves a WORKS_AT
+    # fact self-contradictory (org_id says canonical, current_value still names
+    # the retired org) -- current_value must be rewritten too, for this
+    # predicate specifically (an arbitrary unrelated fact's current_value is
+    # never touched by a merge).
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [], "source": "gmail"}
+    )
+    KnowledgeRepository(db).upsert_by_key(
+        {"knowledge_id": "KNOW-001"},
+        {
+            "knowledge_id": "KNOW-001", "thread_id": "t1", "subject_key": "jane-smith", "predicate": "works_at",
+            "fact_key": "works_at", "current_value": "DataBeat Analytics", "person_id": "PER-001", "org_id": "ORG-002",
+            "history": [], "source_emails": ["m1"], "basis": "stated",
+            "first_seen_at": "2026-09-10T09:00:00", "last_confirmed_at": "2026-09-10T09:00:00",
+            "confidence": 0.95, "status": "active",
+        },
+    )
+    KnowledgeRepository(db).upsert_by_key(
+        {"knowledge_id": "KNOW-002"},
+        {
+            "knowledge_id": "KNOW-002", "thread_id": "t1", "subject_key": "databeat-analytics", "predicate": "has",
+            "fact_key": "employee_count", "current_value": "50", "person_id": None, "org_id": "ORG-002",
+            "history": [], "source_emails": ["m1"], "basis": "stated",
+            "first_seen_at": "2026-09-10T09:00:00", "last_confirmed_at": "2026-09-10T09:00:00",
+            "confidence": 0.9, "status": "active",
+        },
+    )
+
+    _execute_one_org_mapping(db, "ORG-002", "ORG-001")
+
+    works_at = KnowledgeRepository(db).find_one({"knowledge_id": "KNOW-001"})
+    assert works_at["org_id"] == "ORG-001"
+    assert works_at["current_value"] == "DataBeat"
+
+    unrelated_fact = KnowledgeRepository(db).find_one({"knowledge_id": "KNOW-002"})
+    assert unrelated_fact["org_id"] == "ORG-001"
+    assert unrelated_fact["current_value"] == "50"

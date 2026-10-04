@@ -314,11 +314,14 @@ calls `process_email` or any write tool in this mode.
 - Use the cos-sales-agent connector's read tools only: `list_processed_emails`,
   `search_emails`, `get_thread`, `list_people`, `list_projects`,
   `list_opportunities`, `list_commitments`, `list_follow_ups`,
-  `list_meetings`, `get_project_summary`, `get_company_summary`,
-  `lookup_knowledge`, or `ask_question` directly for a natural executive
-  question. Use multiple tools when the question needs cross-entity
-  reasoning (e.g. "what have we promised this customer?" ->
-  `get_company_summary` -> `list_commitments`).
+  `list_meetings`, `list_organizations`, `get_project_summary`,
+  `get_company_summary`, `lookup_knowledge`, or `ask_question` directly for a
+  natural executive question. `get_company_summary` takes a canonical org_id
+  (ORG-xxx), not a company name -- if a question names a company by name
+  ("what's outstanding with Acme?"), call `list_organizations(name_contains=
+  "Acme")` first to get its org_id. Use multiple tools when the question
+  needs cross-entity reasoning (e.g. "what have we promised this customer?"
+  -> `list_organizations` -> `get_company_summary` -> `list_commitments`).
 - Ground every claim in what a tool actually returned. Never invent a fact,
   date, meeting confirmation, commitment, or relationship. When evidence is
   incomplete, say so plainly ("I couldn't confirm...", "the available data

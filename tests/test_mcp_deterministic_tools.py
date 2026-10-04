@@ -758,11 +758,18 @@ def test_persist_email_analysis_creates_a_works_at_knowledge_fact(db, settings):
     tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
 
     person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    org = OrganizationRepository(db).find_one({"id": person["org_id"]})
     fact = KnowledgeRepository(db).find_one({"person_id": person["id"], "predicate": "works_at"})
     assert fact is not None
-    assert fact["current_value"] == person["org_id"]
+    # Human-readable, like every other KnowledgeItem (Review I2) -- the dashboard
+    # and the analyze-email LLM prompt both render subject_key/current_value as
+    # plain text, so an opaque PER-xxx/ORG-xxx id would show up as noise there.
+    assert fact["current_value"] == org["name"]
+    assert "jane" in fact["subject_key"]
     assert fact["org_id"] == person["org_id"]
+    assert fact["person_id"] == person["id"]
     assert fact["basis"] == "stated"
+    assert len(fact["history"]) == 1
 
 
 def test_persist_email_analysis_does_not_duplicate_works_at_fact_on_a_later_email(db, settings):
@@ -783,6 +790,41 @@ def test_persist_email_analysis_does_not_duplicate_works_at_fact_on_a_later_emai
     person = PersonRepository(db).find_one({"email": "jane@newco.com"})
     facts = KnowledgeRepository(db).find_many({"person_id": person["id"], "predicate": "works_at"})
     assert len(facts) == 1
+    assert len(facts[0]["history"]) == 1
+
+
+def test_persist_email_analysis_updates_works_at_fact_when_persons_org_id_changes(db, settings):
+    # Review I3: a job change must update the fact (new history entry, new
+    # current_value/org_id) rather than leave it permanently stale forever.
+    ingest1 = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis1 = _analysis(
+        ingest1["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    tools.persist_email_analysis(db, ingest1["message_id"], analysis1, settings)
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+
+    # Simulate a job change: org_id is backfill-only in normal resolution (never
+    # overwritten), so this directly mutates the stored Person the way a real
+    # job-change migration/correction would, to isolate this fact's own update
+    # behavior from person-resolution's unrelated backfill-only policy.
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-999"}, {"id": "ORG-999", "name": "DifferentCo", "domain": "differentco.com", "aliases": [], "source": "gmail"}
+    )
+    PersonRepository(db).upsert_by_key({"id": person["id"]}, {**person, "org_id": "ORG-999"})
+
+    ingest2 = tools.ingest_email(db, parse_email(_raw_email("msg_002", subject="Follow-up")))
+    analysis2 = _analysis(
+        ingest2["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="DifferentCo")],
+    )
+    tools.persist_email_analysis(db, ingest2["message_id"], analysis2, settings)
+
+    facts = KnowledgeRepository(db).find_many({"person_id": person["id"], "predicate": "works_at"})
+    assert len(facts) == 1
+    assert facts[0]["org_id"] == "ORG-999"
+    assert facts[0]["current_value"] == "DifferentCo"
+    assert len(facts[0]["history"]) == 2
 
 
 # --- preview_duplicate_organization_candidates -------------------------------------

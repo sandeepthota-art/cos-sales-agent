@@ -794,10 +794,12 @@ def execute_approved_plan(
     }
 
 
-# --- Organization merge (mirrors Person merge above, but simpler: org_id is ----
-# --- always a scalar field on every referencing collection -- there is no ----
-# --- list-valued org_id anywhere in this schema, so no _repoint_list_field ----
-# --- equivalent is needed here). -----------------------------------------------
+# --- Organization merge (mirrors Person merge above). org_id is a scalar field
+# --- on every collection in _ORG_COLLECTION_SPECS below; threads.org_ids is the
+# --- one list-valued org reference in this schema (written by
+# --- app.pipeline._link_thread_to_entities, read by get_organization_context),
+# --- repointed separately via _repoint_list_field, exactly like Person-merge
+# --- already repoints threads.person_ids. ---------------------------------------
 
 
 _ORG_COLLECTION_SPECS = [
@@ -822,22 +824,37 @@ _ORG_PROFILE_FIELDS = (
 
 
 def _execute_one_org_mapping(db: Database, source_org_id: str, target_org_id: str) -> dict[str, Any]:
-    """Repoints org_id -- always scalar on every referencing collection, unlike
-    Person's person_id/person_ids split -- from source_org_id to
-    target_org_id. Mirrors _execute_one_mapping's structure (same repo-list
-    pattern, same retire-last ordering).
+    """Repoints org_id from source_org_id to target_org_id across every scalar
+    referencing collection, plus the one list-valued org reference
+    (threads.org_ids, via _repoint_list_field -- same pattern Person-merge
+    already uses for threads.person_ids). Mirrors _execute_one_mapping's
+    structure (same repo-list pattern, same retire-last ordering).
     """
     updated_counts: dict[str, int] = defaultdict(int)
 
-    for label, repo_cls, key_fn in _ORG_COLLECTION_SPECS:
-        repo = repo_cls(db)
-        for doc in repo.find_many({"org_id": source_org_id}):
-            repo.upsert_by_key(key_fn(doc), {**doc, "org_id": target_org_id})
-            updated_counts[label] += 1
+    for t in ThreadRepository(db).find_many({"org_ids": source_org_id}):
+        update = _repoint_list_field(t, "org_ids", source_org_id, target_org_id)
+        if update:
+            ThreadRepository(db).upsert_by_key({"thread_id": t["thread_id"]}, {**t, **update})
+            updated_counts["threads"] += 1
 
     org_repo = OrganizationRepository(db)
     source = org_repo.find_one({"id": source_org_id})
     target = org_repo.find_one({"id": target_org_id})
+
+    for label, repo_cls, key_fn in _ORG_COLLECTION_SPECS:
+        repo = repo_cls(db)
+        for doc in repo.find_many({"org_id": source_org_id}):
+            update: dict[str, Any] = {"org_id": target_org_id}
+            # A WORKS_AT fact's current_value names the organization by its
+            # display name, not just its id -- left unrewritten, it would read
+            # org_id=target (canonical) but current_value=source's old name
+            # (retired), a self-contradictory record. No other predicate's
+            # current_value is organization-shaped, so this is scoped narrowly.
+            if label == "knowledge_items" and doc.get("predicate") == "works_at":
+                update["current_value"] = target["name"]
+            repo.upsert_by_key(key_fn(doc), {**doc, **update})
+            updated_counts[label] += 1
 
     merged_aliases = list(
         dict.fromkeys([*(target.get("aliases") or []), *(source.get("aliases") or []), source["name"]])

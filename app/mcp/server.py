@@ -421,6 +421,16 @@ def get_project_summary(project_id: str) -> dict[str, Any] | None:
 
 
 @mcp.tool()
+def list_organizations(name_contains: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """Read-only listing of organizations -- the way to turn a company NAME
+    into the canonical org_id (ORG-xxx) that get_company_summary,
+    persist_organization_research, and merge_organization_records all
+    require. name_contains matches case-insensitively, anywhere in the name.
+    """
+    return tools.list_organizations(_get_db(), name_contains=name_contains, limit=limit)
+
+
+@mcp.tool()
 def get_company_summary(org_id: str) -> dict[str, Any] | None:
     """Read-only cross-collection summary for one organization (ORG-xxx): people,
     projects, commitments, follow-ups, meetings, and knowledge items with a direct

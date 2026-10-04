@@ -37,6 +37,7 @@ from app.query.meetings import classify_meeting
 from app.query.schemas import DateRangeKind, MeetingClassification, QueryRequest
 from app.query.service import execute_query
 from app.knowledge.models import HistoryEntry, KnowledgeItem
+from app.knowledge.normalize import slugify
 from app.knowledge_lookup import KnowledgeLookup
 from app.pipeline import (
     _link_knowledge_to_entities,
@@ -315,28 +316,55 @@ def persist_email_analysis(
         person = person_repo.find_one({"id": person_id})
         if not person or not person.get("org_id"):
             continue
-        if knowledge_repo.find_one({"person_id": person_id, "predicate": "works_at"}) is not None:
+        org = org_repo.find_one({"id": person["org_id"]})
+        if org is None:
             continue
         now = datetime.now(timezone.utc)
-        works_at_fact = KnowledgeItem(
-            knowledge_id=f"knowledge_{thread_id}_{person_id}_works_at",
-            thread_id=thread_id,
-            subject_key=person_id,
-            predicate="works_at",
-            fact_key="works_at",
-            current_value=person["org_id"],
-            person_id=person_id,
-            org_id=person["org_id"],
-            history=[HistoryEntry(value=person["org_id"], source_email_id=message_id, recorded_at=now)],
-            source_emails=[message_id],
-            basis="stated",
-            first_seen_at=now,
-            last_confirmed_at=now,
-            confidence=0.95,
-        )
-        knowledge_repo.upsert_by_key(
-            {"knowledge_id": works_at_fact.knowledge_id}, works_at_fact.model_dump(mode="json")
-        )
+        existing_fact = knowledge_repo.find_one({"person_id": person_id, "predicate": "works_at"})
+
+        if existing_fact is None:
+            works_at_fact = KnowledgeItem(
+                knowledge_id=f"knowledge_{thread_id}_{person_id}_works_at",
+                thread_id=thread_id,
+                # Human-readable subject/value, like every other KnowledgeItem --
+                # the dashboard and the analyze-email LLM prompt both render these
+                # as plain text, so a raw PER-xxx/ORG-xxx id would show as noise.
+                subject_key=slugify(person["name"]),
+                predicate="works_at",
+                fact_key="works_at",
+                current_value=org["name"],
+                person_id=person_id,
+                org_id=person["org_id"],
+                history=[HistoryEntry(value=org["name"], source_email_id=message_id, recorded_at=now)],
+                source_emails=[message_id],
+                basis="stated",
+                first_seen_at=now,
+                last_confirmed_at=now,
+                confidence=0.95,
+            )
+            knowledge_repo.upsert_by_key(
+                {"knowledge_id": works_at_fact.knowledge_id}, works_at_fact.model_dump(mode="json")
+            )
+        elif existing_fact.get("org_id") != person["org_id"]:
+            # Job change: the person's canonical org_id has moved since this fact
+            # was last recorded -- update it and append a history entry, rather
+            # than leaving a permanently stale record forever.
+            current_item = KnowledgeItem.model_validate(existing_fact)
+            updated_item = current_item.model_copy(
+                update={
+                    "current_value": org["name"],
+                    "org_id": person["org_id"],
+                    "history": [
+                        *current_item.history,
+                        HistoryEntry(value=org["name"], source_email_id=message_id, recorded_at=now),
+                    ],
+                    "source_emails": list(dict.fromkeys([*current_item.source_emails, message_id])),
+                    "last_confirmed_at": now,
+                }
+            )
+            knowledge_repo.upsert_by_key(
+                {"knowledge_id": updated_item.knowledge_id}, updated_item.model_dump(mode="json")
+            )
 
     # Phase 20.1: lifecycle-aware, not a raw email lookup -- see
     # app.entities.resolution.resolve_canonical_person_for_email.
@@ -1276,6 +1304,19 @@ def merge_organization_records(db: Database, source_org_id: str, target_org_id: 
         raise ValueError(f"org_id={source_org_id!r} is already merged into {source.get('merged_into')!r}")
 
     return _execute_one_org_mapping(db, source_org_id, target_org_id)
+
+
+def list_organizations(db: Database, name_contains: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """Read-only listing over the existing `organizations` collection -- the
+    MCP-reachable way to turn a company NAME into the canonical org_id
+    get_company_summary/persist_organization_research/merge_organization_records
+    all require. name_contains matches case-insensitively, anywhere in the name
+    (a plain regex search, no fuzzy matching).
+    """
+    query: dict[str, Any] = {}
+    if name_contains:
+        query["name"] = re.compile(re.escape(name_contains), re.IGNORECASE)
+    return OrganizationRepository(db).find_many(query)[: _clamp_limit(limit)]
 
 
 def get_company_summary(db: Database, org_id: str) -> dict[str, Any] | None:

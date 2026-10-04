@@ -1234,3 +1234,32 @@ def test_whats_on_my_table_is_json_serializable(db, settings):
     result = tools.whats_on_my_table(db, settings)
 
     json.dumps(result)
+
+
+# --- list_organizations -------------------------------------------------------------
+
+
+def test_list_organizations_returns_all_orgs_by_default(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "Speedvision", "domain": "speedvision.com", "aliases": [], "source": "gmail"}
+    )
+
+    result = tools.list_organizations(db)
+
+    assert {o["id"] for o in result} == {"ORG-001", "ORG-002"}
+
+
+def test_list_organizations_filters_by_name_contains_case_insensitively(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "Speedvision", "domain": "speedvision.com", "aliases": [], "source": "gmail"}
+    )
+
+    result = tools.list_organizations(db, name_contains="databeat")
+
+    assert [o["id"] for o in result] == ["ORG-001"]
