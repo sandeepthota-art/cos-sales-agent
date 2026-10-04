@@ -21,6 +21,7 @@ from app.database.repositories import (
     KnowledgeRepository,
     MeetingRepository,
     OpportunityRepository,
+    OrganizationRepository,
     PersonalItemRepository,
     PersonRepository,
     ProjectRepository,
@@ -1047,6 +1048,71 @@ def get_project_summary(db: Database, project_id: str) -> dict[str, Any] | None:
             "related_people": "NOT SUPPORTED by the current schema: Project has no direct people reference",
         },
     }
+
+
+def persist_organization_research(
+    db: Database,
+    org_id: str,
+    industry: str | None = None,
+    description: str | None = None,
+    products_services: list[str] | None = None,
+    size_estimate: str | None = None,
+    headquarters: str | None = None,
+    website: str | None = None,
+    research_source: str = "web_research",
+) -> dict[str, Any]:
+    """Persists external research a reasoning caller (Claude, via its own WebSearch
+    tool) already performed about a company -- this function never searches or
+    calls an LLM itself, purely persistence, exactly like persist_email_analysis's
+    own split between reasoning and storage.
+
+    Only overwrites a profile field if the existing Organization's
+    research_source != "manual" -- a hand-corrected field can never be silently
+    clobbered by a later automated research pass. researched_at is always set to
+    now, regardless of whether any field was actually supplied, so a company that
+    genuinely has no useful public information is still marked "looked, found
+    nothing" rather than being re-surfaced by persist_email_analysis's
+    new_organizations_needing_research signal on every future email.
+
+    Raises ValueError if org_id doesn't exist.
+    """
+    repo = OrganizationRepository(db)
+    org = repo.find_one({"id": org_id})
+    if org is None:
+        raise ValueError(f"no organization found for org_id={org_id!r}")
+
+    protect_existing = org.get("research_source") == "manual"
+    supplied = {
+        "industry": industry, "description": description,
+        "products_services": products_services, "size_estimate": size_estimate,
+        "headquarters": headquarters, "website": website,
+    }
+    # Every profile field is written explicitly (even when left unchanged), not
+    # just the ones that got a new value -- so the returned/stored document
+    # always exposes the full field set, matching Organization's own defaults,
+    # rather than silently omitting a key nothing has ever set yet.
+    update: dict[str, Any] = {
+        field: (org.get(field) if (protect_existing or value is None) else value)
+        for field, value in supplied.items()
+    }
+    update["research_source"] = org.get("research_source") if protect_existing else research_source
+    update["researched_at"] = datetime.now(timezone.utc)
+
+    repo.upsert_by_key({"id": org_id}, {**org, **update})
+    return {**org, **update}
+
+
+def list_unresearched_organizations(db: Database) -> list[dict[str, Any]]:
+    """Read-only catch-up list: every active Organization that has never been
+    researched (researched_at is None), independent of
+    persist_email_analysis's per-email new_organizations_needing_research
+    signal -- for a company created but never mentioned again in a later email,
+    or a session that lacked WebSearch access when the signal first fired.
+    """
+    return [
+        org for org in OrganizationRepository(db).find_many({"researched_at": None})
+        if org.get("status", "active") == "active"
+    ]
 
 
 def get_company_summary(db: Database, org: str) -> dict[str, Any]:

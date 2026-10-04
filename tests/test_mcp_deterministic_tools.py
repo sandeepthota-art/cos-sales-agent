@@ -15,6 +15,8 @@ ingest_email onward -- every fixture below uses a raw source id (e.g. "msg_001")
 only when BUILDING the raw email, and the canonical "EML-00N"/"THR-00N" (the
 Nth one allocated in that test's own fresh db) for every call afterward.
 """
+from datetime import datetime, timezone
+
 import mongomock
 import pytest
 
@@ -30,6 +32,7 @@ from app.database.repositories import (
     FollowUpRepository,
     KnowledgeRepository,
     MeetingRepository,
+    OrganizationRepository,
     PersonRepository,
     ReplyDraftRepository,
     ThreadRepository,
@@ -580,3 +583,75 @@ def test_ingest_email_treats_a_previously_completed_email_as_a_baseline_email_to
     assert result["already_completed"] is True
     stored_after = EmailRepository(db).find_one({"message_id": "EML-001"})
     assert stored_after == stored_before  # byte-for-byte untouched
+
+
+# --- persist_organization_research / list_unresearched_organizations --------------
+
+
+def test_persist_organization_research_sets_profile_fields_and_researched_at(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"},
+        {"id": "ORG-001", "name": "databeat.io", "domain": "databeat.io", "aliases": [], "source": "gmail"},
+    )
+
+    result = tools.persist_organization_research(
+        db, "ORG-001", industry="Data Analytics", description="A BI platform vendor.",
+        products_services=["dashboards"], size_estimate="11-50 employees",
+        headquarters="Bengaluru, India", website="https://databeat.io",
+    )
+
+    assert result["industry"] == "Data Analytics"
+    assert result["research_source"] == "web_research"
+    assert result["researched_at"] is not None
+    stored = OrganizationRepository(db).find_one({"id": "ORG-001"})
+    assert stored["industry"] == "Data Analytics"
+
+
+def test_persist_organization_research_sets_researched_at_even_when_inconclusive(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"},
+        {"id": "ORG-001", "name": "databeat.io", "domain": "databeat.io", "aliases": [], "source": "gmail"},
+    )
+
+    result = tools.persist_organization_research(db, "ORG-001")
+
+    assert result["industry"] is None
+    assert result["researched_at"] is not None
+    assert result["research_source"] == "web_research"
+
+
+def test_persist_organization_research_never_overwrites_a_manual_field(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"},
+        {
+            "id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail",
+            "industry": "Hand-verified Industry", "research_source": "manual",
+        },
+    )
+
+    result = tools.persist_organization_research(db, "ORG-001", industry="Auto-researched Industry")
+
+    assert result["industry"] == "Hand-verified Industry"
+    assert result["research_source"] == "manual"
+
+
+def test_persist_organization_research_raises_for_unknown_org(db):
+    with pytest.raises(ValueError, match="ORG-999"):
+        tools.persist_organization_research(db, "ORG-999")
+
+
+def test_list_unresearched_organizations_returns_only_orgs_with_no_researched_at(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "New Co", "domain": "newco.com", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"},
+        {
+            "id": "ORG-002", "name": "Researched Co", "domain": "researched.com", "aliases": [], "source": "gmail",
+            "researched_at": datetime.now(timezone.utc).isoformat(), "research_source": "web_research",
+        },
+    )
+
+    result = tools.list_unresearched_organizations(db)
+
+    assert [o["id"] for o in result] == ["ORG-001"]
