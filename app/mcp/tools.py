@@ -284,6 +284,25 @@ def persist_email_analysis(
     _link_knowledge_to_entities(db, thread_id, message_id)
     _link_thread_to_entities(db, thread_id)
 
+    # New organizations needing research (Knowledge Layer): collect every org_id
+    # this email's resolved people actually belong to, then surface whichever of
+    # those organizations has never been researched. Computed fresh from
+    # researched_at on every call, not a one-shot "just created" flag, so a
+    # session that lacks WebSearch access doesn't permanently lose the chance --
+    # the next email mentioning the same org surfaces it again.
+    person_repo = PersonRepository(db)
+    org_repo = OrganizationRepository(db)
+    referenced_org_ids = {
+        person["org_id"]
+        for person_id in entities_referenced.get("people", [])
+        if (person := person_repo.find_one({"id": person_id})) and person.get("org_id")
+    }
+    new_organizations_needing_research = [
+        {"org_id": org["id"], "name": org["name"], "domain": org.get("domain")}
+        for org_id in referenced_org_ids
+        if (org := org_repo.find_one({"id": org_id})) and org.get("researched_at") is None
+    ]
+
     # Phase 20.1: lifecycle-aware, not a raw email lookup -- see
     # app.entities.resolution.resolve_canonical_person_for_email.
     sender_person = resolve_canonical_person_for_email(db, email.from_.email)
@@ -334,6 +353,7 @@ def persist_email_analysis(
         "message_id": message_id,
         "thread_id": thread_id,
         "entities_referenced": entities_referenced,
+        "new_organizations_needing_research": new_organizations_needing_research,
         "possible_missed_commitment": possible_missed_commitment,
         "calendar_proposal": (
             {

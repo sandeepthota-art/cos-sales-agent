@@ -655,3 +655,91 @@ def test_list_unresearched_organizations_returns_only_orgs_with_no_researched_at
     result = tools.list_unresearched_organizations(db)
 
     assert [o["id"] for o in result] == ["ORG-001"]
+
+
+# --- new_organizations_needing_research signal in persist_email_analysis ----------
+
+
+def test_persist_email_analysis_surfaces_a_new_organization_needing_research(db, settings):
+    raw = _raw_email("msg_001")
+    email = parse_email(raw)
+    ingest_result = tools.ingest_email(db, email)
+
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    result = tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    # Membership, not exact count/length: the envelope sender (john@example.com,
+    # from _raw_email's own default) is independently resolved to its own
+    # brand-new Organization by the pre-existing envelope-resolution loop --
+    # that's correct, pre-existing, unrelated behavior, not something this
+    # assertion should be thrown off by.
+    surfaced_by_domain = {o["domain"]: o for o in result["new_organizations_needing_research"]}
+    assert "newco.com" in surfaced_by_domain
+    assert surfaced_by_domain["newco.com"]["name"] == "NewCo"
+
+
+def test_persist_email_analysis_surfaces_every_new_organization_in_one_email(db, settings):
+    raw = _raw_email("msg_001")
+    email = parse_email(raw)
+    ingest_result = tools.ingest_email(db, email)
+
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[
+            MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo"),
+            MentionedPerson(name="Raj Patel", email="raj@othernewco.com", org="OtherNewCo"),
+        ],
+    )
+
+    result = tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    surfaced_domains = {o["domain"] for o in result["new_organizations_needing_research"]}
+    assert {"newco.com", "othernewco.com"} <= surfaced_domains
+
+
+def test_persist_email_analysis_resurfaces_an_unresearched_org_on_a_later_email(db, settings):
+    ingest1 = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis1 = _analysis(
+        ingest1["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    tools.persist_email_analysis(db, ingest1["message_id"], analysis1, settings)
+
+    ingest2 = tools.ingest_email(db, parse_email(_raw_email("msg_002", subject="Follow-up")))
+    analysis2 = _analysis(
+        ingest2["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    result2 = tools.persist_email_analysis(db, ingest2["message_id"], analysis2, settings)
+
+    surfaced_domains = {o["domain"] for o in result2["new_organizations_needing_research"]}
+    assert "newco.com" in surfaced_domains
+
+
+def test_persist_email_analysis_stops_surfacing_an_org_once_researched(db, settings):
+    ingest1 = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis1 = _analysis(
+        ingest1["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    result1 = tools.persist_email_analysis(db, ingest1["message_id"], analysis1, settings)
+    newco_entry = next(
+        o for o in result1["new_organizations_needing_research"] if o["domain"] == "newco.com"
+    )
+    tools.persist_organization_research(db, newco_entry["org_id"], industry="Software")
+
+    ingest2 = tools.ingest_email(db, parse_email(_raw_email("msg_002", subject="Follow-up")))
+    analysis2 = _analysis(
+        ingest2["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    result2 = tools.persist_email_analysis(db, ingest2["message_id"], analysis2, settings)
+
+    surfaced_domains = {o["domain"] for o in result2["new_organizations_needing_research"]}
+    assert "newco.com" not in surfaced_domains
