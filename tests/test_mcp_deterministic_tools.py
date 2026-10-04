@@ -846,3 +846,61 @@ def test_preview_duplicate_organization_candidates_ignores_already_merged_orgs(d
     )
 
     assert tools.preview_duplicate_organization_candidates(db) == []
+
+
+# --- merge_organization_records -----------------------------------------------------
+
+
+def test_merge_organization_records_repoints_and_retires_the_source(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [], "source": "gmail"}
+    )
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-001"},
+        {"id": "PER-001", "name": "Jane", "email": "jane@databeat-analytics.com", "aliases": [], "org_id": "ORG-002", "open_threads": []},
+    )
+
+    result = tools.merge_organization_records(db, "ORG-002", "ORG-001")
+
+    assert result["status"] == "COMPLETED"
+    assert PersonRepository(db).find_one({"id": "PER-001"})["org_id"] == "ORG-001"
+
+
+def test_merge_organization_records_raises_for_unknown_ids(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    with pytest.raises(ValueError, match="ORG-999"):
+        tools.merge_organization_records(db, "ORG-999", "ORG-001")
+    with pytest.raises(ValueError, match="ORG-999"):
+        tools.merge_organization_records(db, "ORG-001", "ORG-999")
+
+
+def test_merge_organization_records_raises_for_same_id(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    with pytest.raises(ValueError, match="must be different"):
+        tools.merge_organization_records(db, "ORG-001", "ORG-001")
+
+
+def test_merge_organization_records_raises_if_source_already_merged(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"},
+        {
+            "id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [],
+            "source": "gmail", "status": "merged", "merged_into": "ORG-001",
+        },
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-003"}, {"id": "ORG-003", "name": "Third Co", "domain": "thirdco.com", "aliases": [], "source": "gmail"}
+    )
+
+    with pytest.raises(ValueError, match="already merged"):
+        tools.merge_organization_records(db, "ORG-002", "ORG-003")

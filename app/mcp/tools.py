@@ -8,7 +8,7 @@ from app.analysis.schemas import EmailAnalysis
 from app.calendar.actions import build_calendar_action
 from app.calendar.detector import detect_meeting
 from app.config.settings import Settings
-from app.duplicate_consolidation import _execute_one_mapping, generate_merge_plan
+from app.duplicate_consolidation import _execute_one_mapping, _execute_one_org_mapping, generate_merge_plan
 from app.context.diff import diff_context
 from app.context.engine import apply_context_delta
 from app.context.models import ContextDelta, ThreadContext
@@ -1238,6 +1238,44 @@ def preview_duplicate_organization_candidates(db: Database) -> list[dict[str, An
             )
 
     return candidates
+
+
+def merge_organization_records(db: Database, source_org_id: str, target_org_id: str) -> dict[str, Any]:
+    """Merges one Organization record into another, for a caller (Claude,
+    having reviewed a preview_duplicate_organization_candidates pair, with
+    WebSearch confirmation if genuinely ambiguous) who is confident both
+    records are the same real company. Unlike resolve_organization's
+    automatic domain-only path, this always requires an explicit, named
+    pair -- there is no automatic name-similarity merge anywhere in this
+    codebase.
+
+    Repoints org_id across every referencing collection (people, projects,
+    opportunities, commitments, follow_ups, meetings, knowledge_items,
+    reply_drafts, calendar_actions), unions aliases (adding the source's own
+    name as an alias on the target, so a lookup by the old name still
+    resolves), and backfills any blank profile/research field on the target
+    from the source without overwriting a populated target field. The source
+    organization is never deleted -- only retired (status="merged",
+    merged_into=target_org_id), mirroring merge_person_records exactly. A
+    later resolve_organization domain lookup against the retired source
+    transparently redirects to the target (app.entities.organization_lifecycle).
+
+    Raises ValueError if either id doesn't exist, if they're the same id, or
+    if source_org_id is already merged into someone else.
+    """
+    repo = OrganizationRepository(db)
+    source = repo.find_one({"id": source_org_id})
+    target = repo.find_one({"id": target_org_id})
+    if source is None:
+        raise ValueError(f"no organization found for source_org_id={source_org_id!r}")
+    if target is None:
+        raise ValueError(f"no organization found for target_org_id={target_org_id!r}")
+    if source_org_id == target_org_id:
+        raise ValueError("source_org_id and target_org_id must be different")
+    if source.get("status") == "merged":
+        raise ValueError(f"org_id={source_org_id!r} is already merged into {source.get('merged_into')!r}")
+
+    return _execute_one_org_mapping(db, source_org_id, target_org_id)
 
 
 def get_company_summary(db: Database, org_id: str) -> dict[str, Any] | None:

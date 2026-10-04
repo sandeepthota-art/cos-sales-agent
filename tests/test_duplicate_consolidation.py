@@ -11,6 +11,7 @@ from app.database.indexes import initialize_indexes
 from app.database.repositories import (
     CalendarActionRepository,
     CommitmentRepository,
+    FollowUpRepository,
     KnowledgeRepository,
     MeetingRepository,
     MigrationRunRepository,
@@ -20,6 +21,7 @@ from app.database.repositories import (
     ThreadRepository,
 )
 from app.duplicate_consolidation import (
+    _execute_one_org_mapping,
     compute_unique_plan_impact,
     execute_merge_plan,
     generate_merge_plan,
@@ -528,3 +530,60 @@ def test_generate_merge_plan_does_not_resurface_a_completed_phase19_style_mappin
     plan = generate_merge_plan(db)
 
     assert all(m["duplicate_person_id"] != "PER-390" for m in plan)
+
+
+# --- _execute_one_org_mapping -------------------------------------------------------
+
+
+def test_execute_one_org_mapping_repoints_every_referencing_collection(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [], "source": "gmail"}
+    )
+    PersonRepository(db).upsert_by_key({"id": "PER-001"}, _person(id="PER-001", org_id="ORG-002"))
+    ProjectRepository(db).upsert_by_key(
+        {"id": "PRJ-001"}, {"id": "PRJ-001", "project": "Renewal", "org_id": "ORG-002"}
+    )
+    CommitmentRepository(db).upsert_by_key(
+        {"id": "COM-001"},
+        {
+            "id": "COM-001", "what": "send pricing", "class": "mine", "source_record": "msg_001",
+            "made_on": "2026-09-13T10:30:00Z", "status": "open", "org_id": "ORG-002", "thread_id": "t1",
+        },
+    )
+
+    result = _execute_one_org_mapping(db, "ORG-002", "ORG-001")
+
+    assert result["status"] == "COMPLETED"
+    assert result["updated_counts"]["people"] == 1
+    assert result["updated_counts"]["projects"] == 1
+    assert result["updated_counts"]["commitments"] == 1
+    assert PersonRepository(db).find_one({"id": "PER-001"})["org_id"] == "ORG-001"
+    assert ProjectRepository(db).find_one({"id": "PRJ-001"})["org_id"] == "ORG-001"
+    assert CommitmentRepository(db).find_one({"id": "COM-001"})["org_id"] == "ORG-001"
+
+    source = OrganizationRepository(db).find_one({"id": "ORG-002"})
+    assert source["status"] == "merged"
+    assert source["merged_into"] == "ORG-001"
+
+
+def test_execute_one_org_mapping_unions_aliases_and_backfills_blank_profile_fields(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"},
+        {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": ["DB"], "source": "gmail"},
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"},
+        {
+            "id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com",
+            "aliases": [], "source": "gmail", "industry": "Data Analytics",
+        },
+    )
+
+    _execute_one_org_mapping(db, "ORG-002", "ORG-001")
+
+    target = OrganizationRepository(db).find_one({"id": "ORG-001"})
+    assert set(target["aliases"]) == {"DB", "DataBeat Analytics"}
+    assert target["industry"] == "Data Analytics"

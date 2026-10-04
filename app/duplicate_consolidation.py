@@ -39,6 +39,7 @@ from app.database.repositories import (
     FollowUpRepository,
     KnowledgeRepository,
     MeetingRepository,
+    OpportunityRepository,
     OrganizationRepository,
     PersonRepository,
     ProjectRepository,
@@ -791,3 +792,64 @@ def execute_approved_plan(
         "blocked_mappings": blocked, "updated_counts": dict(updated_counts),
         "execution_log": execution_log,
     }
+
+
+# --- Organization merge (mirrors Person merge above, but simpler: org_id is ----
+# --- always a scalar field on every referencing collection -- there is no ----
+# --- list-valued org_id anywhere in this schema, so no _repoint_list_field ----
+# --- equivalent is needed here). -----------------------------------------------
+
+
+_ORG_COLLECTION_SPECS = [
+    ("people", PersonRepository, lambda d: {"id": d["id"]}),
+    ("projects", ProjectRepository, lambda d: {"id": d["id"]}),
+    ("opportunities", OpportunityRepository, lambda d: {"id": d["id"]}),
+    ("commitments", CommitmentRepository, lambda d: {"id": d["id"]}),
+    ("follow_ups", FollowUpRepository, lambda d: {"id": d["id"]}),
+    ("meetings", MeetingRepository, lambda d: {"id": d["id"]}),
+    ("knowledge_items", KnowledgeRepository, lambda d: {"knowledge_id": d["knowledge_id"]}),
+    ("reply_drafts", ReplyDraftRepository, lambda d: {"source_email_id": d["source_email_id"]}),
+    (
+        "calendar_actions", CalendarActionRepository,
+        lambda d: {"thread_id": d["thread_id"], "meeting_fingerprint": d["meeting_fingerprint"]},
+    ),
+]
+
+_ORG_PROFILE_FIELDS = (
+    "industry", "description", "products_services", "size_estimate",
+    "headquarters", "website", "research_source", "researched_at",
+)
+
+
+def _execute_one_org_mapping(db: Database, source_org_id: str, target_org_id: str) -> dict[str, Any]:
+    """Repoints org_id -- always scalar on every referencing collection, unlike
+    Person's person_id/person_ids split -- from source_org_id to
+    target_org_id. Mirrors _execute_one_mapping's structure (same repo-list
+    pattern, same retire-last ordering).
+    """
+    updated_counts: dict[str, int] = defaultdict(int)
+
+    for label, repo_cls, key_fn in _ORG_COLLECTION_SPECS:
+        repo = repo_cls(db)
+        for doc in repo.find_many({"org_id": source_org_id}):
+            repo.upsert_by_key(key_fn(doc), {**doc, "org_id": target_org_id})
+            updated_counts[label] += 1
+
+    org_repo = OrganizationRepository(db)
+    source = org_repo.find_one({"id": source_org_id})
+    target = org_repo.find_one({"id": target_org_id})
+
+    merged_aliases = list(
+        dict.fromkeys([*(target.get("aliases") or []), *(source.get("aliases") or []), source["name"]])
+    )
+    target_update: dict[str, Any] = {"aliases": merged_aliases}
+    for field in _ORG_PROFILE_FIELDS:
+        if not target.get(field) and source.get(field):
+            target_update[field] = source[field]
+    org_repo.upsert_by_key({"id": target_org_id}, {**target, **target_update})
+
+    org_repo.upsert_by_key(
+        {"id": source_org_id}, {**source, "status": "merged", "merged_into": target_org_id}
+    )
+
+    return {"status": "COMPLETED", "updated_counts": dict(updated_counts)}
