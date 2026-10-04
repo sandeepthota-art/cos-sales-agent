@@ -75,6 +75,11 @@ export interface PersonRow {
   email?: string | null
   aliases?: string[]
   org?: string | null
+  // Derived at the UI/API layer (app.ui.data.list_people), never persisted --
+  // resolves org_id to its Organization's real name. org (the free-text field
+  // above) is never actually populated by any resolution path; company is what
+  // the dashboard should display.
+  company?: string | null
   org_id?: string | null
   role?: string | null
   last_inbound?: string | null
