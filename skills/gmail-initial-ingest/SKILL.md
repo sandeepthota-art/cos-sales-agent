@@ -142,6 +142,16 @@ For each message, in order (oldest to newest within a batch):
      resolved the first time are reused, not duplicated, and only the new
      commitment gets created. If there genuinely isn't one, ignore the
      warning and continue; it's a heuristic, not proof.
+   - **Research newly-discovered organizations.** If the same result's
+     `new_organizations_needing_research` list is non-empty, for each entry
+     use WebSearch (1-2 targeted queries, e.g. `"<name>" company industry`
+     or `"<domain>" about`) to find out what the company does, then call
+     `persist_organization_research` with whatever you found (industry,
+     description, products_services, size_estimate, headquarters, website).
+     If search turns up nothing useful, still call
+     `persist_organization_research` with no fields set -- this marks the
+     company "looked, found nothing" so it isn't re-surfaced on every future
+     email about it. Do this before calling `mark_email_completed`.
    - Produce a bounded `ContextDelta` (only what this message changes -- a
      real object matching `app.context.models.ContextDelta`'s shape, never
      an empty/placeholder one) and call `persist_context_delta`.
@@ -323,6 +333,22 @@ calls `process_email` or any write tool in this mode.
 - If something actionable surfaces (a reply that could be sent, a meeting
   that could be scheduled), present it as a proposal and wait for explicit
   approval -- never act on a question alone.
+
+## Organization research catch-up and dedup (on-demand only)
+
+These are never run automatically as part of ingesting an email -- only when
+explicitly asked to catch up on research or check for duplicate organizations.
+
+- **`list_unresearched_organizations`**: call when asked to "catch up on
+  company research" -- for each organization returned, research and persist
+  exactly as in the per-message step above.
+- **`preview_duplicate_organization_candidates`**: call when asked to check
+  for duplicate companies. Each candidate names two organization ids and why
+  they were flagged (`name_match` or `domain_cross_match`) -- never merge
+  automatically from this list alone. Review each pair (WebSearch if
+  genuinely ambiguous -- e.g. confirming two similarly-named companies are
+  actually the same legal entity), then call `merge_organization_records`
+  only for pairs you're genuinely confident about.
 
 ## What this skill never does, in any mode
 
