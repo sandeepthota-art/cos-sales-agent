@@ -309,3 +309,27 @@ def test_wants_stdio_transport_when_neither_mcp_transport_nor_port_is_set(monkey
     monkeypatch.delenv("MCP_TRANSPORT", raising=False)
     monkeypatch.delenv("PORT", raising=False)
     assert _wants_http_transport() is False
+
+
+def test_persist_organization_research_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "persist_organization_research" in names
+
+
+def test_list_unresearched_organizations_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "list_unresearched_organizations" in names
+
+
+def test_preview_duplicate_organization_candidates_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "preview_duplicate_organization_candidates" in names
+
+
+def test_merge_organization_records_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "merge_organization_records" in names

@@ -502,6 +502,71 @@ def merge_person_records(duplicate_person_id: str, canonical_person_id: str, rea
 
 
 @mcp.tool()
+def persist_organization_research(
+    org_id: str,
+    industry: str | None = None,
+    description: str | None = None,
+    products_services: list[str] | None = None,
+    size_estimate: str | None = None,
+    headquarters: str | None = None,
+    website: str | None = None,
+) -> dict[str, Any]:
+    """Persists external research you (Claude, via your own WebSearch tool)
+    already performed about a company -- call this after seeing
+    new_organizations_needing_research in a persist_email_analysis result, or
+    after reviewing list_unresearched_organizations. Only overwrites a field
+    if it wasn't already hand-corrected (research_source != "manual" on the
+    existing record). Sets researched_at regardless of whether you found
+    anything, so the same org isn't re-surfaced on every future email. Raises
+    ValueError if org_id doesn't exist.
+    """
+    return tools.persist_organization_research(
+        _get_db(), org_id, industry=industry, description=description,
+        products_services=products_services, size_estimate=size_estimate,
+        headquarters=headquarters, website=website,
+    )
+
+
+@mcp.tool()
+def list_unresearched_organizations() -> list[dict[str, Any]]:
+    """Read-only catch-up list of every active Organization that has never
+    been researched (researched_at is None) -- for a company created but
+    never mentioned again in a later email, independent of
+    persist_email_analysis's per-email new_organizations_needing_research
+    signal. Never writes anything.
+    """
+    return tools.list_unresearched_organizations(_get_db())
+
+
+@mcp.tool()
+def preview_duplicate_organization_candidates() -> list[dict[str, Any]]:
+    """Read-only heuristic preview of organizations that may be the same real
+    company under a different name or domain (e.g. "DataBeat" / "DataBeat
+    Analytics" / databeat.com) -- resolve_organization's own automatic path
+    only merges on exact email domain and never catches these. Never merges
+    anything -- review each candidate yourself (WebSearch if genuinely
+    ambiguous) and call merge_organization_records only when confident.
+    """
+    return tools.preview_duplicate_organization_candidates(_get_db())
+
+
+@mcp.tool()
+def merge_organization_records(source_org_id: str, target_org_id: str) -> dict[str, Any]:
+    """Merges one Organization record into another -- use only when you
+    (Claude, having reviewed a preview_duplicate_organization_candidates pair,
+    with WebSearch if genuinely ambiguous) are confident both records are the
+    same real company. Repoints org_id across every downstream collection
+    (people, projects, opportunities, commitments, follow_ups, meetings,
+    knowledge_items, reply_drafts, calendar_actions), unions aliases, and
+    backfills blank profile fields on the target from the source. The source
+    is never deleted -- only retired (status="merged", merged_into=
+    target_org_id). Raises ValueError if either id doesn't exist, they're the
+    same id, or source_org_id is already merged into someone else.
+    """
+    return tools.merge_organization_records(_get_db(), source_org_id, target_org_id)
+
+
+@mcp.tool()
 def ask_question(text: str, timezone: str | None = None) -> dict[str, Any]:
     """BRD gap-analysis FR-01: answer an executive-style natural-language question
     (e.g. "What meetings do I have today?", "What follow-ups are overdue?", "What
