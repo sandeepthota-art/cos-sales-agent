@@ -36,6 +36,7 @@ from app.query.dates import resolve_date_range
 from app.query.meetings import classify_meeting
 from app.query.schemas import DateRangeKind, MeetingClassification, QueryRequest
 from app.query.service import execute_query
+from app.knowledge.models import HistoryEntry, KnowledgeItem
 from app.knowledge_lookup import KnowledgeLookup
 from app.pipeline import (
     _link_knowledge_to_entities,
@@ -302,6 +303,40 @@ def persist_email_analysis(
         for org_id in referenced_org_ids
         if (org := org_repo.find_one({"id": org_id})) and org.get("researched_at") is None
     ]
+
+    # Explicit Person -> WORKS_AT -> Organization knowledge fact (Knowledge
+    # Layer): Person.org_id already IS this relationship as a silent FK; this
+    # records it as an auditable KnowledgeItem too, with history/confidence/
+    # source_emails like every other extracted fact. Looked up directly by
+    # (person_id, predicate) -- not process_new_fact's fuzzy text-similarity
+    # dedup, since a WORKS_AT fact's identity is always exactly one person and
+    # one org_id, never free text requiring fuzzy matching.
+    for person_id in entities_referenced.get("people", []):
+        person = person_repo.find_one({"id": person_id})
+        if not person or not person.get("org_id"):
+            continue
+        if knowledge_repo.find_one({"person_id": person_id, "predicate": "works_at"}) is not None:
+            continue
+        now = datetime.now(timezone.utc)
+        works_at_fact = KnowledgeItem(
+            knowledge_id=f"knowledge_{thread_id}_{person_id}_works_at",
+            thread_id=thread_id,
+            subject_key=person_id,
+            predicate="works_at",
+            fact_key="works_at",
+            current_value=person["org_id"],
+            person_id=person_id,
+            org_id=person["org_id"],
+            history=[HistoryEntry(value=person["org_id"], source_email_id=message_id, recorded_at=now)],
+            source_emails=[message_id],
+            basis="stated",
+            first_seen_at=now,
+            last_confirmed_at=now,
+            confidence=0.95,
+        )
+        knowledge_repo.upsert_by_key(
+            {"knowledge_id": works_at_fact.knowledge_id}, works_at_fact.model_dump(mode="json")
+        )
 
     # Phase 20.1: lifecycle-aware, not a raw email lookup -- see
     # app.entities.resolution.resolve_canonical_person_for_email.

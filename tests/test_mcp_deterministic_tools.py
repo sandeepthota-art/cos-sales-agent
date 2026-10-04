@@ -743,3 +743,43 @@ def test_persist_email_analysis_stops_surfacing_an_org_once_researched(db, setti
 
     surfaced_domains = {o["domain"] for o in result2["new_organizations_needing_research"]}
     assert "newco.com" not in surfaced_domains
+
+
+# --- WORKS_AT knowledge fact -------------------------------------------------------
+
+
+def test_persist_email_analysis_creates_a_works_at_knowledge_fact(db, settings):
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    fact = KnowledgeRepository(db).find_one({"person_id": person["id"], "predicate": "works_at"})
+    assert fact is not None
+    assert fact["current_value"] == person["org_id"]
+    assert fact["org_id"] == person["org_id"]
+    assert fact["basis"] == "stated"
+
+
+def test_persist_email_analysis_does_not_duplicate_works_at_fact_on_a_later_email(db, settings):
+    ingest1 = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis1 = _analysis(
+        ingest1["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    tools.persist_email_analysis(db, ingest1["message_id"], analysis1, settings)
+
+    ingest2 = tools.ingest_email(db, parse_email(_raw_email("msg_002", subject="Follow-up")))
+    analysis2 = _analysis(
+        ingest2["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    tools.persist_email_analysis(db, ingest2["message_id"], analysis2, settings)
+
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    facts = KnowledgeRepository(db).find_many({"person_id": person["id"], "predicate": "works_at"})
+    assert len(facts) == 1
