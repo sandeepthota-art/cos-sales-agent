@@ -66,7 +66,8 @@ a {
 /* App shell */
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-shell__main {
@@ -74,11 +75,14 @@ a {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-shell__content {
   padding: 24px 32px 48px;
   flex: 1;
+  overflow-y: auto;
 }
 
 .full-page-loading {
@@ -564,6 +568,17 @@ a {
 @media (max-width: 960px) {
   .app-shell {
     flex-direction: column;
+    height: auto;
+    overflow: visible;
+  }
+
+  .app-shell__main {
+    height: auto;
+    overflow: visible;
+  }
+
+  .app-shell__content {
+    overflow-y: visible;
   }
 
   .sidebar {
@@ -572,6 +587,7 @@ a {
     flex-wrap: wrap;
     gap: 4px;
     padding: 12px;
+    overflow-y: visible;
   }
 
   .sidebar__brand {
