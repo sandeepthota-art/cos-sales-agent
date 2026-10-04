@@ -20,6 +20,7 @@ from app.database.repositories import (
 from app.entities.ids import next_id
 from app.entities.lifecycle import is_person_active, resolve_canonical_person_id
 from app.entities.models import Commitment, FollowUp, Meeting, Opportunity, Organization, Person, PersonalItem, Project
+from app.entities.organization_lifecycle import is_organization_merged, resolve_canonical_organization_id
 from app.knowledge.normalize import normalize_text
 
 # Serializes a datetime exactly the way Person.model_dump(mode="json") would (e.g. a
@@ -83,7 +84,14 @@ def resolve_organization(db: Database, email: str | None, name_hint: str | None 
     whenever no domain is available -- a company NAME alone is never sufficient to
     establish or look up a canonical organization; text-similarity-only merging
     ("DataBeat" vs "DataBeat Inc." vs "databeat") is deliberately out of scope here,
-    since two different real companies can share a very similar display name.
+    since two different real companies can share a very similar display name --
+    see app.mcp.tools.preview_duplicate_organization_candidates/
+    merge_organization_records for that, as an explicit, caller-confirmed step.
+
+    If the domain-matched Organization has itself been merged into another one
+    (app.entities.organization_lifecycle), this transparently redirects to the
+    canonical replacement instead -- a domain match must never resurrect a
+    retired, merged organization record.
     """
     if not email or "@" not in email:
         return None
@@ -94,14 +102,18 @@ def resolve_organization(db: Database, email: str | None, name_hint: str | None 
     repo = OrganizationRepository(db)
     existing = repo.find_one({"domain": domain})
     if existing:
-        # Enrichment, not migration: the org may have been created earlier with no real
-        # display name (e.g. the envelope-resolution loop never has a name hint, so the
-        # raw domain was used as a placeholder name) -- a later call that DOES have one
-        # fills it in, but only while the stored name is still just the domain itself;
-        # never overwrites a real name that's already been recorded.
-        if name_hint and existing.get("name") == domain:
-            repo.upsert_by_key({"id": existing["id"]}, {**existing, "name": name_hint})
-        return existing["id"]
+        target = existing
+        if is_organization_merged(existing):
+            canonical_id = resolve_canonical_organization_id(db, existing["id"])
+            target = repo.find_one({"id": canonical_id})
+        # Enrichment, not migration: the org may have been created earlier with no
+        # real display name -- a later call that DOES have one fills it in, but
+        # only while the stored name is still just the domain itself; never
+        # overwrites a real name that's already been recorded. Applied to
+        # whichever record is actually canonical, never to a retired one.
+        if name_hint and target.get("name") == target.get("domain"):
+            repo.upsert_by_key({"id": target["id"]}, {**target, "name": name_hint})
+        return target["id"]
 
     org_id = next_id(db, "ORG-")
     org = Organization(id=org_id, name=name_hint or domain, domain=domain)

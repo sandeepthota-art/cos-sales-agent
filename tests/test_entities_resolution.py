@@ -1010,6 +1010,23 @@ def test_resolve_organization_returns_none_without_a_domain(db):
     assert OrganizationRepository(db).find_many({}).__len__() == 0
 
 
+def test_resolve_organization_redirects_through_a_merged_organization(db):
+    # Pin: after an org merge, a brand-new person at the SOURCE org's domain must
+    # resolve to the canonical (target) org, never resurrect the retired source --
+    # this is the exact bug a domain-only lookup with no lifecycle awareness would
+    # otherwise reintroduce.
+    source_org_id = resolve_organization(db, "first@databeat.io", name_hint="DataBeat")
+    target_org_id = resolve_organization(db, "first@differentcompany.example", name_hint="Different Co")
+    OrganizationRepository(db).upsert_by_key(
+        {"id": source_org_id},
+        {**OrganizationRepository(db).find_one({"id": source_org_id}), "status": "merged", "merged_into": target_org_id},
+    )
+
+    resolved = resolve_organization(db, "second@databeat.io", name_hint="DataBeat")
+
+    assert resolved == target_org_id
+
+
 def test_resolve_person_sets_org_id_from_email_domain(db):
     person_id = resolve_person(
         db, {"name": "Ashok Ganapam", "email": "ashok@databeat.io", "org": "DataBeat"},
