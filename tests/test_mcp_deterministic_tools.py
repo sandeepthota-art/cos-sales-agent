@@ -783,3 +783,66 @@ def test_persist_email_analysis_does_not_duplicate_works_at_fact_on_a_later_emai
     person = PersonRepository(db).find_one({"email": "jane@newco.com"})
     facts = KnowledgeRepository(db).find_many({"person_id": person["id"], "predicate": "works_at"})
     assert len(facts) == 1
+
+
+# --- preview_duplicate_organization_candidates -------------------------------------
+
+
+def test_preview_duplicate_organization_candidates_flags_a_name_variant_pair(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"},
+        {"id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [], "source": "gmail"},
+    )
+
+    result = tools.preview_duplicate_organization_candidates(db)
+
+    assert len(result) == 1
+    assert {result[0]["org_a_id"], result[0]["org_b_id"]} == {"ORG-001", "ORG-002"}
+    assert result[0]["evidence"] == "name_match"
+
+
+def test_preview_duplicate_organization_candidates_flags_a_website_domain_cross_match(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"},
+        {
+            "id": "ORG-001", "name": "Acme Corp", "domain": "acme-internal.example", "aliases": [],
+            "source": "gmail", "website": "https://acme.com",
+        },
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "Totally Different Name", "domain": "acme.com", "aliases": [], "source": "gmail"}
+    )
+
+    result = tools.preview_duplicate_organization_candidates(db)
+
+    assert len(result) == 1
+    assert result[0]["evidence"] == "domain_cross_match"
+
+
+def test_preview_duplicate_organization_candidates_does_not_flag_unrelated_orgs(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"}, {"id": "ORG-002", "name": "Totally Unrelated Co", "domain": "unrelated.com", "aliases": [], "source": "gmail"}
+    )
+
+    assert tools.preview_duplicate_organization_candidates(db) == []
+
+
+def test_preview_duplicate_organization_candidates_ignores_already_merged_orgs(db):
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-001"}, {"id": "ORG-001", "name": "DataBeat", "domain": "databeat.io", "aliases": [], "source": "gmail"}
+    )
+    OrganizationRepository(db).upsert_by_key(
+        {"id": "ORG-002"},
+        {
+            "id": "ORG-002", "name": "DataBeat Analytics", "domain": "databeat-analytics.com", "aliases": [],
+            "source": "gmail", "status": "merged", "merged_into": "ORG-001",
+        },
+    )
+
+    assert tools.preview_duplicate_organization_candidates(db) == []

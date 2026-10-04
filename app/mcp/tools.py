@@ -1170,6 +1170,76 @@ def list_unresearched_organizations(db: Database) -> list[dict[str, Any]]:
     ]
 
 
+_ORG_SUFFIX_TOKENS = {
+    "inc", "llc", "ltd", "corp", "corporation", "group",
+    "technologies", "analytics", "solutions", "co",
+}
+
+
+def _org_name_tokens(name: str) -> set[str]:
+    lowered = re.sub(r"[^\w\s]", "", name.lower())
+    return {t for t in lowered.split() if t not in _ORG_SUFFIX_TOKENS}
+
+
+def _org_website_domain(org: dict[str, Any]) -> str | None:
+    website = org.get("website")
+    if not website:
+        return None
+    stripped = re.sub(r"^https?://", "", website).split("/")[0]
+    return stripped[4:] if stripped.startswith("www.") else stripped
+
+
+def preview_duplicate_organization_candidates(db: Database) -> list[dict[str, Any]]:
+    """Read-only heuristic preview of organizations that may be the same real
+    company under different names/domains (e.g. "DataBeat" / "DataBeat
+    Analytics" / databeat.com) -- resolve_organization's own automatic path
+    stays domain-only and never merges these; this is the human/Claude-
+    reviewed catch for everything domain-matching can't see. Never merges
+    anything itself -- see merge_organization_records for the explicit,
+    caller-confirmed execution step. Already-merged organizations are never
+    candidates (status != "active" is skipped entirely).
+
+    A pair is flagged when, after normalizing both names (lowercase, strip
+    punctuation, drop common suffix words: Inc/LLC/Ltd/Corp/Corporation/
+    Group/Technologies/Analytics/Solutions/Co), their non-empty token sets
+    are equal or one is a subset of the other ("name_match"), OR one
+    organization's website domain matches the other's stored domain or an
+    alias ("domain_cross_match").
+    """
+    orgs = [o for o in OrganizationRepository(db).find_many({}) if o.get("status", "active") == "active"]
+    candidates: list[dict[str, Any]] = []
+
+    for i, a in enumerate(orgs):
+        a_tokens = _org_name_tokens(a["name"])
+        a_website_domain = _org_website_domain(a)
+        for b in orgs[i + 1:]:
+            b_tokens = _org_name_tokens(b["name"])
+            b_website_domain = _org_website_domain(b)
+
+            name_match = bool(a_tokens) and bool(b_tokens) and (
+                a_tokens == b_tokens or a_tokens <= b_tokens or b_tokens <= a_tokens
+            )
+            domain_cross_match = (
+                (a_website_domain is not None and a_website_domain == b.get("domain"))
+                or (b_website_domain is not None and b_website_domain == a.get("domain"))
+                or (a.get("domain") and a["domain"] in (b.get("aliases") or []))
+                or (b.get("domain") and b["domain"] in (a.get("aliases") or []))
+            )
+
+            if not (name_match or domain_cross_match):
+                continue
+
+            candidates.append(
+                {
+                    "org_a_id": a["id"], "org_a_name": a["name"],
+                    "org_b_id": b["id"], "org_b_name": b["name"],
+                    "evidence": "name_match" if name_match else "domain_cross_match",
+                }
+            )
+
+    return candidates
+
+
 def get_company_summary(db: Database, org_id: str) -> dict[str, Any] | None:
     """Read-only cross-collection summary for an organization, assembled with
     plain Mongo queries in application code -- no LLM involved. Returns None
