@@ -1,7 +1,9 @@
 import mongomock
 import pytest
 
+from app.analysis.schemas import EmailAnalysis
 from app.config.settings import Settings
+from app.context.models import ContextDelta
 from app.database.indexes import initialize_indexes
 from app.database.repositories import (
     CalendarActionRepository,
@@ -11,15 +13,15 @@ from app.database.repositories import (
     PersonRepository,
 )
 from app.email.models import parse_email
-from app.interfaces.llm_provider import LLMProvider
 from app.mcp.tools import (
+    ingest_email,
     list_processed_emails,
+    mark_email_completed,
     merge_person_records,
+    persist_context_delta,
+    persist_email_analysis,
     preview_duplicate_person_candidates,
-    process_email,
 )
-from app.providers.calendar.mock import MockCalendarProvider
-from app.providers.llm.mock import MockLLMProvider
 
 
 def _raw_email(message_id, body, subject="Enterprise CRM Proposal", **overrides):
@@ -33,20 +35,6 @@ def _raw_email(message_id, body, subject="Enterprise CRM Proposal", **overrides)
     }
     raw.update(overrides)
     return raw
-
-
-class _AlwaysBrokenLLM(LLMProvider):
-    def analyze_email(self, email, thread_history=None, person_context=None):
-        return {"summary": "not enough fields"}
-
-    def update_context(self, previous_context, new_analysis):
-        raise AssertionError("should not be reached when analysis fails")
-
-    def verify_same_fact(self, existing_value, new_value, subject, predicate):
-        raise AssertionError
-
-    def draft_reply(self, context, latest_email):
-        raise AssertionError
 
 
 @pytest.fixture
@@ -65,103 +53,41 @@ def settings():
     return Settings(calendar_provider="mock", llm_provider="mock", agent_email="ashok@example.com", agent_name=None)
 
 
-def test_process_email_returns_draft_and_knowledge_for_buying_signal(db, settings):
-    email = parse_email(
-        _raw_email(
-            "msg_001",
-            "We currently use Salesforce but pricing has become a real pain point. "
-            "Could you send over pricing?",
-        )
-    )
-
-    result = process_email(db, email, MockLLMProvider(), MockCalendarProvider(), settings)
-
-    assert result["status"] == "completed"
-    assert result["error"] is None
-    assert result["thread_id"] is not None
-    assert result["reply_draft"] is not None
-    assert result["reply_draft"]["subject"].startswith("Re:")
-    assert any(item["current_value"] == "Salesforce" for item in result["knowledge"])
-    assert result["calendar_proposal"] is None
-
-
-def test_process_email_is_idempotent_on_replay(db, settings):
-    raw = _raw_email("msg_001", "We currently use Salesforce but pricing is a pain point.")
-
-    first = process_email(db, parse_email(raw), MockLLMProvider(), MockCalendarProvider(), settings)
-    second = process_email(db, parse_email(raw), MockLLMProvider(), MockCalendarProvider(), settings)
-
-    assert first["status"] == "completed"
-    assert second["status"] == "skipped"
-    assert second["thread_id"] == first["thread_id"]
-    assert second["knowledge"] == first["knowledge"]
-
-
-def test_process_email_surfaces_meeting_proposal_without_scheduling_it(db, settings):
-    email = parse_email(
-        _raw_email("msg_001", "Let's meet Tuesday at 3 PM for 30 minutes to discuss pricing.")
-    )
-    calendar_provider = MockCalendarProvider()
-
-    result = process_email(db, email, MockLLMProvider(), calendar_provider, settings)
-
-    assert result["status"] == "completed"
-    assert result["calendar_proposal"] is not None
-    assert result["calendar_proposal"]["status"] == "awaiting_approval"
-    assert calendar_provider.created_events == []
-
-
-def test_process_email_returns_failed_status_with_error_on_analysis_failure(db, settings):
-    email = parse_email(_raw_email("msg_001", "Some body text."))
-
-    result = process_email(db, email, _AlwaysBrokenLLM(), MockCalendarProvider(), settings)
-
-    assert result["status"] == "failed"
-    assert result["error"] is not None
-    assert result["thread_id"] is None
-    assert result["knowledge"] == []
-    assert result["reply_draft"] is None
-    assert result["calendar_proposal"] is None
-
-
-def test_process_email_returns_failed_status_when_email_limit_yields_no_result(db):
-    settings = Settings(calendar_provider="mock", llm_provider="mock", email_limit=0)
-    email = parse_email(_raw_email("msg_001", "Some body text."))
-
-    result = process_email(db, email, MockLLMProvider(), MockCalendarProvider(), settings)
-
-    assert result == {
-        "status": "failed",
-        "error": "pipeline produced no result for this email",
-        "thread_id": None,
-        "context_summary": None,
-        "knowledge": [],
-        "reply_draft": None,
-        "calendar_proposal": None,
-    }
+def _complete_via_granular_tools(db, settings, raw, analysis=None, delta=None):
+    """Drives one email through the granular pipeline (ingest -> analyze -> context
+    -> complete) to COMPLETED -- the same end-state these tests used to reach via the
+    single-LLM-call process_email, which was removed (it depended on a server-side
+    LLM_API_KEY that was unreliable in this project; every real caller had already
+    moved to these granular tools instead). Returns ingest_email's own result dict.
+    """
+    email = parse_email(raw)
+    ingest_result = ingest_email(db, email)
+    if ingest_result["already_completed"]:
+        return ingest_result
+    message_id = ingest_result["message_id"]
+    thread_id = ingest_result["thread_id"]
+    analysis = analysis or EmailAnalysis(email_id=message_id, summary="", intent="")
+    persist_email_analysis(db, message_id, analysis, settings)
+    persist_context_delta(db, thread_id, message_id, delta or ContextDelta())
+    mark_email_completed(db, message_id)
+    return ingest_result
 
 
 def test_list_processed_emails_returns_stored_fields_most_recent_first(db, settings):
-    process_email(
-        db,
-        parse_email(_raw_email("msg_001", "Body one.", timestamp="2026-09-13T10:00:00Z")),
-        MockLLMProvider(),
-        MockCalendarProvider(),
-        settings,
+    _complete_via_granular_tools(
+        db, settings, _raw_email("msg_001", "Body one.", timestamp="2026-09-13T10:00:00Z"),
+        delta=ContextDelta(summary="Body one summary."),
     )
-    process_email(
+    _complete_via_granular_tools(
         db,
-        parse_email(
-            _raw_email(
-                "msg_002",
-                "Body two is a fair bit longer than one hundred and fifty characters so that "
-                "the preview truncation actually has something real to cut off in this test.",
-                timestamp="2026-09-14T10:00:00Z",
-            )
-        ),
-        MockLLMProvider(),
-        MockCalendarProvider(),
         settings,
+        _raw_email(
+            "msg_002",
+            "Body two is a fair bit longer than one hundred and fifty characters so that "
+            "the preview truncation actually has something real to cut off in this test.",
+            timestamp="2026-09-14T10:00:00Z",
+        ),
+        delta=ContextDelta(summary="Body two summary."),
     )
 
     results = list_processed_emails(db, limit=50)
@@ -183,12 +109,8 @@ def test_list_processed_emails_returns_stored_fields_most_recent_first(db, setti
 
 def test_list_processed_emails_respects_limit(db, settings):
     for i in range(3):
-        process_email(
-            db,
-            parse_email(_raw_email(f"msg_{i:03d}", "Body.", timestamp=f"2026-09-{13 + i:02d}T10:00:00Z")),
-            MockLLMProvider(),
-            MockCalendarProvider(),
-            settings,
+        _complete_via_granular_tools(
+            db, settings, _raw_email(f"msg_{i:03d}", "Body.", timestamp=f"2026-09-{13 + i:02d}T10:00:00Z")
         )
 
     results = list_processed_emails(db, limit=2)
@@ -198,42 +120,38 @@ def test_list_processed_emails_respects_limit(db, settings):
 
 
 def test_list_processed_emails_includes_entity_metadata(db, settings):
-    process_email(
+    _complete_via_granular_tools(
         db,
-        parse_email(_raw_email("1a08090646ebaa45", "I will send the proposal on Friday.")),
-        MockLLMProvider(),
-        MockCalendarProvider(),
         settings,
+        _raw_email("1a08090646ebaa45", "I will send the proposal on Friday."),
+        analysis=EmailAnalysis(
+            email_id="EML-001", summary="", intent="",
+            goal_pillar="Sales", label_applied="Needs reply: ASAP",
+        ),
     )
 
     results = list_processed_emails(db, limit=50)
 
     entry = results[0]
     assert entry["goal_pillar"] == "Sales"
-    assert entry["label_applied"] in {"Needs reply: ASAP", "Read only"}
+    assert entry["label_applied"] == "Needs reply: ASAP"
     # John (sender) + the operator's own dedicated profile (Ashok, settings.agent_email).
     assert len(entry["entities_referenced"]["people"]) == 2
 
 
 def test_list_processed_emails_defaults_entity_fields_when_email_never_reached_that_stage(db, settings):
-    # An email that fails before ENTITIES_PROCESSED (or any pre-existing email document
-    # from before this feature existed) has none of the 4 entity-metadata keys. Direct
-    # key access on any of them would raise KeyError and crash the whole tool call,
-    # hiding every email, not just the broken one.
-    process_email(
-        db,
-        parse_email(_raw_email("msg_001", "Some body text.")),
-        _AlwaysBrokenLLM(),
-        MockCalendarProvider(),
-        settings,
-    )
+    # An email that's only been ingest_email'd (or any pre-existing email document
+    # from before entity metadata existed) has none of the 4 entity-metadata keys.
+    # Direct key access on any of them would raise KeyError and crash the whole tool
+    # call, hiding every email, not just this one.
+    ingest_email(db, parse_email(_raw_email("msg_001", "Some body text.")))
 
     results = list_processed_emails(db, limit=50)
 
     assert len(results) == 1
     entry = results[0]
     assert entry["message_id"] == "EML-001"
-    assert entry["processing_status"]["stage"] == "FAILED"
+    assert entry["processing_status"]["stage"] == "THREADED"
     assert entry["goal_pillar"] is None
     assert entry["label_applied"] is None
     assert entry["entities_referenced"] == {
@@ -270,13 +188,7 @@ def _raw_only_email(message_id, **overrides):
 
 
 def test_list_processed_emails_does_not_crash_on_processed_email_with_processing_status(db, settings):
-    process_email(
-        db,
-        parse_email(_raw_email("msg_processed", "Body.")),
-        MockLLMProvider(),
-        MockCalendarProvider(),
-        settings,
-    )
+    _complete_via_granular_tools(db, settings, _raw_email("msg_processed", "Body."))
 
     results = list_processed_emails(db, limit=50)
 
@@ -298,12 +210,8 @@ def test_list_processed_emails_does_not_crash_on_raw_email_without_processing_st
 
 
 def test_list_processed_emails_handles_mixed_raw_and_processed_emails_without_crashing(db, settings):
-    process_email(
-        db,
-        parse_email(_raw_email("msg_processed", "Body.", timestamp="2026-09-15T10:00:00Z")),
-        MockLLMProvider(),
-        MockCalendarProvider(),
-        settings,
+    _complete_via_granular_tools(
+        db, settings, _raw_email("msg_processed", "Body.", timestamp="2026-09-15T10:00:00Z")
     )
     EmailRepository(db).upsert_by_key(
         {"message_id": "msg_raw"},
@@ -330,13 +238,7 @@ def test_list_processed_emails_skips_a_malformed_stub_document_instead_of_crashi
          "processing_status": {"stage": "CONTEXT_BUILT", "error": None, "failed_stage": None,
                                 "updated_at": "2026-09-13T10:00:00Z"}},
     )
-    process_email(
-        db,
-        parse_email(_raw_email("msg_processed", "Body.")),
-        MockLLMProvider(),
-        MockCalendarProvider(),
-        settings,
-    )
+    _complete_via_granular_tools(db, settings, _raw_email("msg_processed", "Body."))
 
     results = list_processed_emails(db, limit=50)
 

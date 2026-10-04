@@ -190,8 +190,10 @@ Three distinct paths exist today — do not confuse them:
   Gmail-export-shaped JSON file you supply yourself. No sample real-email
   dataset ships in this repository.
 - **Normal runtime processing**: one email at a time via the MCP server's
-  `process_email` / `ingest_email` tools, driven by an external MCP client
-  (e.g. a Gmail connector in Claude Desktop). There is no batch Gmail-API
+  granular, LLM-free tools (`ingest_email` / `persist_email_analysis` /
+  `persist_context_delta` / `create_reply_draft` / `mark_email_completed`),
+  driven by an external MCP client (e.g. a Gmail connector in Claude Desktop)
+  doing the reasoning itself. There is no batch Gmail-API
   polling implemented in this codebase — `python -m app.scheduler` only polls
   a **local folder** for JSON export files; a live-Gmail source
   (`app/providers/source/live_gmail.py`) exists in the code but is not wired
@@ -201,10 +203,14 @@ Three distinct paths exist today — do not confuse them:
 
 The MCP server (`app/mcp/server.py`) exposes every read tool (people,
 organizations via `get_company_summary`, projects, commitments, follow-ups,
-meetings, reply drafts, knowledge lookup) plus the write tools
-(`process_email` and the deterministic `ingest_email` /
-`persist_email_analysis` / `persist_context_delta` / `create_reply_draft` /
-`mark_email_completed` path).
+meetings, reply drafts, knowledge lookup) plus the deterministic,
+LLM-free write path (`ingest_email` / `persist_email_analysis` /
+`persist_context_delta` / `create_reply_draft` / `mark_email_completed`) --
+the caller does the reasoning (reading the email, classifying it) and these
+tools only persist the result. The single-LLM-call `process_email` tool that
+used to sit alongside this path was removed: it depended on a server-side
+`LLM_API_KEY` that was unreliable in this project (expired-key/401 errors),
+and every real caller had already moved to the granular tools instead.
 
 **Local (stdio) — the default**, for a client like Claude Desktop:
 

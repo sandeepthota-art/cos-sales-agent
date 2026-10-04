@@ -11,12 +11,6 @@ from app.mcp import server as mcp_server
 from app.mcp.server import _BearerAuthMiddleware, _health, mcp
 
 
-def test_process_email_tool_is_registered():
-    registered_tools = asyncio.run(mcp.list_tools())
-    names = [tool.name for tool in registered_tools]
-    assert "process_email" in names
-
-
 # --- HTTP transport auth boundary (app.mcp.server._run_http) -------------------------
 # Exercises the actual Starlette app + middleware wiring _run_http assembles, without
 # starting a real uvicorn server or requiring MCP_AUTH_TOKEN to be set in the

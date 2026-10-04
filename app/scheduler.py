@@ -7,8 +7,8 @@ counts using PipelineRunSummary's already-computed fields.
 
 Gmail ingestion is NOT handled here and is out of scope for this module. The only
 working Gmail path today is external to this repo: a Cowork/Claude Desktop Gmail
-connector fetches a message and calls this project's existing process_email MCP
-tool (app/mcp/server.py), which is untouched by this module. This scheduler adds a
+connector fetches a message and calls this project's existing granular MCP tools
+(app/mcp/server.py), which are untouched by this module. This scheduler adds a
 second, independent way to reach run_pipeline (via a local folder for now) -- it
 does not replace or modify the Gmail/MCP path.
 

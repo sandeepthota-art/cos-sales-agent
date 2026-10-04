@@ -45,9 +45,11 @@ declared-but-unused, rather than given a field table.
 
 - **"Populated By"** uses these labels: **Gmail/source ingestion** (raw email fields,
   written once on first ingest), **Claude Desktop analysis / internal LLM call**
-  (whichever process produced the `EmailAnalysis`/`ContextDelta` — the internal LLM
-  call inside `process_email`, or a human/Claude-Desktop-driven call to the granular
-  MCP tools; both use the identical schema and downstream code), **deterministic
+  (whichever process produced the `EmailAnalysis`/`ContextDelta` — a human/Claude-
+  Desktop-driven call to the granular MCP tools, the only path today; the
+  single-LLM-call `process_email` tool this label used to also cover was removed,
+  since it depended on a server-side `LLM_API_KEY` that was unreliable in this
+  project), **deterministic
   pipeline** (plain Python logic, no LLM, no human judgment), **entity resolution**
   (`app/entities/resolution.py` — dedup/creation of canonical Person/Organization/
   Project/Opportunity/Commitment/Meeting/PersonalItem records), **human/MCP update**
@@ -711,8 +713,9 @@ email/Slack/desktop-notification delivery channel anywhere in this codebase.
 
 ## `processing_runs`
 
-**Purpose:** One summary record per `run_pipeline()` invocation (the `process_email`/
-batch-file code path) — operational bookkeeping, not read by the dashboard.
+**Purpose:** One summary record per `run_pipeline()` invocation (the
+`--mode=demo`/`--mode=file` batch code path) — operational bookkeeping, not
+read by the dashboard.
 
 Backed by `app.processing.models.PipelineRunSummary`.
 

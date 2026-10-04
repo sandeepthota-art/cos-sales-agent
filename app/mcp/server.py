@@ -15,10 +15,7 @@ from app.config.settings import get_settings
 from app.context.models import ContextDelta
 from app.database.mongodb import get_client, initialize_database
 from app.email.models import Email
-from app.interfaces.calendar_provider import CalendarProvider
-from app.interfaces.llm_provider import LLMProvider
 from app.mcp import tools
-from app.providers.factory import ProviderFactory
 
 # Render (and any other HTTP host) assigns the port to listen on via $PORT at runtime --
 # irrelevant for the default stdio transport (a local subprocess Claude Desktop spawns
@@ -32,57 +29,25 @@ def _get_db():
     return initialize_database(get_client(settings.mongodb_uri), settings.mongodb_database)
 
 
-@lru_cache
-def _get_llm_provider() -> LLMProvider:
-    return ProviderFactory.create_llm_provider(get_settings())
-
-
-@lru_cache
-def _get_calendar_provider() -> CalendarProvider:
-    return ProviderFactory.create_calendar_provider(get_settings())
-
-
 mcp = FastMCP("cos-sales-agent", host="0.0.0.0", port=_HTTP_PORT)
-
-
-@mcp.tool()
-def process_email(email: Email) -> dict[str, Any]:
-    """Run one Gmail message through the sales-agent pipeline: normalization, thread
-    resolution, LLM analysis, cumulative context, knowledge extraction/deduplication,
-    meeting detection, and reply drafting. Persists everything to MongoDB. Returns
-    structured results -- including a proposed reply draft and/or meeting proposal for
-    you to review and act on via your Gmail connector. Never sends email or creates
-    calendar events itself.
-
-    Map Gmail fields into the input shape as follows:
-    - message_id: Gmail message id (or Message-ID header)
-    - thread_id: Gmail thread id, if available (omit if unknown -- the pipeline will
-      infer one)
-    - from/to/cc: {"name": ..., "email": ...} objects
-    - timestamp: ISO-8601 datetime string
-    - in_reply_to / references: Message-ID header values, if available
-    """
-    return tools.process_email(
-        _get_db(), email, _get_llm_provider(), _get_calendar_provider(), get_settings()
-    )
 
 
 # --- Deterministic MCP boundary (Phase 1 of the Claude-Desktop-reasoning architecture) ---
 #
-# These five tools let a caller that has already done the LLM reasoning itself (e.g.
+# These tools let a caller that has already done the LLM reasoning itself (e.g.
 # you, reading Gmail directly and reasoning about it) persist the result through this
-# project's existing deterministic application logic -- WITHOUT process_email's
-# built-in Claude/OpenAI/Groq API call. None of them construct or call an LLM
-# provider. process_email above is unchanged and remains fully available as the
-# Python-LLM-driven path.
+# project's existing deterministic application logic -- with no server-side LLM API
+# call at all. None of them construct or call an LLM provider. The single-LLM-call
+# path (process_email) that used to sit here was removed -- it depended on a
+# server-side LLM_API_KEY that was unreliable in this project (expired-key/401
+# errors), and every real caller had already moved to these granular tools instead.
 
 
 @mcp.tool()
 def ingest_email(email: Email) -> dict[str, Any]:
     """Deterministic, LLM-free first step for reasoning about a Gmail message
-    yourself instead of using process_email: performs the existing duplicate check
-    (message_id + COMPLETED), persists the raw email, and resolves/persists its
-    thread. Never calls an LLM.
+    yourself: performs the existing duplicate check (message_id + COMPLETED),
+    persists the raw email, and resolves/persists its thread. Never calls an LLM.
 
     Returns {message_id, thread_id, already_completed, previous_context}.
     already_completed=true means this exact email (including any of the existing 662
@@ -91,8 +56,8 @@ def ingest_email(email: Email) -> dict[str, Any]:
     previous_context is the thread's existing accumulated context (or null for a
     brand-new thread), for you to read before reasoning about this email.
 
-    Map Gmail fields the same way process_email documents: message_id, thread_id
-    (omit if unknown), from/to/cc as {"name", "email"} objects, timestamp as ISO-8601,
+    Map Gmail fields as follows: message_id, thread_id (omit if unknown),
+    from/to/cc as {"name", "email"} objects, timestamp as ISO-8601,
     in_reply_to/references from the Message-ID headers if available.
     """
     return tools.ingest_email(_get_db(), email)
@@ -101,8 +66,7 @@ def ingest_email(email: Email) -> dict[str, Any]:
 @mcp.tool()
 def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str, Any]:
     """Deterministic, LLM-free persistence of an email analysis YOU already produced
-    by reading the email yourself. Accepts the exact same EmailAnalysis shape
-    process_email's own internal LLM call produces -- see that schema's fields
+    by reading the email yourself. Accepts the EmailAnalysis schema's fields
     (people_mentioned, projects_mentioned, commitments_mentioned, meetings_mentioned,
     personal_items_mentioned, goal_pillar, label_applied, etc.).
 
@@ -121,8 +85,8 @@ def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str
     the resulting structured fields.
 
     Runs the same deterministic entity/commitment/follow-up/meeting/personal-item/
-    knowledge persistence process_email uses internally, and the same regex-based
-    calendar meeting detection -- assigning the same canonical IDs (PER-/PRJ-/COM-/
+    knowledge persistence and the same regex-based calendar meeting detection every
+    other path through this pipeline uses -- assigning canonical IDs (PER-/PRJ-/COM-/
     FU-/MTG-/PSN-) via the same counters. Requires ingest_email to have been called
     first for this message_id.
 
@@ -137,13 +101,12 @@ def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str
 @mcp.tool()
 def persist_context_delta(thread_id: str, message_id: str, delta: ContextDelta) -> dict[str, Any]:
     """Deterministic, LLM-free persistence of a thread-context update YOU already
-    produced. Accepts the exact same bounded ContextDelta shape process_email's own
-    internal LLM call produces (only what this email changes -- never the full
-    context; see that schema for the exact added/removed/*_updates shape). Merges it
-    with the same deterministic logic process_email uses internally. Idempotent: a
-    second call for the same (thread_id, message_id) returns the already-persisted
-    snapshot unchanged (already_persisted=true) instead of creating a duplicate
-    version.
+    produced. Accepts the bounded ContextDelta shape (only what this email changes --
+    never the full context; see that schema for the exact added/removed/*_updates
+    shape) and merges it with the same deterministic logic this pipeline always
+    uses. Idempotent: a second call for the same (thread_id, message_id) returns the
+    already-persisted snapshot unchanged (already_persisted=true) instead of creating
+    a duplicate version.
 
     This tool never calls update_context or any real LLM provider.
     """
@@ -154,13 +117,11 @@ def persist_context_delta(thread_id: str, message_id: str, delta: ContextDelta) 
 def create_reply_draft(message_id: str, thread_id: str, subject: str, body: str) -> dict[str, Any]:
     """Deterministic, LLM-free persistence of a reply YOU already drafted. This tool
     never generates reply text itself -- you write the subject/body, it only stores
-    what you give it, exactly the way process_email's own internal draft is stored.
-    Never overwrites an existing draft for the same message_id (a human may already
-    have approved/edited/sent it) -- a repeat call returns the existing draft with
-    already_existed=true.
+    what you give it. Never overwrites an existing draft for the same message_id (a
+    human may already have approved/edited/sent it) -- a repeat call returns the
+    existing draft with already_existed=true.
 
-    NEVER SENDS EMAIL. This only creates a draft awaiting human approval, identical
-    to process_email's existing behavior.
+    NEVER SENDS EMAIL. This only creates a draft awaiting human approval.
     """
     return tools.create_reply_draft(_get_db(), message_id, thread_id, subject, body)
 
@@ -178,7 +139,7 @@ def mark_email_completed(message_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
-    """List emails already ingested via process_email, most recent first.
+    """List emails already ingested through this pipeline, most recent first.
 
     Only shows emails that have already been processed by this tool -- it never reads
     Gmail directly. Each entry includes message_id, thread_id, from/to/cc, subject,
@@ -386,7 +347,7 @@ def list_reply_drafts(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List reply drafts from the `reply_drafts` collection -- read-only, so you can
-    verify what process_email actually persisted. Optional filters (all exact match):
+    verify what create_reply_draft actually persisted. Optional filters (all exact match):
     thread_id, source_email_id, status (one of no_reply_required/awaiting_approval/
     approved/edited/rejected/cancelled/simulated_sent/sent).
 
@@ -401,7 +362,7 @@ def list_reply_drafts(
 @mcp.tool()
 def get_reply_draft(reply_id: str) -> dict[str, Any] | None:
     """Retrieve one reply draft by its reply_id (e.g. "reply_<message_id>", the id
-    process_email assigns). Returns None if it doesn't exist. Never sends, approves,
+    create_reply_draft assigns). Returns None if it doesn't exist. Never sends, approves,
     edits, or creates a draft -- read-only.
     """
     return tools.get_reply_draft(_get_db(), reply_id)
@@ -578,8 +539,8 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
 
     Only used for the streamable-http transport. Unlike stdio (a local subprocess only
     Claude Desktop itself can spawn and talk to), an HTTP deployment is reachable by
-    anyone who has the URL -- without this, they could call process_email using your
-    MongoDB credentials and burn your LLM API key with no credentials of their own.
+    anyone who has the URL -- without this, they could call any tool here using your
+    MongoDB credentials with no credentials of their own.
 
     Accepts the SAME `MCP_AUTH_TOKEN` via either of exactly two headers -- no others:
     `Authorization: Bearer <token>` (the original scheme) or `X-Auth-Token: <token>`

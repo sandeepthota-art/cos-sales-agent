@@ -145,9 +145,8 @@ knowledge item — see §3, "Prompt engineering guardrails."
 
 **Email** carries the raw classification signal: `goal_pillar` (a free-text
 field, e.g. `"Sales"`, `"Finance"`, `""`) is set per-email by whoever is doing
-the reasoning (Claude Desktop, via the granular tools, or the internal LLM
-call inside `process_email` — see "Prompt engineering guardrails" below for
-the criteria either path uses).
+the reasoning (Claude Desktop, via the granular tools — see "Prompt
+engineering guardrails" below for the criteria used).
 
 **Project** is a lightweight, pillar-agnostic "named engagement" extracted
 directly from `EmailAnalysis.projects_mentioned` — created for *any*
@@ -234,16 +233,28 @@ Tool *definitions* here are thin wrappers; the actual logic lives in
 `app/mcp/tools.py`, kept separate so the server file stays a pure protocol
 boundary.
 
-### Implemented tools (24)
+### Implemented tools (28)
 
 *(Corrected from an earlier draft of this document, which miscounted this
 list as 19 — independently re-verified twice by direct runtime introspection
-of `mcp.list_tools()`.)*
+of `mcp.list_tools()`. The single-LLM-call `process_email` tool that used to
+sit here was later removed entirely — it depended on a server-side
+`LLM_API_KEY` that was unreliable in this project (expired-key/401 errors),
+and every real caller had already moved to the granular path below instead.)*
 
-- **Write path**: `process_email` (the full LLM pipeline, one message in,
-  fully processed out) and its granular equivalents for a caller that's
-  already done its own reasoning — `ingest_email`, `persist_email_analysis`,
+- **Write path** (granular, LLM-free — the caller does the reasoning,
+  these tools only persist it): `ingest_email`, `persist_email_analysis`,
   `persist_context_delta`, `create_reply_draft`, `mark_email_completed`.
+- **Additive record-keeping tools**: `set_reply_draft_gmail_id` (links an
+  already-created Gmail draft id to its MongoDB reply_drafts record),
+  `set_reply_withheld_reason` (records why a message needing a reply didn't
+  get one drafted), `set_email_summary` (caches a Claude-authored summary of
+  an email's body for the dashboard).
+- **Entity-merge tool**: `merge_person_records` — a thin wrapper around
+  `app.duplicate_consolidation`'s vetted single-mapping execution, for a
+  caller confident two Person records are the same real person (see
+  `preview_duplicate_person_candidates` below for the read-only classifier
+  this complements).
 - **Read/query path**: `list_processed_emails`, `search_emails`, `get_thread`,
   `list_people`, `list_projects`, `list_commitments`, `list_follow_ups`,
   `list_meetings` (optional `category`/`start_date`/`end_date` filters,
@@ -257,7 +268,7 @@ of `mcp.list_tools()`.)*
   `expected_close_date`/`next_action`); deterministic, LLM-free, never touches
   the pipeline-derived fields. There is no `create_opportunity`/
   `resolve_opportunity` tool — creation/resolution happens automatically
-  inside `persist_email_analysis`/`process_email` (see "Opportunity vs
+  inside `persist_email_analysis` (see "Opportunity vs
   Project vs Email" above).
 - **Safety-net tool**: `preview_duplicate_person_candidates` — strictly
   read-only; classifies possible duplicate Person records and reports them

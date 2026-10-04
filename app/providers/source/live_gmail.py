@@ -10,11 +10,12 @@ inspection: there is no MCP *client* import anywhere in app/ (only
 mcp.server.fastmcp.FastMCP, which makes this repo an MCP *server*); the existing
 app/providers/email/mcp.py has never had a real client wired into it; and every tool
 this project's own MCP server exposes either requires an already-fetched Email as
-input (process_email) or only reads the already-ingested MongoDB copy
-(search_emails, get_thread, list_processed_emails, ...), never live Gmail. The only
-working Gmail path in this system remains entirely external: a Cowork/Claude Desktop
-Gmail connector fetches a message and calls this project's process_email MCP tool --
-there is no way for a standalone background process to invoke that connector itself.
+input (ingest_email and the rest of the granular path) or only reads the
+already-ingested MongoDB copy (search_emails, get_thread, list_processed_emails,
+...), never live Gmail. The only working Gmail path in this system remains entirely
+external: a Cowork/Claude Desktop Gmail connector fetches a message and calls this
+project's granular MCP tools -- there is no way for a standalone background process
+to invoke that connector itself.
 
 Until a real client is supplied, get_new_batches() raises RuntimeError -- the exact
 same fail-loud convention app/providers/email/mcp.py already established, rather than
@@ -59,7 +60,7 @@ class LiveGmailSource(Source):
             raise RuntimeError(
                 "Live Gmail source is not configured -- no client capable of listing/"
                 "searching Gmail messages is available in this environment. The "
-                "current Cowork/MCP interface exposes process_email (a single "
+                "current Cowork/MCP interface exposes ingest_email (a single "
                 "already-fetched email) but no list/search/fetch operation a "
                 "background scheduler can call on its own. Set EMAIL_SOURCE=folder "
                 "(the default) until a real client is wired here."

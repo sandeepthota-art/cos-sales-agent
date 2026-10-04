@@ -35,8 +35,6 @@ from app.query.dates import resolve_date_range
 from app.query.meetings import classify_meeting
 from app.query.schemas import DateRangeKind, MeetingClassification, QueryRequest
 from app.query.service import execute_query
-from app.interfaces.calendar_provider import CalendarProvider
-from app.interfaces.llm_provider import LLMProvider
 from app.knowledge_lookup import KnowledgeLookup
 from app.pipeline import (
     _link_knowledge_to_entities,
@@ -46,14 +44,11 @@ from app.pipeline import (
     build_thread_timeline,
     ingest_raw_email,
     resolve_and_persist_thread,
-    run_pipeline,
 )
 from app.processing.models import ProcessingStage
-from app.providers.email.mock import MockEmailProvider
 from app.providers.llm.mock import MockLLMProvider
 from app.replies.models import ReplyDraft, ReplyDraftContent
 
-_PENDING_CALENDAR_STATUSES = ("awaiting_approval", "needs_clarification")
 _BODY_PREVIEW_LENGTH = 150
 
 # Applied to every new list_*/search_* tool's `limit` parameter -- bounds worst-case
@@ -148,99 +143,21 @@ def _thread_id_index(db: Database) -> dict[str, str]:
     return index
 
 
-def _empty_result(status: str, error: str | None) -> dict[str, Any]:
-    return {
-        "status": status,
-        "error": error,
-        "thread_id": None,
-        "context_summary": None,
-        "knowledge": [],
-        "reply_draft": None,
-        "calendar_proposal": None,
-    }
-
-
-def process_email(
-    db: Database,
-    email: Email,
-    llm_provider: LLMProvider,
-    calendar_provider: CalendarProvider,
-    settings: Settings,
-) -> dict[str, Any]:
-    raw = email.model_dump(mode="json", by_alias=True)
-    provider = MockEmailProvider(payloads=[raw])
-    summary = run_pipeline(db, provider, llm_provider, calendar_provider, settings)
-
-    if not summary.results:
-        return _empty_result("failed", "pipeline produced no result for this email")
-
-    result = summary.results[0]
-
-    if result.final_stage == "FAILED":
-        return _empty_result("failed", result.error)
-
-    # Canonical ID refactor: `email` (this function's own parameter) is the
-    # CALLER's original object and is never reassigned -- run_pipeline
-    # canonicalizes its own internal copy, which never propagates back here.
-    # result.message_id (from the EmailResult run_pipeline actually returned)
-    # is the canonical EML-nnn, and is the only correct id to look up by.
-    canonical_message_id = result.message_id
-    snapshot = ContextSnapshotRepository(db).find_one({"triggering_email_id": canonical_message_id})
-    thread_id = snapshot["thread_id"] if snapshot else None
-
-    knowledge = KnowledgeRepository(db).all_for_thread(thread_id) if thread_id else []
-    draft = ReplyDraftRepository(db).find_one({"source_email_id": canonical_message_id})
-    calendar_actions = (
-        CalendarActionRepository(db).find_many({"thread_id": thread_id}) if thread_id else []
-    )
-    pending_calendar = next(
-        (a for a in calendar_actions if a["status"] in _PENDING_CALENDAR_STATUSES), None
-    )
-
-    return {
-        "status": result.final_stage.lower(),
-        "error": None,
-        "thread_id": thread_id,
-        "context_summary": snapshot["context"]["summary"] if snapshot else None,
-        "knowledge": [
-            {
-                "subject_key": k["subject_key"],
-                "predicate": k["predicate"],
-                "current_value": k["current_value"],
-                "basis": k["basis"],
-                "confidence": k["confidence"],
-            }
-            for k in knowledge
-        ],
-        "reply_draft": draft["draft"] if draft else None,
-        "calendar_proposal": (
-            {
-                "status": pending_calendar["status"],
-                "title": pending_calendar["event"]["title"],
-                "start": pending_calendar["event"]["start"],
-                "end": pending_calendar["event"]["end"],
-                "timezone": pending_calendar["event"]["timezone"],
-                "reason": pending_calendar.get("reason"),
-            }
-            if pending_calendar
-            else None
-        ),
-    }
-
-
 # --- Deterministic MCP boundary (Phase 1 of the Claude-Desktop-reasoning architecture) ---
 #
-# The five functions below let a caller that has ALREADY done the LLM reasoning itself
+# The functions below let a caller that has ALREADY done the LLM reasoning itself
 # (e.g. Claude Desktop, reading Gmail directly) persist the result through this
-# project's existing deterministic application logic, without process_email's
-# built-in external LLM API call. Every one of them is a thin orchestration wrapper
-# around functions app.pipeline.run_pipeline itself already calls -- none of entity
-# resolution, commitment resolution, follow-up derivation, meeting detection, date
-# parsing, context merging, or draft persistence is reimplemented here.
+# project's existing deterministic application logic, with no server-side LLM API
+# call at all. Every one of them is a thin orchestration wrapper around functions
+# app.pipeline.run_pipeline itself already calls -- none of entity resolution,
+# commitment resolution, follow-up derivation, meeting detection, date parsing,
+# context merging, or draft persistence is reimplemented here.
 #
-# None of these five ever construct a real LLM provider or call
-# ProviderFactory.create_llm_provider. process_email (above) is completely unchanged
-# and remains the full LLM-driven path.
+# None of these ever construct a real LLM provider or call
+# ProviderFactory.create_llm_provider. The single-LLM-call path (process_email) that
+# used to sit here was removed -- it depended on a server-side LLM_API_KEY that was
+# unreliable in this project (expired-key/401 errors), and every real caller had
+# already moved to the granular tools below instead.
 
 
 def ingest_email(db: Database, email: Email) -> dict[str, Any]:

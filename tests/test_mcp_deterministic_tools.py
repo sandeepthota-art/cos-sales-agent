@@ -36,9 +36,7 @@ from app.database.repositories import (
 )
 from app.email.models import parse_email
 from app.mcp import tools
-from app.providers.calendar.mock import MockCalendarProvider
 from app.providers.factory import ProviderFactory
-from app.providers.llm.mock import MockLLMProvider
 
 
 def _raw_email(message_id, body="Body.", subject="Enterprise CRM Proposal", **overrides):
@@ -65,6 +63,23 @@ def _analysis(message_id="EML-001", **overrides):
     )
     base.update(overrides)
     return EmailAnalysis.model_validate(base)
+
+
+def _complete_via_granular_tools(db, settings, raw, analysis=None, delta=None):
+    """Drives one email through the granular pipeline (ingest -> analyze -> context
+    -> complete) to COMPLETED, for a test that just needs a fully-processed baseline
+    email as setup -- not itself the thing under test. Used in place of the removed
+    process_email (it depended on a server-side LLM_API_KEY that was unreliable in
+    this project; every real caller had already moved to these granular tools
+    instead)."""
+    email = parse_email(raw)
+    ingest_result = tools.ingest_email(db, email)
+    message_id = ingest_result["message_id"]
+    thread_id = ingest_result["thread_id"]
+    tools.persist_email_analysis(db, message_id, analysis or _analysis(message_id), settings)
+    tools.persist_context_delta(db, thread_id, message_id, delta or ContextDelta())
+    tools.mark_email_completed(db, message_id)
+    return ingest_result
 
 
 @pytest.fixture
@@ -137,7 +152,7 @@ def test_ingest_email_returns_human_readable_internal_ids_for_a_new_email(db):
 
 def test_ingest_email_returns_internal_ids_for_an_already_completed_email_too(db, settings):
     raw = _raw_email("msg_001", "We currently use Salesforce.")
-    tools.process_email(db, parse_email(raw), MockLLMProvider(), MockCalendarProvider(), settings)
+    _complete_via_granular_tools(db, settings, raw)
 
     result = tools.ingest_email(db, parse_email(raw))
 
@@ -154,7 +169,7 @@ def test_ingest_email_never_calls_llm(db, no_llm_construction):
 
 def test_ingest_email_skips_an_already_completed_email_without_reprocessing(db, settings):
     raw = _raw_email("msg_001", "We currently use Salesforce.")
-    tools.process_email(db, parse_email(raw), MockLLMProvider(), MockCalendarProvider(), settings)
+    _complete_via_granular_tools(db, settings, raw)
     before_count = EmailRepository(db).find_many({}).__len__()
 
     result = tools.ingest_email(db, parse_email(raw))
@@ -175,7 +190,7 @@ def test_ingest_email_returns_empty_thread_timeline_for_a_threads_first_message(
 
 def test_ingest_email_returns_prior_messages_in_thread_timeline_excluding_itself(db, settings):
     first = _raw_email("msg_001", "We currently use Salesforce.")
-    tools.process_email(db, parse_email(first), MockLLMProvider(), MockCalendarProvider(), settings)
+    _complete_via_granular_tools(db, settings, first)
 
     second = _raw_email(
         "msg_002", "Following up on Salesforce pricing.", timestamp="2026-09-14T10:30:00Z",
@@ -189,7 +204,9 @@ def test_ingest_email_returns_prior_messages_in_thread_timeline_excluding_itself
 
 def test_ingest_email_returns_previous_context_for_an_existing_thread(db, settings):
     first = _raw_email("msg_001", "We currently use Salesforce but pricing is a pain point.")
-    tools.process_email(db, parse_email(first), MockLLMProvider(), MockCalendarProvider(), settings)
+    _complete_via_granular_tools(
+        db, settings, first, delta=ContextDelta(summary="They use Salesforce; pricing is a pain point.")
+    )
 
     second = _raw_email(
         "msg_002", "Following up on Salesforce pricing.", timestamp="2026-09-14T10:30:00Z"
@@ -513,7 +530,7 @@ def test_ingest_email_treats_a_previously_completed_email_as_a_baseline_email_to
     (however it got that way) must be reported as already_completed and never
     reprocessed by the new deterministic path, exactly like run_pipeline's own guard."""
     baseline_raw = _raw_email("baseline_msg_001", "Historical email.")
-    tools.process_email(db, parse_email(baseline_raw), MockLLMProvider(), MockCalendarProvider(), settings)
+    _complete_via_granular_tools(db, settings, baseline_raw)
     stored_before = EmailRepository(db).find_one({"message_id": "EML-001"})
 
     result = tools.ingest_email(db, parse_email(baseline_raw))

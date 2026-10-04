@@ -1051,8 +1051,9 @@ def test_set_email_summary_does_not_touch_other_emails(db):
 def test_no_query_tool_source_references_an_llm_provider_or_api():
     source = inspect.getsource(tools)
     forbidden = ["anthropic", "openai", "ClaudeProvider", "OpenAIProvider"]
-    # The module legitimately imports LLMProvider (a Protocol/interface) and
-    # run_pipeline for process_email -- neither calls a real API by existing.
+    # The module legitimately imports MockLLMProvider (used internally for the
+    # ambiguous-similarity-band fact-dedup check) -- it makes no real API call by
+    # existing.
     for term in forbidden:
         assert term not in source, f"unexpected LLM/API reference: {term}"
 
