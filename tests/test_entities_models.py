@@ -3,7 +3,37 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from app.entities.models import Commitment, FollowUp, Meeting, Person, PersonalItem, Project
+from app.entities.models import Commitment, FollowUp, Meeting, Organization, Person, PersonalItem, Project
+
+
+def test_organization_defaults():
+    org = Organization(id="ORG-001", name="DataBeat", domain="databeat.io")
+    assert org.industry is None
+    assert org.description is None
+    assert org.products_services == []
+    assert org.size_estimate is None
+    assert org.headquarters is None
+    assert org.website is None
+    assert org.research_source is None
+    assert org.researched_at is None
+    assert org.status == "active"
+    assert org.merged_into is None
+
+
+def test_organization_accepts_research_profile_and_lifecycle_fields():
+    org = Organization(
+        id="ORG-001", name="DataBeat", domain="databeat.io",
+        industry="Data Analytics", description="A BI platform vendor.",
+        products_services=["dashboards", "reporting"], size_estimate="11-50 employees",
+        headquarters="Bengaluru, India", website="https://databeat.io",
+        research_source="web_research", researched_at=datetime(2026, 10, 5, 12, 0, 0),
+        status="merged", merged_into="ORG-002",
+    )
+    assert org.industry == "Data Analytics"
+    assert org.products_services == ["dashboards", "reporting"]
+    assert org.research_source == "web_research"
+    assert org.status == "merged"
+    assert org.merged_into == "ORG-002"
 
 
 def test_person_defaults():

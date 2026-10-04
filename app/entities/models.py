@@ -10,6 +10,23 @@ class Organization(BaseModel):
     domain: str | None = None
     aliases: list[str] = Field(default_factory=list)
     source: str = "gmail"
+    # Profile, filled by external research (Claude's own WebSearch, triggered by
+    # persist_email_analysis's new_organizations_needing_research signal -- see
+    # app.mcp.tools.persist_organization_research). None until researched.
+    industry: str | None = None
+    description: str | None = None
+    products_services: list[str] = Field(default_factory=list)
+    size_estimate: str | None = None
+    headquarters: str | None = None
+    website: str | None = None
+    # Provenance: "web_research" (auto) vs "manual" (hand-edited, never
+    # overwritten by a later auto-research pass) vs None (never researched).
+    research_source: str | None = None
+    researched_at: datetime | None = None
+    # Lifecycle, mirroring Person exactly -- see app.entities.organization_lifecycle
+    # and app.mcp.tools.merge_organization_records.
+    status: str = "active"
+    merged_into: str | None = None
 
 
 class Person(BaseModel):
