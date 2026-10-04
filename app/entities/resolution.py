@@ -312,6 +312,17 @@ def _resolve_person_impl(
             # missing value, never overwrites an existing one.
             if not existing.get("org") and mention.get("org"):
                 update["org"] = mention.get("org")
+            # Same backfill-only enrichment for `name`: a Person resolved first via the
+            # envelope loop (which almost never has a real display name -- a raw Gmail
+            # header's own "name" field is frequently empty, so envelope resolution falls
+            # back to name=email; see app.pipeline._process_entities) is stuck with
+            # name==email forever unless a LATER mention (LLM people_mentioned, which can
+            # supply a real name from a signature block or self-introduction) fills it in.
+            # Guarded on name==email specifically (never on "name is falsy", since name is
+            # never actually empty) so a genuine human-entered or previously-enriched name
+            # is never overwritten -- only the email-as-placeholder case backfills.
+            if existing.get("name") == existing.get("email") and mention.get("name"):
+                update["name"] = mention.get("name")
             # Same backfill-only contract as `org` directly above: a professional
             # designation stated in one email (role_hint) fills an unset role, but
             # never overwrites one an earlier email already established.

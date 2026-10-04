@@ -116,6 +116,20 @@ For each message, in order (oldest to newest within a batch):
      `date_phrase` means that commitment will silently never show up as
      "due" on the dashboard, even though a real date was stated. Only omit
      `date_phrase` when the email genuinely states no date at all.
+   - **Populate `people_mentioned` with real name/org/role evidence for
+     EVERY person this email gives you a real name for** -- including the
+     sender and recipients, not just people referenced in the body.
+     Envelope-based resolution (automatic, from the raw From/To/CC headers)
+     almost never has a real display name to work with, so a person who is
+     never named in `people_mentioned` is permanently stuck showing just
+     their email address on the dashboard. Whenever a signature block,
+     greeting, self-introduction, or body text reveals someone's real name
+     (and org/role, if stated), add a `MentionedPerson` entry for them with
+     that `name`/`org`/`role_hint` -- even if envelope resolution will
+     already create a Person for that same address regardless; the two are
+     deduplicated automatically by email, and the mention is what actually
+     supplies the name. Only ever use a name/org/role genuinely stated or
+     clearly signed in the email -- never guess one.
    - Produce the full `EmailAnalysis` reflecting only what's actually in the
      message, then call `persist_email_analysis`.
    - Produce a bounded `ContextDelta` (only what this message changes -- a

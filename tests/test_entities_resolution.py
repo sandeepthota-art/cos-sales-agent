@@ -1047,6 +1047,44 @@ def test_resolve_person_backfills_org_id_on_reuse_of_a_pre_existing_record(db):
     assert repo.find_one({"id": person_id})["org_id"] is not None
 
 
+def test_resolve_person_backfills_name_when_envelope_created_record_had_only_the_email_as_name(db):
+    # Envelope-based resolution (app.pipeline._process_entities) has no real display
+    # name to work with -- a raw Gmail header's own "name" field is frequently empty --
+    # so it creates the Person with name=email. That must not be permanent: a LATER
+    # mention (LLM people_mentioned, which can read a real name from a signature block
+    # or self-introduction) should backfill it, exactly like org_id/org/role already do.
+    person_id = resolve_person(
+        db, {"name": None, "email": "ashok@databeat.io", "org": None},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+    assert PersonRepository(db).find_one({"id": person_id})["name"] == "ashok@databeat.io"
+
+    resolve_person(
+        db, {"name": "Ashok Ganapam", "email": "ashok@databeat.io", "org": "DataBeat"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+
+    assert PersonRepository(db).find_one({"id": person_id})["name"] == "Ashok Ganapam"
+
+
+def test_resolve_person_never_overwrites_a_real_name_with_a_later_mention(db):
+    # The backfill in the test above is guarded on name==email specifically -- once a
+    # real name is set (whether at creation or by a later backfill), it must never be
+    # clobbered by a second, different mention (e.g. a typo, a nickname, or a wrong
+    # guess in a later email).
+    person_id = resolve_person(
+        db, {"name": "Ashok Ganapam", "email": "ashok@databeat.io", "org": "DataBeat"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+
+    resolve_person(
+        db, {"name": "A. Ganapam", "email": "ashok@databeat.io", "org": "DataBeat"},
+        is_sender=True, now=_NOW, thread_id="t1",
+    )
+
+    assert PersonRepository(db).find_one({"id": person_id})["name"] == "Ashok Ganapam"
+
+
 def test_resolve_person_sets_role_from_role_hint_on_creation(db):
     person_id = resolve_person(
         db, {"name": "Deepanshu Sonwane", "email": "deepanshu@mediamint.com", "org": "MediaMint", "role_hint": "CTO"},
