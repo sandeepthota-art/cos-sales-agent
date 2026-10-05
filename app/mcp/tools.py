@@ -376,6 +376,33 @@ def persist_email_analysis(
                 {"knowledge_id": updated_item.knowledge_id}, updated_item.model_dump(mode="json")
             )
 
+    # People profile context (Customer/Contact Intelligence): for every
+    # person this email references, bundle their current profile state plus
+    # their organization's already-researched profile into one payload, so
+    # Claude can compose an updated profile (if this email adds anything
+    # substantive) without a second lookup.
+    people_profile_context = []
+    for person_id in entities_referenced.get("people", []):
+        profile_person = person_repo.find_one({"id": person_id})
+        if profile_person is None:
+            continue
+        person_org = (
+            org_repo.find_one({"id": profile_person["org_id"]}) if profile_person.get("org_id") else None
+        )
+        people_profile_context.append(
+            {
+                "person_id": person_id,
+                "name": profile_person["name"],
+                "role": profile_person.get("role"),
+                "profile_summary": profile_person.get("profile_summary"),
+                "recent_context": profile_person.get("recent_context"),
+                "key_topics": profile_person.get("key_topics", []),
+                "org_name": person_org["name"] if person_org else None,
+                "org_description": person_org.get("description") if person_org else None,
+                "org_industry": person_org.get("industry") if person_org else None,
+            }
+        )
+
     # Phase 20.1: lifecycle-aware, not a raw email lookup -- see
     # app.entities.resolution.resolve_canonical_person_for_email.
     sender_person = resolve_canonical_person_for_email(db, email.from_.email)
@@ -427,6 +454,7 @@ def persist_email_analysis(
         "thread_id": thread_id,
         "entities_referenced": entities_referenced,
         "new_organizations_needing_research": new_organizations_needing_research,
+        "people_profile_context": people_profile_context,
         "possible_missed_commitment": possible_missed_commitment,
         "calendar_proposal": (
             {

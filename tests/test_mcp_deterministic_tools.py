@@ -1035,3 +1035,91 @@ def test_persist_person_profile_leaves_unsupplied_fields_unchanged_even_for_a_pr
 def test_persist_person_profile_raises_for_unknown_person(db):
     with pytest.raises(ValueError, match="PER-999"):
         tools.persist_person_profile(db, "PER-999", role="Someone")
+
+
+# --- persist_email_analysis: people_profile_context ---------------------------------
+
+
+def test_persist_email_analysis_includes_people_profile_context_for_referenced_people(db, settings):
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+
+    result = tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    entry = next(e for e in result["people_profile_context"] if e["person_id"] == person["id"])
+    assert entry["name"] == "Jane Smith"
+    assert entry["profile_summary"] is None
+    assert entry["recent_context"] is None
+    assert entry["key_topics"] == []
+
+
+def test_persist_email_analysis_people_profile_context_includes_organization_profile(db, settings):
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    result1 = tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    tools.persist_organization_research(
+        db, person["org_id"], industry="Widget Manufacturing", description="Makes widgets."
+    )
+
+    ingest2 = tools.ingest_email(db, parse_email(_raw_email("msg_002", subject="Follow-up")))
+    analysis2 = _analysis(
+        ingest2["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    result2 = tools.persist_email_analysis(db, ingest2["message_id"], analysis2, settings)
+
+    entry = next(e for e in result2["people_profile_context"] if e["person_id"] == person["id"])
+    assert entry["org_name"] == "NewCo"
+    assert entry["org_industry"] == "Widget Manufacturing"
+    assert entry["org_description"] == "Makes widgets."
+
+
+def test_persist_email_analysis_people_profile_context_reflects_an_existing_profile(db, settings):
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+    person = PersonRepository(db).find_one({"email": "jane@newco.com"})
+    tools.persist_person_profile(
+        db, person["id"], profile_summary="Existing summary.", recent_context="Existing context."
+    )
+
+    ingest2 = tools.ingest_email(db, parse_email(_raw_email("msg_002", subject="Follow-up")))
+    analysis2 = _analysis(
+        ingest2["message_id"],
+        people_mentioned=[MentionedPerson(name="Jane Smith", email="jane@newco.com", org="NewCo")],
+    )
+    result2 = tools.persist_email_analysis(db, ingest2["message_id"], analysis2, settings)
+
+    entry = next(e for e in result2["people_profile_context"] if e["person_id"] == person["id"])
+    assert entry["profile_summary"] == "Existing summary."
+    assert entry["recent_context"] == "Existing context."
+
+
+def test_persist_email_analysis_people_profile_context_handles_a_person_with_no_org(db, settings):
+    # Review Focus: a person with no org_id (e.g. name-only, no email domain
+    # ever resolved) must still appear in people_profile_context, not crash
+    # or be silently skipped.
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        people_mentioned=[MentionedPerson(name="Someone No Org", email=None, org=None)],
+    )
+
+    result = tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    no_org_entries = [e for e in result["people_profile_context"] if e["name"] == "Someone No Org"]
+    assert len(no_org_entries) == 1
+    assert no_org_entries[0]["org_name"] is None
+    assert no_org_entries[0]["org_description"] is None
+    assert no_org_entries[0]["org_industry"] is None
