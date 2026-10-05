@@ -161,8 +161,11 @@ Optional standing processes, each its own entry point:
 python -m app.scheduler         # polls data/inbox/ for new JSON exports
 python -m app.reminders         # polls personal_items for due reminders
 python -m app.knowledge_projector  # writes a Markdown projection of MongoDB knowledge
-streamlit run app/ui/dashboard.py  # local dashboard UI
 ```
+
+Dashboard UI: the React frontend (`frontend/`) backed by the FastAPI app
+(`app.api`) — the Streamlit dashboard has been retired. See "Dashboard
+(React + FastAPI)" below.
 
 ## Testing
 
@@ -291,11 +294,12 @@ needed to deploy it as a Render Web Service:
    (`POST`, `Authorization: Bearer <MCP_AUTH_TOKEN>`); a liveness probe is
    available, unauthenticated, at `GET /health`.
 
-### Dashboard (Streamlit) as a second Render Web Service
+### Dashboard (React + FastAPI) as a second Render Web Service
 
-The read-only-capable dashboard (`app/ui/dashboard.py`) can be deployed
-alongside the MCP server as its own, separate Render Web Service — same
-repo, same image, different start command:
+The dashboard is a React frontend (`frontend/`) backed by a FastAPI REST API
+(`app/api/main.py`) — the Dockerfile builds both into one image. It can be
+deployed alongside the MCP server as its own, separate Render Web Service —
+same repo, same image, different start command:
 
 1. Create a **second** Render Web Service from this same GitHub repository
    (do not reuse the MCP service — they need different start commands and
@@ -305,34 +309,24 @@ repo, same image, different start command:
    `CMD` per-service without editing the `Dockerfile` itself, so both
    services keep sharing one build):
    ```
-   streamlit run app/ui/dashboard.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+   uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
    ```
 3. Set environment variables in Render's dashboard: the same
    `MONGODB_URI`/`MONGODB_DATABASE` as the MCP service (this dashboard only
    ever reads/writes Mongo directly — it has no MCP client of its own and
    needs neither `MCP_TRANSPORT` nor `MCP_AUTH_TOKEN`), plus:
    - `DASHBOARD_READ_ONLY=true` — for anyone other than the operator. Hides
-     every approve/reject/edit/create-on-calendar/ignore button; this
-     dashboard is the only place in the whole system those actions can be
-     triggered at all (see the module docstring in `app/ui/dashboard.py`),
-     so this is the entire safety boundary for a non-operator viewer.
-   - `DASHBOARD_PASSWORD=<a password you choose>` — optional but
-     recommended for a public deployment: without it, anyone with the URL
-     can see every collection's real content (emails, contacts, knowledge
-     graph) with no gate at all. Leave it unset only for a deployment you
-     already control access to some other way.
+     every approve/reject/edit/create-on-calendar/ignore button; this is the
+     entire safety boundary for a non-operator viewer.
+   - `API_PASSWORD_HASH`/`API_SECRET_KEY` — see "FastAPI backend" below;
+     leaving these unset means the dashboard requires no login at all.
 4. Deploy. The dashboard is served directly at
    `https://<your-second-render-service>.onrender.com/`.
 
-### FastAPI backend (React/API migration, docs/REACT_MIGRATION_PLAN.md)
+### FastAPI backend (docs/REACT_MIGRATION_PLAN.md)
 
-A new REST API (`app/api/main.py`) is being built to back a future React
-frontend, migrating off the Streamlit dashboard. **Phase 1-3 of the approved
-plan are implemented and tested** (all 14 dashboard areas' GET endpoints,
-reply/calendar approval mutations, project/opportunity field updates,
-session-cookie auth) — the React frontend itself (Phase 4 onward) has not
-been built yet, and the Streamlit dashboard above remains the production UI
-in the meantime.
+The REST API (`app/api/main.py`) backs the React frontend (`frontend/`) --
+the former Streamlit dashboard has been fully retired and removed.
 
 Local development:
 ```
@@ -354,8 +348,7 @@ some other access control). To enable it:
 2. Set `API_PASSWORD_HASH` to that hash's output (never the plaintext
    password itself) and `API_SECRET_KEY` to a long random string (used to
    sign the session cookie) in your environment.
-3. `DASHBOARD_READ_ONLY=true` is honored the same way it already is for the
-   Streamlit dashboard — it disables every mutation endpoint (reply
+3. `DASHBOARD_READ_ONLY=true` disables every mutation endpoint (reply
    approve/reject/edit, calendar approve/ignore, project/opportunity field
    updates) with a 403, server-side, regardless of what a client sends.
 
@@ -392,7 +385,7 @@ app/
   providers/        # Concrete provider implementations, selected via factory.py
   query/            # Read-only query layer behind the MCP tools
   replies/          # Reply-needed gate, drafting, approval/simulated-send
-  ui/               # Streamlit dashboard
+  ui/               # Shared data-access helpers consumed by the FastAPI routers
   pipeline.py       # run_pipeline() -- the core per-batch orchestration
 main.py             # CLI entry point (--healthcheck, --mode, --reset-demo)
 requirements.txt
