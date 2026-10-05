@@ -1143,6 +1143,50 @@ def get_project_summary(db: Database, project_id: str) -> dict[str, Any] | None:
     }
 
 
+def persist_person_profile(
+    db: Database,
+    person_id: str,
+    role: str | None = None,
+    profile_summary: str | None = None,
+    recent_context: str | None = None,
+    key_topics: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persists a Customer/Contact Intelligence profile update a reasoning
+    caller (Claude, having read the triggering email plus this person's
+    existing profile from persist_email_analysis's people_profile_context)
+    already composed -- this function never synthesizes text itself, purely
+    persistence, exactly like persist_organization_research's own split.
+
+    Each field is independently optional: None leaves that field exactly as
+    it already was. There is no "manual" overwrite-protection like
+    Organization's research has -- every field here is always Claude-
+    composed, so there is nothing to protect against; the instruction to
+    incorporate the existing value (already handed back via
+    people_profile_context) is what prevents regression, not a tool guard.
+
+    Raises ValueError if person_id doesn't exist.
+    """
+    repo = PersonRepository(db)
+    person = repo.find_one({"id": person_id})
+    if person is None:
+        raise ValueError(f"no person found for person_id={person_id!r}")
+
+    # Every field is written explicitly (even when left unchanged), not just
+    # the ones that got a new value -- so the returned/stored document always
+    # exposes the full field set, matching Person's own defaults, rather than
+    # silently omitting a key a pre-existing document never had.
+    update: dict[str, Any] = {
+        "role": role if role is not None else person.get("role"),
+        "profile_summary": profile_summary if profile_summary is not None else person.get("profile_summary"),
+        "recent_context": recent_context if recent_context is not None else person.get("recent_context"),
+        "key_topics": key_topics if key_topics is not None else person.get("key_topics", []),
+        "profile_updated_at": datetime.now(timezone.utc),
+    }
+
+    repo.upsert_by_key({"id": person_id}, {**person, **update})
+    return {**person, **update}
+
+
 def persist_organization_research(
     db: Database,
     org_id: str,

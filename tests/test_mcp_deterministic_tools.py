@@ -987,3 +987,51 @@ def test_persist_email_analysis_person_context_enrichment_is_idempotent(db, sett
         {"person_id": person["id"], "source_email_id": ingest_result["message_id"]}
     )
     assert len(snapshots) == 1
+
+
+# --- persist_person_profile ---
+
+
+def test_persist_person_profile_sets_supplied_fields_and_stamps_updated_at(db):
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-001"},
+        {"id": "PER-001", "name": "Vijender", "email": "vijender@alumnx.com", "aliases": [], "open_threads": []},
+    )
+
+    result = tools.persist_person_profile(
+        db, "PER-001",
+        role="AI Training and AI Consulting professional",
+        profile_summary="Vijender is an AI Training and AI Consulting professional at Alumnx AI Labs.",
+        recent_context="Discussing AI Engineer requirements with Databeat.",
+        key_topics=["AI Engineer hiring"],
+    )
+
+    assert result["role"] == "AI Training and AI Consulting professional"
+    assert result["profile_summary"].startswith("Vijender is an AI Training")
+    assert result["key_topics"] == ["AI Engineer hiring"]
+    assert result["profile_updated_at"] is not None
+    stored = PersonRepository(db).find_one({"id": "PER-001"})
+    assert stored["recent_context"] == "Discussing AI Engineer requirements with Databeat."
+
+
+def test_persist_person_profile_leaves_unsupplied_fields_unchanged_even_for_a_pre_existing_person(db):
+    # Review Focus: a document created before these fields existed has none of
+    # them in Mongo at all -- the result must still expose the full field set
+    # (existing values where nothing was supplied), not KeyError/omit them.
+    PersonRepository(db).upsert_by_key(
+        {"id": "PER-001"},
+        {"id": "PER-001", "name": "Vijender", "email": "vijender@alumnx.com", "aliases": [], "open_threads": []},
+    )
+    tools.persist_person_profile(db, "PER-001", role="AI Consultant", profile_summary="Initial summary.")
+
+    result = tools.persist_person_profile(db, "PER-001", recent_context="New discussion context.")
+
+    assert result["role"] == "AI Consultant"
+    assert result["profile_summary"] == "Initial summary."
+    assert result["recent_context"] == "New discussion context."
+    assert result["key_topics"] == []
+
+
+def test_persist_person_profile_raises_for_unknown_person(db):
+    with pytest.raises(ValueError, match="PER-999"):
+        tools.persist_person_profile(db, "PER-999", role="Someone")
