@@ -3,12 +3,10 @@ import { useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { getPerson } from '../api/people'
 import type { PersonContext } from '../api/types'
-import { HIDDEN_FIELDS } from '../config/hiddenFields'
 import { ErrorState } from '../components/ErrorState'
 import { IdLink } from '../components/IdLink'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { PageHeader } from '../components/PageHeader'
-import { RecordList } from '../components/RecordList'
 import { StatusBadge } from '../components/StatusBadge'
 import { formatDate } from '../utils/format'
 
@@ -42,6 +40,8 @@ export function PersonDetailPage() {
   if (!context) return <ErrorState message="Person not found" />
 
   const { person } = context
+  const orgData = context.organization.data
+  const companyName = (orgData?.name as string | undefined) ?? person.org ?? undefined
 
   return (
     <div>
@@ -52,41 +52,56 @@ export function PersonDetailPage() {
       />
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <p className="card__title">Profile</p>
-        <p>Email: {person.email ?? '—'}</p>
-        <p>
-          Organization:{' '}
-          {context.organization.data ? (
-            <IdLink id={(context.organization.data.id as string) ?? ''} label={(context.organization.data.name as string) ?? person.org ?? undefined} />
-          ) : (
-            person.org ?? '—'
-          )}
-        </p>
-        <p>Last inbound: {formatDate(person.last_inbound)}</p>
-        <p>Last outbound: {formatDate(person.last_outbound)}</p>
-        <p>
-          Status: <StatusBadge status={person.status} />
-          {person.merged_into && (
-            <>
-              {' '}
-              → merged into <IdLink id={person.merged_into} />
-            </>
-          )}
-        </p>
-      </div>
+        {companyName && !person.profile_summary && (
+          <p className="card__title">
+            {orgData ? <IdLink id={(orgData.id as string) ?? ''} label={companyName} /> : companyName}
+          </p>
+        )}
 
-      <div className="section-grid">
-        <RecordList title="Commitments" records={context.commitments} />
-        <RecordList title="Meetings" records={context.meetings} skip={[...HIDDEN_FIELDS.meetings]} />
-        <RecordList title="Follow-ups" records={context.follow_ups} skip={[...HIDDEN_FIELDS.follow_ups]} />
-        <RecordList title="Projects" records={context.projects} skip={[...HIDDEN_FIELDS.projects]} />
-        <RecordList title="Knowledge" records={context.knowledge} />
-        <RecordList title="Reply Drafts" records={context.reply_drafts} />
-        <RecordList title="Calendar Actions" records={context.calendar_actions} />
-        <RecordList
-          title="Other People at Organization"
-          records={context.other_people_at_org.data.map((p) => ({ ...p }))}
-        />
+        {person.profile_summary ? (
+          <p>{person.profile_summary}</p>
+        ) : (
+          <p style={{ color: 'var(--color-text-muted)' }}>
+            No profile yet -- this builds up as emails from this person are processed.
+          </p>
+        )}
+
+        {person.recent_context && (
+          <>
+            <p className="card__title" style={{ marginTop: 12 }}>
+              Recent context
+            </p>
+            <p>{person.recent_context}</p>
+          </>
+        )}
+
+        {(person.key_topics?.length ?? 0) > 0 && (
+          <p style={{ marginTop: 12, color: 'var(--color-text-muted)' }}>{person.key_topics!.join(' · ')}</p>
+        )}
+
+        <p style={{ marginTop: 12 }}>
+          Email: {person.email ?? '—'}
+          {' · '}
+          Last heard from: {formatDate(person.last_inbound)}
+        </p>
+
+        {context.other_people_at_org.data.length > 0 && (
+          <p>
+            Also at {companyName ?? 'this organization'}:{' '}
+            {context.other_people_at_org.data.map((p, index) => (
+              <span key={p.id}>
+                <IdLink id={p.id} label={p.name ?? p.id} />
+                {index < context.other_people_at_org.data.length - 1 && ', '}
+              </span>
+            ))}
+          </p>
+        )}
+
+        {person.merged_into && (
+          <p>
+            <StatusBadge status={person.status} /> → merged into <IdLink id={person.merged_into} />
+          </p>
+        )}
       </div>
     </div>
   )

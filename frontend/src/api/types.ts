@@ -87,6 +87,10 @@ export interface PersonRow {
   open_threads?: string[]
   status?: string | null
   merged_into?: string | null
+  profile_summary?: string | null
+  recent_context?: string | null
+  key_topics?: string[]
+  profile_updated_at?: string | null
 }
 
 export interface BasisWrapped<T> {
