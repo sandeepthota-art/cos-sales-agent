@@ -382,7 +382,7 @@ def persist_email_analysis(
     # Claude can compose an updated profile (if this email adds anything
     # substantive) without a second lookup.
     people_profile_context = []
-    for person_id in entities_referenced.get("people", []):
+    for person_id in dict.fromkeys(entities_referenced.get("people", [])):
         profile_person = person_repo.find_one({"id": person_id})
         if profile_person is None:
             continue

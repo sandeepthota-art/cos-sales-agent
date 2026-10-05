@@ -1123,3 +1123,26 @@ def test_persist_email_analysis_people_profile_context_handles_a_person_with_no_
     assert no_org_entries[0]["org_name"] is None
     assert no_org_entries[0]["org_description"] is None
     assert no_org_entries[0]["org_industry"] is None
+
+
+def test_persist_email_analysis_people_profile_context_dedupes_a_person_referenced_twice(db, settings):
+    # Review Focus: entities_referenced["people"] can contain the same
+    # person_id twice -- once from the envelope (From/To/CC) loop, once from
+    # a people_mentioned entry resolving to the same canonical person (e.g.
+    # the LLM also names the sender by address, which resolve_person resolves
+    # idempotently to the same id). people_profile_context must collapse that
+    # to exactly one entry per person, never a duplicate.
+    ingest_result = tools.ingest_email(db, parse_email(_raw_email("msg_001")))
+    analysis = _analysis(
+        ingest_result["message_id"],
+        # _raw_email's default sender is john@example.com, already resolved via
+        # the envelope (From) loop -- mentioning that same address again here
+        # exercises the "sender also appears in people_mentioned" case.
+        people_mentioned=[MentionedPerson(name="John", email="john@example.com", org=None)],
+    )
+
+    result = tools.persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+
+    person = PersonRepository(db).find_one({"email": "john@example.com"})
+    matching_entries = [e for e in result["people_profile_context"] if e["person_id"] == person["id"]]
+    assert len(matching_entries) == 1
