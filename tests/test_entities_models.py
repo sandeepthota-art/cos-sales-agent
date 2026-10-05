@@ -239,3 +239,23 @@ def test_personal_item_sender_email_round_trips_through_the_model():
     assert dumped["sender_email"] == "john@example.com"
     reloaded = PersonalItem.model_validate(dumped)
     assert reloaded.sender_email == "john@example.com"
+
+
+def test_person_profile_fields_default_to_empty():
+    person = Person(id="PER-001", name="Jane Doe", email="jane@example.com")
+    assert person.profile_summary is None
+    assert person.recent_context is None
+    assert person.key_topics == []
+    assert person.profile_updated_at is None
+
+
+def test_person_accepts_a_composed_profile():
+    person = Person(
+        id="PER-001", name="Vijender", email="vijender@alumnx.com",
+        profile_summary="Vijender is an AI Training and AI Consulting professional at Alumnx AI Labs.",
+        recent_context="Vijender has discussed AI Engineer requirements with Databeat.",
+        key_topics=["AI Engineer hiring", "AI training programs"],
+        profile_updated_at=datetime(2026, 10, 5, 12, 0, 0),
+    )
+    assert person.profile_summary.startswith("Vijender is an AI Training")
+    assert person.key_topics == ["AI Engineer hiring", "AI training programs"]

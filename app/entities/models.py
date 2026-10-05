@@ -67,6 +67,15 @@ class Person(BaseModel):
     # consolidation executor -- nothing in this codebase sets it as of this change.
     status: str = "active"
     merged_into: str | None = None
+    # Customer Intelligence profile -- Claude-authored prose, composed from
+    # this person's existing profile + their Organization's already-researched
+    # profile + the triggering email, and persisted via persist_person_profile
+    # (app.mcp.tools). None until the first email mentioning this person is
+    # processed.
+    profile_summary: str | None = None
+    recent_context: str | None = None
+    key_topics: list[str] = Field(default_factory=list)
+    profile_updated_at: datetime | None = None
 
 
 class Project(BaseModel):
