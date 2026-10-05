@@ -255,20 +255,39 @@ export interface MeetingRow {
   thread_id?: string | null
 }
 
+export interface MeetingBriefFollowUp {
+  id: string
+  status?: string | null
+  audience?: string | null
+  follow_up_earliest_at?: string | null
+  follow_up_latest_at?: string | null
+}
+
+export interface MeetingBriefKnowledgeItem {
+  knowledge_id: string
+  current_value: string
+}
+
+export interface MeetingBriefReplyDraft {
+  reply_id: string
+  status: string
+  draft: { subject: string; body: string }
+}
+
 export interface MeetingBrief {
-  meeting: Record<string, unknown>
+  meeting: MeetingRow
   classification: string
   canonical_attendee_ids: string[]
-  attendee_contexts: Record<string, unknown>[]
+  attendee_contexts: PersonContext[]
   attendee_resolution_notes: string[]
-  organization_context: Record<string, unknown> | null
+  organization_context: { organization: OrganizationRow } | null
   project_context: Record<string, unknown> | null
-  thread_context: Record<string, unknown> | null
-  previous_meetings: Record<string, unknown>[]
-  open_commitments: Record<string, unknown>[]
-  relevant_follow_ups: Record<string, unknown>[]
-  relevant_knowledge: Record<string, unknown>[]
-  existing_reply_drafts: Record<string, unknown>[]
+  thread_context: { thread: ThreadRow } | null
+  previous_meetings: MeetingRow[]
+  open_commitments: CommitmentRow[]
+  relevant_follow_ups: MeetingBriefFollowUp[]
+  relevant_knowledge: MeetingBriefKnowledgeItem[]
+  existing_reply_drafts: MeetingBriefReplyDraft[]
   evidence: Record<string, unknown>[]
 }
 

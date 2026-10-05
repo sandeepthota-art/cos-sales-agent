@@ -2,55 +2,70 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { getMeetingBrief } from '../api/meetings'
-import type { MeetingBrief } from '../api/types'
-import { HIDDEN_FIELDS } from '../config/hiddenFields'
+import type {
+  CommitmentRow,
+  MeetingBrief,
+  MeetingBriefFollowUp,
+  MeetingBriefKnowledgeItem,
+  MeetingBriefReplyDraft,
+  PersonContext,
+} from '../api/types'
 import { ErrorState } from '../components/ErrorState'
-import { KeyValueList } from '../components/KeyValueList'
+import { IdLink } from '../components/IdLink'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { PageHeader } from '../components/PageHeader'
-import { RecordList } from '../components/RecordList'
 import { StatusBadge } from '../components/StatusBadge'
+import { formatDate } from '../utils/format'
 
-function omit(record: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
-  const copy = { ...record }
-  for (const field of fields) delete copy[field]
-  return copy
+function AttendeeCard({ context }: { context: PersonContext }) {
+  const { person } = context
+  const orgData = context.organization.data
+  const companyName = orgData?.name ?? person.org ?? undefined
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <p className="card__title">
+        <IdLink id={person.id} label={person.name || person.id} />
+        {companyName && (
+          <>
+            {' · '}
+            {orgData ? <IdLink id={orgData.id} label={companyName} /> : companyName}
+          </>
+        )}
+      </p>
+      {person.profile_summary && <p>{person.profile_summary}</p>}
+      {person.recent_context && <p style={{ color: 'var(--color-text-muted)' }}>{person.recent_context}</p>}
+    </div>
+  )
 }
 
-interface BasisWrapped {
-  basis: string
-  data: unknown
+function CommitmentLine({ commitment }: { commitment: CommitmentRow }) {
+  return (
+    <p>
+      {commitment.what}
+      {' — '}
+      {commitment.owed_by ?? '—'} {'→'} {commitment.owed_to ?? '—'}
+      {commitment.committed_date && <> · due {formatDate(commitment.committed_date)}</>}
+      {' '}
+      <StatusBadge status={commitment.status} />
+    </p>
+  )
 }
 
-function isBasisWrapped(value: unknown): value is BasisWrapped {
-  return typeof value === 'object' && value !== null && 'data' in value
-}
+function FollowUpLine({ followUp }: { followUp: MeetingBriefFollowUp }) {
+  const window =
+    followUp.follow_up_earliest_at && followUp.follow_up_latest_at
+      ? `${formatDate(followUp.follow_up_earliest_at)} – ${formatDate(followUp.follow_up_latest_at)}`
+      : null
 
-/** get_organization_context (app/entities/context.py) nests raw Organization/
- * Project/FollowUp documents several levels deep. Rather than generalize
- * KeyValueList's nestedSkip to be path-aware for this one deeply-nested
- * shape, this strips the known-dead fields from just this payload before it
- * reaches the generic renderer -- same hiding the Streamlit dashboard and
- * this app's other detail pages already apply, just scoped to this shape. */
-function sanitizeOrganizationContext(context: Record<string, unknown>): Record<string, unknown> {
-  const cleaned: Record<string, unknown> = { ...context }
-  if (context.organization && typeof context.organization === 'object') {
-    cleaned.organization = omit(context.organization as Record<string, unknown>, HIDDEN_FIELDS.organizations)
-  }
-  for (const [key, fields] of [
-    ['projects', HIDDEN_FIELDS.projects],
-    ['follow_ups', HIDDEN_FIELDS.follow_ups],
-    ['meetings', HIDDEN_FIELDS.meetings],
-  ] as const) {
-    const wrapped = cleaned[key]
-    if (isBasisWrapped(wrapped) && Array.isArray(wrapped.data)) {
-      cleaned[key] = {
-        ...wrapped,
-        data: (wrapped.data as Record<string, unknown>[]).map((item) => omit(item, fields)),
-      }
-    }
-  }
-  return cleaned
+  return (
+    <p>
+      {followUp.audience ?? 'Follow-up'}
+      {window && <> · due {window}</>}
+      {' '}
+      <StatusBadge status={followUp.status} />
+    </p>
+  )
 }
 
 export function MeetingBriefPage() {
@@ -82,20 +97,31 @@ export function MeetingBriefPage() {
   if (error) return <ErrorState message={error} />
   if (!brief) return <ErrorState message="Meeting not found" />
 
-  const projectOrPillar = (brief.meeting.project_or_pillar as string | undefined) ?? undefined
+  const { meeting } = brief
+  const orgData = brief.organization_context?.organization
+  const thread = brief.thread_context?.thread
 
   return (
     <div>
       <PageHeader
         title="Meeting Brief"
-        subtitle={projectOrPillar}
+        subtitle={meeting.project_or_pillar ?? undefined}
         breadcrumbs={[{ label: 'Meetings', to: '/meetings' }, { label: meetingId }]}
         actions={<StatusBadge status={brief.classification} />}
       />
 
       <div className="card" style={{ marginBottom: 16 }}>
         <p className="card__title">Meeting</p>
-        <KeyValueList data={brief.meeting} skip={['id', ...HIDDEN_FIELDS.meetings]} />
+        <p>{formatDate(meeting.date)}</p>
+        {(meeting.attendees?.length ?? 0) > 0 && <p>Attendees: {meeting.attendees!.join(', ')}</p>}
+        <p>{meeting.actionable ? 'Actionable' : 'Not actionable'}</p>
+        {(meeting.actions_raised?.length ?? 0) > 0 && (
+          <ul>
+            {meeting.actions_raised!.map((action, index) => (
+              <li key={index}>{action}</li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {brief.attendee_resolution_notes.length > 0 && (
@@ -108,37 +134,91 @@ export function MeetingBriefPage() {
       )}
 
       <div className="section-grid">
-        {brief.organization_context && (
+        {brief.attendee_contexts.length > 0 && (
           <div className="card">
-            <p className="card__title">Organization Context</p>
-            <KeyValueList data={sanitizeOrganizationContext(brief.organization_context)} />
+            <p className="card__title">Attendees</p>
+            {brief.attendee_contexts.map((context) => (
+              <AttendeeCard key={context.person.id} context={context} />
+            ))}
           </div>
         )}
-        {brief.project_context && (
+
+        {orgData && (
           <div className="card">
-            <p className="card__title">Project Context</p>
-            <KeyValueList data={brief.project_context} />
+            <p className="card__title">
+              <IdLink id={orgData.id} label={orgData.name} />
+            </p>
+            {orgData.industry && <p style={{ color: 'var(--color-text-muted)' }}>{orgData.industry}</p>}
+            {orgData.description && <p>{orgData.description}</p>}
           </div>
         )}
-        {brief.thread_context && (
+
+        {thread && (
           <div className="card">
-            <p className="card__title">Thread Context</p>
-            <KeyValueList data={brief.thread_context} />
+            <p className="card__title">Thread</p>
+            <p>
+              {thread.normalized_subject} · last active {formatDate(thread.last_message_at)}
+            </p>
           </div>
         )}
-        <RecordList
-          title="Previous Meetings"
-          records={brief.previous_meetings}
-          skip={[...HIDDEN_FIELDS.meetings]}
-        />
-        <RecordList title="Open Commitments" records={brief.open_commitments} />
-        <RecordList
-          title="Relevant Follow-ups"
-          records={brief.relevant_follow_ups}
-          skip={[...HIDDEN_FIELDS.follow_ups]}
-        />
-        <RecordList title="Relevant Knowledge" records={brief.relevant_knowledge} />
-        <RecordList title="Existing Reply Drafts" records={brief.existing_reply_drafts} />
+
+        <div className="card">
+          <p className="card__title">Previous Meetings</p>
+          {brief.previous_meetings.length === 0 ? (
+            <p style={{ color: 'var(--color-text-muted)' }}>None</p>
+          ) : (
+            brief.previous_meetings.map((previous) => (
+              <p key={previous.id}>
+                {formatDate(previous.date)}
+                {(previous.actions_raised?.length ?? 0) > 0 && <> — {previous.actions_raised!.join(', ')}</>}
+              </p>
+            ))
+          )}
+        </div>
+
+        <div className="card">
+          <p className="card__title">Open Commitments</p>
+          {brief.open_commitments.length === 0 ? (
+            <p style={{ color: 'var(--color-text-muted)' }}>None</p>
+          ) : (
+            brief.open_commitments.map((commitment) => <CommitmentLine key={commitment.id} commitment={commitment} />)
+          )}
+        </div>
+
+        <div className="card">
+          <p className="card__title">Relevant Follow-ups</p>
+          {brief.relevant_follow_ups.length === 0 ? (
+            <p style={{ color: 'var(--color-text-muted)' }}>None</p>
+          ) : (
+            brief.relevant_follow_ups.map((followUp) => <FollowUpLine key={followUp.id} followUp={followUp} />)
+          )}
+        </div>
+
+        <div className="card">
+          <p className="card__title">Relevant Knowledge</p>
+          {brief.relevant_knowledge.length === 0 ? (
+            <p style={{ color: 'var(--color-text-muted)' }}>None</p>
+          ) : (
+            <ul>
+              {brief.relevant_knowledge.map((item: MeetingBriefKnowledgeItem) => (
+                <li key={item.knowledge_id}>{item.current_value}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card">
+          <p className="card__title">Existing Reply Drafts</p>
+          {brief.existing_reply_drafts.length === 0 ? (
+            <p style={{ color: 'var(--color-text-muted)' }}>None</p>
+          ) : (
+            brief.existing_reply_drafts.map((reply: MeetingBriefReplyDraft) => (
+              <p key={reply.reply_id}>
+                {reply.draft.subject} <StatusBadge status={reply.status} />
+              </p>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )
