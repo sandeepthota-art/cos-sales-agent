@@ -152,6 +152,18 @@ For each message, in order (oldest to newest within a batch):
      `persist_organization_research` with no fields set -- this marks the
      company "looked, found nothing" so it isn't re-surfaced on every future
      email about it. Do this before calling `mark_email_completed`.
+   - **Update each referenced person's Customer Intelligence profile.** For
+     each entry in the same result's `people_profile_context`, read what this
+     email actually says about that person alongside their existing
+     `profile_summary`/`recent_context`/`key_topics` (already included in the
+     entry) and their organization's `org_description`/`org_industry` (also
+     included). If this email adds anything substantive -- a new role, a new
+     topic of discussion, a meaningful update to what you're working on
+     together -- compose the FULL updated text (incorporating what was
+     already there, never discarding it) and call `persist_person_profile`
+     with whichever fields changed. A trivial email ("thanks, got it") with
+     nothing new doesn't need a call at all -- this is judgment, not a rule.
+     Do this before calling `mark_email_completed`.
    - Produce a bounded `ContextDelta` (only what this message changes -- a
      real object matching `app.context.models.ContextDelta`'s shape, never
      an empty/placeholder one) and call `persist_context_delta`.
