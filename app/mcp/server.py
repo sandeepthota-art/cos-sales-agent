@@ -143,6 +143,18 @@ def mark_email_completed(message_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_last_ingested_email() -> dict[str, Any] | None:
+    """Read-only: the most recently ingested email (by its own timestamp),
+    for determining where an incremental Gmail sync should resume from.
+    Call this first in Mode C ("what's new check") -- if it returns a
+    result, search Gmail from that email's date forward; if it returns
+    None, nothing has been ingested yet, search from the project's
+    agreed start date instead. Never writes anything.
+    """
+    return tools.get_last_ingested_email(_get_db())
+
+
+@mcp.tool()
 def list_processed_emails(limit: int = 50) -> list[dict[str, Any]]:
     """List emails already ingested through this pipeline, most recent first.
 
