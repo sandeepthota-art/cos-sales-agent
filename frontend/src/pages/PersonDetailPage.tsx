@@ -41,7 +41,7 @@ export function PersonDetailPage() {
 
   const { person } = context
   const orgData = context.organization.data
-  const companyName = (orgData?.name as string | undefined) ?? person.org ?? undefined
+  const companyName = orgData?.name ?? person.org ?? undefined
 
   return (
     <div>
@@ -54,8 +54,12 @@ export function PersonDetailPage() {
       <div className="card" style={{ marginBottom: 16 }}>
         {companyName && (
           <p className="card__title">
-            {orgData ? <IdLink id={(orgData.id as string) ?? ''} label={companyName} /> : companyName}
+            {orgData ? <IdLink id={orgData.id} label={companyName} /> : companyName}
           </p>
+        )}
+
+        {orgData?.description && (
+          <p style={{ color: 'var(--color-text-muted)' }}>{orgData.description}</p>
         )}
 
         {person.profile_summary ? (

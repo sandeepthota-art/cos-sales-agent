@@ -102,7 +102,7 @@ export interface PersonContext {
   person: PersonRow
   canonical_person_id: string | null
   canonical_resolution_error: string | null
-  organization: BasisWrapped<Record<string, unknown> | null>
+  organization: BasisWrapped<OrganizationRow | null>
   emails: BasisWrapped<Record<string, unknown>[]>
   threads: BasisWrapped<ThreadRow[]>
   related_people: BasisWrapped<PersonRow[]>

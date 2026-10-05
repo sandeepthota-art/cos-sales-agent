@@ -21,7 +21,15 @@ const PERSON_CONTEXT_BODY = {
   },
   canonical_person_id: 'PER-001',
   canonical_resolution_error: null,
-  organization: { basis: 'canonical_id', data: { id: 'ORG-001', name: 'Alumnx AI Labs' } },
+  organization: {
+    basis: 'canonical_id',
+    data: {
+      id: 'ORG-001',
+      name: 'Alumnx AI Labs',
+      industry: 'AI Training & Consulting',
+      description: 'An AI training and consulting company focused on AI HR solutions and engineering talent.',
+    },
+  },
   emails: { basis: 'canonical_id', data: [] },
   threads: { basis: 'canonical_id', data: [] },
   related_people: { basis: 'canonical_id_shared_thread', data: [] },
@@ -58,6 +66,9 @@ describe('PersonDetailPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Vijender' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Alumnx AI Labs' })).toBeInTheDocument()
+    expect(
+      screen.getByText('An AI training and consulting company focused on AI HR solutions and engineering talent.'),
+    ).toBeInTheDocument()
     expect(screen.getByText(/AI Training and AI Consulting professional at Alumnx AI Labs/)).toBeInTheDocument()
     expect(screen.getByText(/discussed AI Engineer requirements with Databeat/)).toBeInTheDocument()
     expect(screen.getByText(/AI Engineer hiring/)).toBeInTheDocument()
