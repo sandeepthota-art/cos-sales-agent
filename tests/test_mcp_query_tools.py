@@ -1332,3 +1332,64 @@ def test_get_last_ingested_email_never_writes_to_mongodb(db):
 
     after = {name: list(db[name].find({})) for name in db.list_collection_names()}
     assert before == after
+
+
+def test_get_last_ingested_email_compares_timestamps_chronologically_not_lexicographically(db):
+    # Final review finding I3: a '+05:30' offset timestamp can sort lexicographically
+    # ABOVE a chronologically earlier 'Z' (UTC) timestamp -- e.g. "...T01:00:00+05:30"
+    # (= Oct 5 19:30 UTC) vs "...T23:00:00Z" (genuinely later in real time). Plain
+    # string max() would pick the wrong one; this proves true chronological comparison.
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"}, _email("EML-001", timestamp="2026-10-06T01:00:00+05:30"),
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-002"}, _email("EML-002", timestamp="2026-10-05T23:00:00Z"),
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["message_id"] == "EML-002"
+
+
+def test_get_last_ingested_email_surfaces_the_earliest_unprocessed_email_for_retry(db):
+    # Final review finding I1: a stuck (non-COMPLETED) older email must not be
+    # silently abandoned just because a newer, completed email moved the "latest"
+    # boundary past it.
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {**_email("EML-001", timestamp="2026-10-03T09:00:00Z"), "processing_status": {"stage": "ANALYZED"}},
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-002"},
+        {**_email("EML-002", timestamp="2026-10-05T09:00:00Z"), "processing_status": {"stage": "COMPLETED"}},
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["message_id"] == "EML-002"
+    assert result["earliest_unprocessed_timestamp"] == "2026-10-03T09:00:00Z"
+
+
+def test_get_last_ingested_email_earliest_unprocessed_is_none_when_everything_is_completed(db):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {**_email("EML-001", timestamp="2026-10-03T09:00:00Z"), "processing_status": {"stage": "COMPLETED"}},
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["earliest_unprocessed_timestamp"] is None
+
+
+def test_get_last_ingested_email_returns_latest_even_when_it_is_itself_unprocessed(db):
+    # The "latest" return must remain stage-agnostic -- not accidentally filtered to
+    # only COMPLETED emails -- even now that stage-awareness exists for
+    # earliest_unprocessed_timestamp.
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {**_email("EML-001", timestamp="2026-10-05T09:00:00Z"), "processing_status": {"stage": "RECEIVED"}},
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["message_id"] == "EML-001"

@@ -596,35 +596,72 @@ def mark_email_completed(db: Database, message_id: str) -> dict[str, Any]:
     return {"message_id": message_id, "stage": "COMPLETED", "already_completed": False}
 
 
+def _parse_timestamp_for_sort(value: str | None) -> datetime:
+    """A shared, chronologically-correct sort key for email timestamps --
+    NOT plain string comparison. Review finding (final review of the
+    Incremental Gmail Ingestion plan): two real timestamps can carry
+    different UTC offsets (e.g. "...T01:00:00+05:30" vs "...T23:00:00Z"
+    for the instant just before it), and `normalize_email` never
+    standardizes the timestamp's string form -- a plain `max()` over the
+    raw strings can silently pick the chronologically EARLIER one. Missing/
+    unparseable values sort as the minimum possible instant, never crash.
+    """
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def get_last_ingested_email(db: Database) -> dict[str, Any] | None:
     """Read-only: the most recently ingested email, by its own timestamp
     (Email.timestamp -- the email's send/receive date; this project has
     never stored a separate ingestion-time field, and the email's own date
-    is what a Gmail date-range search needs anyway).
+    is what a Gmail date-range search needs anyway). Timestamps are
+    compared chronologically, not lexicographically (see
+    _parse_timestamp_for_sort).
 
-    Returns None if nothing has been ingested yet. Considers every ingested
-    email regardless of processing_status.stage (including one stuck
-    mid-pipeline) -- the purpose is purely "where does our data already
-    reach to," not "what's fully processed." A stuck email at the boundary
-    is naturally re-surfaced by the next incremental search (Gmail's own
-    date-range search is day-granularity, not second-precision) and safely
-    re-ingested without duplication via ingest_email's existing dedup.
+    Returns None if nothing has been ingested yet. `message_id`/
+    `source_message_id`/`thread_id`/`timestamp` always describe the overall
+    latest email regardless of processing_status.stage (including one
+    stuck mid-pipeline) -- the purpose is purely "where does our data
+    already reach to," not "what's fully processed."
 
-    Returns {"message_id", "source_message_id", "thread_id", "timestamp"}
-    for the single email with the maximum timestamp, mirroring
-    list_processed_emails' own sort-by-timestamp convention exactly (same
-    `e.get("timestamp") or ""` key, same reason: a malformed document must
-    never crash this lookup).
+    `earliest_unprocessed_timestamp` (None if every ingested email has
+    reached COMPLETED) is the earliest timestamp among emails that have
+    NOT reached COMPLETED. Final review finding: without this, an email
+    stuck mid-pipeline is silently abandoned forever once ANY newer email
+    completes and moves the search boundary past it -- the boundary only
+    ever moves forward, so "the next incremental search re-surfaces it"
+    was only true when the stuck email happened to be the single newest
+    one. A caller should floor its search boundary at the EARLIER of this
+    email's timestamp and earliest_unprocessed_timestamp (when not None),
+    so a stuck email from an earlier run is always re-included.
     """
     emails = EmailRepository(db).find_many({})
     if not emails:
         return None
-    latest = max(emails, key=lambda e: e.get("timestamp") or "")
+    latest = max(emails, key=lambda e: _parse_timestamp_for_sort(e.get("timestamp")))
+    unprocessed = [
+        e for e in emails
+        if e.get("processing_status", {}).get("stage") != ProcessingStage.COMPLETED.value
+    ]
+    earliest_unprocessed = (
+        min(unprocessed, key=lambda e: _parse_timestamp_for_sort(e.get("timestamp")))
+        if unprocessed else None
+    )
     return {
         "message_id": latest["message_id"],
         "source_message_id": latest.get("source_message_id"),
         "thread_id": latest.get("thread_id"),
         "timestamp": latest.get("timestamp"),
+        "earliest_unprocessed_timestamp": (
+            earliest_unprocessed.get("timestamp") if earliest_unprocessed else None
+        ),
     }
 
 

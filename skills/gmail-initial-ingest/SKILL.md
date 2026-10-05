@@ -233,19 +233,29 @@ stop -- don't re-describe stale results as new.
 ## Mode C: What's new check
 
 1. Call `get_last_ingested_email` first.
-   - If it returns a result, search Gmail `after:<that email's timestamp,
-     formatted YYYY/MM/DD> before:<today's date, YYYY/MM/DD>`.
    - If it returns `None` (nothing ingested yet), search Gmail
-     `after:2026/10/01 before:<today's date, YYYY/MM/DD>`.
+     `after:2026/10/01` -- no `before:` bound (see note below).
+   - Otherwise, determine the search start date: if
+     `earliest_unprocessed_timestamp` is set, use THAT date -- never the
+     latest email's own date -- so an email stuck mid-pipeline from an
+     earlier run is never skipped just because a newer email already
+     completed. Only when `earliest_unprocessed_timestamp` is `None` (every
+     ingested email has reached `COMPLETED`), use the latest email's own
+     date instead. Either way, search Gmail `after:<that date, formatted
+     YYYY/MM/DD>` -- no `before:` bound.
+   - **Never add a `before:<today>` bound.** Gmail's `before:` is exclusive
+     of the named day, so `before:2026/10/05` silently excludes mail that
+     arrived ON October 5th -- the single most common case this mode
+     exists for. An open-ended `after:` search already means "everything
+     since that date, including today."
 2. If the search surfaces a thread, open it (`get_thread`) and enumerate
    its actual `messages[]` -- never treat a thread's own `id` field as a
    message id.
 3. Run the per-message procedure on every message the search returns,
-   unchanged. A message on the same day as the last-ingested one may be
-   re-surfaced by the day-granularity search -- this is expected, not an
-   error: `ingest_email`'s own `already_completed`/dedup check makes
-   re-including it safe, and an email that was previously stuck mid-
-   pipeline (never reached `COMPLETED`) gets a genuine retry this way.
+   unchanged. A message on the same day as the search boundary may be
+   re-surfaced across runs -- this is expected, not an error:
+   `ingest_email`'s own `already_completed`/dedup check makes re-including
+   it safe.
 
 Report in plain English per email: what came in, who it's from, whether it
 was Sales, what was created, the Gmail label applied, whether a reply was

@@ -150,6 +150,12 @@ def get_last_ingested_email() -> dict[str, Any] | None:
     result, search Gmail from that email's date forward; if it returns
     None, nothing has been ingested yet, search from the project's
     agreed start date instead. Never writes anything.
+
+    Also returns `earliest_unprocessed_timestamp` (null if everything
+    ingested so far has reached COMPLETED) -- if set, search from THIS
+    date instead of the latest email's date, so an email stuck mid-
+    pipeline from an earlier run is never silently skipped just because a
+    newer email already completed.
     """
     return tools.get_last_ingested_email(_get_db())
 
