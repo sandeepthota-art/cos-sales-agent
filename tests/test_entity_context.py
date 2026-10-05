@@ -456,10 +456,15 @@ def test_get_person_context_never_copies_related_content_into_the_person_documen
     # note_link/source removed entirely (people-collection schema cleanup -- never
     # read or written by any code path); see
     # scripts/remove_person_source_note_link_fields.py.
+    # profile_summary/recent_context/key_topics/profile_updated_at are the Customer
+    # Intelligence Profile fields (see docs/superpowers/specs/
+    # 2026-10-05-customer-intelligence-profile-design.md) -- a legitimate, intentional
+    # addition to the Person schema, not content copied in by get_person_context.
     assert set(stored.keys()) == {
         "id", "name", "email", "aliases", "org", "org_id", "role", "goal_pillar",
         "last_inbound", "last_outbound", "open_threads",
         "status", "merged_into",
+        "profile_summary", "recent_context", "key_topics", "profile_updated_at",
     }
 
 

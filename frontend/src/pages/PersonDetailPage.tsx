@@ -52,7 +52,7 @@ export function PersonDetailPage() {
       />
 
       <div className="card" style={{ marginBottom: 16 }}>
-        {companyName && !person.profile_summary && (
+        {companyName && (
           <p className="card__title">
             {orgData ? <IdLink id={(orgData.id as string) ?? ''} label={companyName} /> : companyName}
           </p>

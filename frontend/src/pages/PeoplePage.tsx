@@ -4,6 +4,12 @@ import { EntityListPage } from '../components/EntityListPage'
 import { StatusBadge } from '../components/StatusBadge'
 import { formatDate } from '../utils/format'
 
+const TEASER_MAX_LENGTH = 80
+
+function truncateTeaser(text: string): string {
+  return text.length > TEASER_MAX_LENGTH ? `${text.slice(0, TEASER_MAX_LENGTH)}…` : text
+}
+
 export function PeoplePage() {
   return (
     <EntityListPage<PersonRow>
@@ -22,7 +28,7 @@ export function PeoplePage() {
           key: 'profile_summary',
           label: 'Profile',
           render: (row) =>
-            row.profile_summary ?? (row.key_topics?.length ? row.key_topics.join(', ') : '—'),
+            truncateTeaser(row.profile_summary ?? (row.key_topics?.length ? row.key_topics.join(', ') : '—')),
         },
         { key: 'last_inbound', label: 'Last Inbound', render: (row) => formatDate(row.last_inbound) },
         { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },

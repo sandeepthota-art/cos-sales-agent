@@ -57,7 +57,7 @@ describe('PersonDetailPage', () => {
     renderPage()
 
     expect(await screen.findByRole('heading', { name: 'Vijender' })).toBeInTheDocument()
-    expect(screen.getByText('Alumnx AI Labs', { exact: false })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Alumnx AI Labs' })).toBeInTheDocument()
     expect(screen.getByText(/AI Training and AI Consulting professional at Alumnx AI Labs/)).toBeInTheDocument()
     expect(screen.getByText(/discussed AI Engineer requirements with Databeat/)).toBeInTheDocument()
     expect(screen.getByText(/AI Engineer hiring/)).toBeInTheDocument()
