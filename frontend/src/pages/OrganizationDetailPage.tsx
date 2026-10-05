@@ -39,6 +39,7 @@ export function OrganizationDetailPage() {
   if (!summary) return <ErrorState message="Organization not found" />
 
   const { organization, summary: related } = summary
+  const hasProfile = Boolean(organization.industry || organization.description)
 
   return (
     <div>
@@ -47,6 +48,35 @@ export function OrganizationDetailPage() {
         subtitle={organization.domain ?? undefined}
         breadcrumbs={[{ label: 'Organizations', to: '/organizations' }, { label: organization.id }]}
       />
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        {hasProfile ? (
+          <>
+            <p className="card__title">Company Profile</p>
+            {organization.industry && <p>{organization.industry}</p>}
+            {organization.description && <p>{organization.description}</p>}
+            {(organization.products_services?.length ?? 0) > 0 && (
+              <p style={{ color: 'var(--color-text-muted)' }}>
+                {organization.products_services?.join(' · ')}
+              </p>
+            )}
+            <p style={{ marginTop: 12 }}>
+              {organization.headquarters && <>{organization.headquarters}</>}
+              {organization.headquarters && organization.size_estimate && ' · '}
+              {organization.size_estimate && <>{organization.size_estimate}</>}
+            </p>
+            {organization.website && (
+              <p>
+                <a href={organization.website} target="_blank" rel="noreferrer">
+                  {organization.website}
+                </a>
+              </p>
+            )}
+          </>
+        ) : (
+          <p style={{ color: 'var(--color-text-muted)' }}>No company research yet.</p>
+        )}
+      </div>
 
       <div className="section-grid">
         <RecordList title="People" records={related.people} />

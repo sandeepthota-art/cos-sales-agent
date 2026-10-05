@@ -121,6 +121,14 @@ export interface OrganizationRow {
   name: string
   domain?: string | null
   aliases?: string[]
+  industry?: string | null
+  description?: string | null
+  products_services?: string[]
+  size_estimate?: string | null
+  headquarters?: string | null
+  website?: string | null
+  research_source?: string | null
+  researched_at?: string | null
 }
 
 export interface OrganizationSummary {
