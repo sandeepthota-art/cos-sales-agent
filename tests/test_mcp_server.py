@@ -339,3 +339,9 @@ def test_list_organizations_tool_is_registered():
     registered_tools = asyncio.run(mcp.list_tools())
     names = [tool.name for tool in registered_tools]
     assert "list_organizations" in names
+
+
+def test_persist_person_profile_tool_is_registered():
+    registered_tools = asyncio.run(mcp.list_tools())
+    names = [tool.name for tool in registered_tools]
+    assert "persist_person_profile" in names

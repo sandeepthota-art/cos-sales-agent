@@ -577,6 +577,27 @@ def merge_organization_records(source_org_id: str, target_org_id: str) -> dict[s
 
 
 @mcp.tool()
+def persist_person_profile(
+    person_id: str,
+    role: str | None = None,
+    profile_summary: str | None = None,
+    recent_context: str | None = None,
+    key_topics: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persists a Customer/Contact Intelligence profile update you (Claude)
+    already composed -- call this after seeing people_profile_context in a
+    persist_email_analysis result, when the email adds something substantive
+    about who this person is, their role, or what you've been discussing.
+    Each field is optional -- omit one to leave it unchanged. Raises
+    ValueError if person_id doesn't exist.
+    """
+    return tools.persist_person_profile(
+        _get_db(), person_id, role=role, profile_summary=profile_summary,
+        recent_context=recent_context, key_topics=key_topics,
+    )
+
+
+@mcp.tool()
 def ask_question(text: str, timezone: str | None = None) -> dict[str, Any]:
     """BRD gap-analysis FR-01: answer an executive-style natural-language question
     (e.g. "What meetings do I have today?", "What follow-ups are overdue?", "What
