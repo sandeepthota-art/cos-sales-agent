@@ -232,13 +232,20 @@ stop -- don't re-describe stale results as new.
 
 ## Mode C: What's new check
 
-Search Gmail for the message(s) matching the request (recent inbox, a
-sender, a subject). If the search surfaces a thread, open it (`get_thread`)
-and enumerate its actual `messages[]` -- never treat a thread's own `id`
-field as a message id. Check each candidate against `search_emails`/
-`list_processed_emails` to see what's actually unprocessed before deciding
-what's "new." Run the per-message procedure on each new candidate (normally
-one at a time unless explicitly asked for more).
+1. Call `get_last_ingested_email` first.
+   - If it returns a result, search Gmail `after:<that email's timestamp,
+     formatted YYYY/MM/DD> before:<today's date, YYYY/MM/DD>`.
+   - If it returns `None` (nothing ingested yet), search Gmail
+     `after:2026/10/01 before:<today's date, YYYY/MM/DD>`.
+2. If the search surfaces a thread, open it (`get_thread`) and enumerate
+   its actual `messages[]` -- never treat a thread's own `id` field as a
+   message id.
+3. Run the per-message procedure on every message the search returns,
+   unchanged. A message on the same day as the last-ingested one may be
+   re-surfaced by the day-granularity search -- this is expected, not an
+   error: `ingest_email`'s own `already_completed`/dedup check makes
+   re-including it safe, and an email that was previously stuck mid-
+   pipeline (never reached `COMPLETED`) gets a genuine retry this way.
 
 Report in plain English per email: what came in, who it's from, whether it
 was Sales, what was created, the Gmail label applied, whether a reply was
