@@ -1263,3 +1263,72 @@ def test_list_organizations_filters_by_name_contains_case_insensitively(db):
     result = tools.list_organizations(db, name_contains="databeat")
 
     assert [o["id"] for o in result] == ["ORG-001"]
+
+
+# --- get_last_ingested_email ---------------------------------------------------------
+
+
+def test_get_last_ingested_email_returns_none_when_no_emails_exist(db):
+    assert tools.get_last_ingested_email(db) is None
+
+
+def test_get_last_ingested_email_returns_the_email_with_the_latest_timestamp(db):
+    # Inserted latest-timestamp first, earliest last -- proves this picks the true
+    # max timestamp, not just the most-recently-inserted document.
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-003"},
+        _email("EML-003", thread_id="THR-003", timestamp="2026-10-05T09:00:00Z", source_message_id="msg_003"),
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        _email("EML-001", thread_id="THR-001", timestamp="2026-10-01T09:00:00Z", source_message_id="msg_001"),
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-002"},
+        _email("EML-002", thread_id="THR-002", timestamp="2026-10-03T09:00:00Z", source_message_id="msg_002"),
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["message_id"] == "EML-003"
+    assert result["source_message_id"] == "msg_003"
+    assert result["thread_id"] == "THR-003"
+    assert result["timestamp"] == "2026-10-05T09:00:00Z"
+
+
+def test_get_last_ingested_email_tolerates_a_document_missing_optional_fields(db):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"},
+        {"message_id": "EML-001", "timestamp": "2026-10-01T09:00:00Z"},
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["message_id"] == "EML-001"
+    assert result["source_message_id"] is None
+    assert result["thread_id"] is None
+
+
+def test_get_last_ingested_email_tolerates_a_document_with_no_timestamp(db):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"}, _email("EML-001", timestamp=None),
+    )
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-002"}, _email("EML-002", timestamp="2026-10-01T09:00:00Z"),
+    )
+
+    result = tools.get_last_ingested_email(db)
+
+    assert result["message_id"] == "EML-002"
+
+
+def test_get_last_ingested_email_never_writes_to_mongodb(db):
+    EmailRepository(db).upsert_by_key(
+        {"message_id": "EML-001"}, _email("EML-001", timestamp="2026-10-01T09:00:00Z"),
+    )
+    before = {name: list(db[name].find({})) for name in db.list_collection_names()}
+
+    tools.get_last_ingested_email(db)
+
+    after = {name: list(db[name].find({})) for name in db.list_collection_names()}
+    assert before == after

@@ -596,6 +596,38 @@ def mark_email_completed(db: Database, message_id: str) -> dict[str, Any]:
     return {"message_id": message_id, "stage": "COMPLETED", "already_completed": False}
 
 
+def get_last_ingested_email(db: Database) -> dict[str, Any] | None:
+    """Read-only: the most recently ingested email, by its own timestamp
+    (Email.timestamp -- the email's send/receive date; this project has
+    never stored a separate ingestion-time field, and the email's own date
+    is what a Gmail date-range search needs anyway).
+
+    Returns None if nothing has been ingested yet. Considers every ingested
+    email regardless of processing_status.stage (including one stuck
+    mid-pipeline) -- the purpose is purely "where does our data already
+    reach to," not "what's fully processed." A stuck email at the boundary
+    is naturally re-surfaced by the next incremental search (Gmail's own
+    date-range search is day-granularity, not second-precision) and safely
+    re-ingested without duplication via ingest_email's existing dedup.
+
+    Returns {"message_id", "source_message_id", "thread_id", "timestamp"}
+    for the single email with the maximum timestamp, mirroring
+    list_processed_emails' own sort-by-timestamp convention exactly (same
+    `e.get("timestamp") or ""` key, same reason: a malformed document must
+    never crash this lookup).
+    """
+    emails = EmailRepository(db).find_many({})
+    if not emails:
+        return None
+    latest = max(emails, key=lambda e: e.get("timestamp") or "")
+    return {
+        "message_id": latest["message_id"],
+        "source_message_id": latest.get("source_message_id"),
+        "thread_id": latest.get("thread_id"),
+        "timestamp": latest.get("timestamp"),
+    }
+
+
 def list_processed_emails(db: Database, limit: int = 50) -> list[dict[str, Any]]:
     thread_id_by_message_id: dict[str, str] = {}
     for thread in ThreadRepository(db).find_many({}):
