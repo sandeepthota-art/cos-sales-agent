@@ -18,6 +18,12 @@ export function PeoplePage() {
         { key: 'email', label: 'Email' },
         { key: 'company', label: 'Organization' },
         { key: 'role', label: 'Role' },
+        {
+          key: 'profile_summary',
+          label: 'Profile',
+          render: (row) =>
+            row.profile_summary ?? (row.key_topics?.length ? row.key_topics.join(', ') : '—'),
+        },
         { key: 'last_inbound', label: 'Last Inbound', render: (row) => formatDate(row.last_inbound) },
         { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
       ]}
