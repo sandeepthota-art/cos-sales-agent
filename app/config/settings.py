@@ -98,18 +98,36 @@ class Settings(BaseSettings):
     dashboard_password: str | None = None
 
     # React/FastAPI migration (docs/REACT_MIGRATION_PLAN.md) -- a deliberately
-    # separate auth surface from the Streamlit password gate above (which is
-    # plaintext-compared, session-state-only, and explicitly NOT reused as the
-    # API's own mechanism per that plan). api_password_hash is a bcrypt hash
-    # the operator precomputes once (e.g. `python -m app.api.auth hash
-    # "<password>"`), never a plaintext password -- unset (None, the default)
-    # bypasses the API's login requirement entirely, mirroring
-    # dashboard_password's own zero-configuration-for-local-dev contract.
+    # separate auth surface from the Streamlit password gate above. Two
+    # mutually-independent login mechanisms share the same session cookie:
+    #
+    # - Google SSO: google_oauth_client_id is the OAuth 2.0 Web application
+    #   Client ID from Google Cloud Console -- public by design (the same
+    #   value is embedded in the frontend's Sign-In-With-Google button; it
+    #   names which app a credential was issued for, it does not
+    #   authenticate anything by itself). allowed_email_domain restricts
+    #   sign-in to one email domain, checked server-side against the
+    #   verified Google ID token's own `email`/`email_verified` claims --
+    #   never trusted from the client; set to None to allow any verified
+    #   Google account (not recommended for a deployment holding real
+    #   customer/deal data).
+    # - Password: api_password_hash is a bcrypt hash the operator precomputes
+    #   once (`python -m app.api.auth hash "<password>"`), never a plaintext
+    #   password. Kept as an alternative for a deployment that doesn't want
+    #   (or hasn't set up) a Google OAuth client -- e.g. a testing
+    #   deployment -- selected independently of Google SSO via which env var
+    #   is actually set.
+    #
+    # Both default to None/unset, which bypasses the API's login requirement
+    # entirely (mirrors dashboard_password's own
+    # zero-configuration-for-local-dev contract) when NEITHER is configured.
     # api_secret_key signs the session cookie (JWT) issued on successful
-    # login; required (no default) once api_password_hash is actually set, so
-    # a real deployment can never accidentally run with a hardcoded/guessable
-    # signing key. api_session_ttl_minutes: how long a session cookie stays
-    # valid before a fresh login is required.
+    # login via either mechanism; required (no default) once either one is
+    # actually set, so a real deployment can never accidentally run with a
+    # hardcoded/guessable signing key. api_session_ttl_minutes: how long a
+    # session cookie stays valid before a fresh login is required.
+    google_oauth_client_id: str | None = None
+    allowed_email_domain: str | None = "databeat.io"
     api_password_hash: str | None = None
     api_secret_key: str | None = None
     api_session_ttl_minutes: int = 720

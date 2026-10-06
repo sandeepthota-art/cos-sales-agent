@@ -28,18 +28,24 @@ def get_settings_dependency() -> Settings:
 
 
 def require_auth(cos_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)) -> None:
-    """Gates every route except /api/v1/auth/login and /health.
+    """Gates every route except /api/v1/auth/login, /api/v1/auth/login/password,
+    /api/v1/auth/config, and /health.
 
-    Unset `api_password_hash` bypasses auth entirely -- mirrors
-    `dashboard_password`'s own zero-configuration-for-local-dev contract
-    (see app.config.settings.Settings.api_password_hash's own docstring).
-    When auth IS configured, a missing or invalid/expired session cookie is
-    always a 401 -- never a silent pass-through, and never a response body
-    that distinguishes "missing cookie" from "invalid cookie" (nothing for
-    an attacker to learn from the error shape).
+    Unset `google_oauth_client_id` AND `api_password_hash` bypasses auth
+    entirely -- mirrors `dashboard_password`'s own
+    zero-configuration-for-local-dev contract (see
+    app.config.settings.Settings.google_oauth_client_id's own docstring).
+    Either one alone is enough to require a session -- the two mechanisms
+    are independent per-deployment choices (e.g. Google SSO on the
+    production dashboard, a password on a testing deployment), not a
+    combined requirement. When auth IS configured (by either), a missing or
+    invalid/expired session cookie is always a 401 -- never a silent
+    pass-through, and never a response body that distinguishes "missing
+    cookie" from "invalid cookie" (nothing for an attacker to learn from the
+    error shape).
     """
     settings = get_settings()
-    if not settings.api_password_hash:
+    if not settings.google_oauth_client_id and not settings.api_password_hash:
         return
     if not settings.api_secret_key:
         # Misconfiguration (password hash set, but no signing key) -- refuse

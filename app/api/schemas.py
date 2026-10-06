@@ -8,7 +8,17 @@ never is.
 from pydantic import BaseModel
 
 
-class LoginRequest(BaseModel):
+class GoogleLoginRequest(BaseModel):
+    """`credential` is the Google-issued ID token (JWT) the frontend's
+    Sign-In-With-Google button returns -- verified server-side
+    (app.api.auth.verify_google_id_token) before any session is issued,
+    never trusted as-is."""
+    credential: str
+
+
+class PasswordLoginRequest(BaseModel):
+    """The alternative login path for a deployment using api_password_hash
+    instead of (or in addition to, on a different deployment) Google SSO."""
     password: str
 
 

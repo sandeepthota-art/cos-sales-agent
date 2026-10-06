@@ -6,12 +6,21 @@ section 4) -- a deliberately SEPARATE mechanism from both:
     a completely independent, unrelated secret (MCP_AUTH_TOKEN), untouched by
     this module.
 
-Password is never stored in plaintext here -- `settings.api_password_hash` is
-a bcrypt hash the operator precomputes once (see `main()` below, invoked via
-`python -m app.api.auth hash "<password>"`). Unset `api_password_hash` means
-the API requires no login at all, mirroring `dashboard_password`'s own
-zero-configuration-for-local-dev contract -- never a silent, accidental
-auth requirement nobody configured.
+Identity can be established either of two independent ways, sharing the same
+session cookie once issued:
+  - Google SSO (Sign-In-With-Google): the frontend's Google Identity Services
+    button returns a Google-issued ID token ("credential"), and
+    `verify_google_id_token` below verifies it against Google's own public
+    keys (signature, expiry, and that it was issued for this app's own OAuth
+    client id).
+  - Password: `settings.api_password_hash` is a bcrypt hash the operator
+    precomputes once (see `main()` below, invoked via `python -m
+    app.api.auth hash "<password>"`) -- kept as an alternative for a
+    deployment that hasn't set up (or doesn't want) a Google OAuth client.
+Unset `google_oauth_client_id` AND `api_password_hash` means the API requires
+no login at all, mirroring `dashboard_password`'s own
+zero-configuration-for-local-dev contract -- never a silent, accidental auth
+requirement nobody configured.
 
 The session token is a signed JWT (HS256, `settings.api_secret_key`) stored by
 the browser as an httpOnly cookie -- React itself never reads or stores it;
@@ -26,6 +35,8 @@ from typing import Any
 
 import bcrypt
 import jwt
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 _JWT_ALGORITHM = "HS256"
 _JWT_SUBJECT = "cos-staff-ea-operator"
@@ -49,6 +60,21 @@ def verify_password(password: str, password_hash: str) -> bool:
         # isn't actually a bcrypt hash) -- never crash the login attempt into
         # a 500; just treat it as an authentication failure.
         return False
+
+
+def verify_google_id_token(credential: str, client_id: str) -> dict[str, Any] | None:
+    """Verifies a Google Identity Services ID token (the `credential` the
+    frontend's Sign-In-With-Google button returns) against Google's own
+    public keys, checking signature, expiry, and that `client_id` (this
+    app's own OAuth client id) matches the token's audience. Returns the
+    decoded claims (includes `email`, `email_verified`, `name`) on success,
+    None for ANY failure (expired, bad signature, wrong audience, malformed)
+    -- the caller only ever needs a yes/no, same not-leaking-which-check-
+    failed rationale as verify_session_token below. Never raises."""
+    try:
+        return google_id_token.verify_oauth2_token(credential, google_requests.Request(), client_id)
+    except ValueError:
+        return None
 
 
 def create_session_token(secret_key: str, ttl_minutes: int, now: datetime | None = None) -> str:

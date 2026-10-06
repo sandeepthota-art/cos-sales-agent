@@ -128,30 +128,42 @@ def test_settings_llm_base_url_env_override(monkeypatch):
 
 
 def test_settings_api_auth_fields_default_to_disabled(monkeypatch):
-    # React/FastAPI migration: unset api_password_hash/api_secret_key must bypass
-    # the API's login requirement entirely, mirroring dashboard_password's own
-    # zero-configuration-for-local-dev contract -- never silently require auth
-    # nobody configured.
+    # React/FastAPI migration: unset google_oauth_client_id/api_password_hash/
+    # api_secret_key must bypass the API's login requirement entirely,
+    # mirroring dashboard_password's own zero-configuration-for-local-dev
+    # contract -- never silently require auth nobody configured.
+    # allowed_email_domain still defaults to "databeat.io" even when auth
+    # itself is off, so turning Google SSO on later doesn't silently allow
+    # every Google account. The two login mechanisms (Google SSO, password)
+    # are independent -- both default to unset/disabled.
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
     monkeypatch.delenv("API_PASSWORD_HASH", raising=False)
     monkeypatch.delenv("API_SECRET_KEY", raising=False)
     monkeypatch.delenv("API_SESSION_TTL_MINUTES", raising=False)
+    monkeypatch.delenv("ALLOWED_EMAIL_DOMAIN", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
+    assert settings.google_oauth_client_id is None
     assert settings.api_password_hash is None
     assert settings.api_secret_key is None
     assert settings.api_session_ttl_minutes == 720
+    assert settings.allowed_email_domain == "databeat.io"
     get_settings.cache_clear()
 
 
 def test_settings_api_auth_env_override(monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "123-abc.apps.googleusercontent.com")
     monkeypatch.setenv("API_PASSWORD_HASH", "$2b$12$examplehashvalue")
     monkeypatch.setenv("API_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("API_SESSION_TTL_MINUTES", "30")
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "example.com")
     get_settings.cache_clear()
     settings = get_settings()
+    assert settings.google_oauth_client_id == "123-abc.apps.googleusercontent.com"
     assert settings.api_password_hash == "$2b$12$examplehashvalue"
     assert settings.api_secret_key == "test-secret-key"
     assert settings.api_session_ttl_minutes == 30
+    assert settings.allowed_email_domain == "example.com"
     get_settings.cache_clear()
 
 

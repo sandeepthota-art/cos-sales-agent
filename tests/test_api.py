@@ -7,17 +7,24 @@ monkeypatch.setenv + get_settings.cache_clear() pattern tests/test_settings.py
 already established for every auth-related setting, so this file follows
 existing conventions rather than inventing a new one.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import mongomock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.auth import hash_password
-from app.api.dependencies import get_db
+import app.api.routers.auth as auth_router
+from app.api.auth import create_session_token, hash_password
+from app.api.dependencies import SESSION_COOKIE_NAME, get_db
 from app.api.main import app
 from app.config.settings import get_settings
 from app.database.indexes import initialize_indexes
+
+_GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com"
+
+
+def _google_claims(email: str, email_verified: bool = True) -> dict:
+    return {"email": email, "email_verified": email_verified, "name": "Test User"}
 
 
 @pytest.fixture
@@ -38,13 +45,33 @@ def _override_db(db):
 @pytest.fixture(autouse=True)
 def _no_auth_by_default(monkeypatch):
     # Default state for every test unless a test explicitly configures auth:
-    # unset api_password_hash bypasses the login requirement entirely, same
-    # as dashboard_password's own zero-config contract.
+    # unset google_oauth_client_id AND api_password_hash bypasses the login
+    # requirement entirely, same as dashboard_password's own zero-config
+    # contract. The two mechanisms are independent per-deployment choices
+    # (see app.api.dependencies.require_auth's own docstring).
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
     monkeypatch.delenv("API_PASSWORD_HASH", raising=False)
     monkeypatch.delenv("API_SECRET_KEY", raising=False)
     monkeypatch.delenv("DASHBOARD_READ_ONLY", raising=False)
+    monkeypatch.delenv("ALLOWED_EMAIL_DOMAIN", raising=False)
     get_settings.cache_clear()
     yield
+    get_settings.cache_clear()
+
+
+def _configure_google_auth(monkeypatch, allowed_email_domain: str | None = "databeat.io") -> None:
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", _GOOGLE_CLIENT_ID)
+    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
+    if allowed_email_domain is None:
+        monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "")
+    else:
+        monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", allowed_email_domain)
+    get_settings.cache_clear()
+
+
+def _configure_password_auth(monkeypatch, password: str = "correct-horse") -> None:
+    monkeypatch.setenv("API_PASSWORD_HASH", hash_password(password))
+    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
     get_settings.cache_clear()
 
 
@@ -70,50 +97,261 @@ def test_health_requires_no_auth(client):
 # --- auth ---
 
 
-def test_login_succeeds_with_no_password_configured(client):
-    response = client.post("/api/v1/auth/login", json={"password": "anything"})
+def test_auth_config_exposes_the_configured_client_id(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    response = client.get("/api/v1/auth/config")
+    assert response.status_code == 200
+    assert response.json() == {"google_client_id": _GOOGLE_CLIENT_ID, "password_auth_enabled": False}
+
+
+def test_auth_config_reports_password_auth_enabled(client, monkeypatch):
+    _configure_password_auth(monkeypatch)
+    response = client.get("/api/v1/auth/config")
+    assert response.status_code == 200
+    assert response.json() == {"google_client_id": None, "password_auth_enabled": True}
+
+
+def test_auth_config_returns_none_when_unconfigured(client):
+    response = client.get("/api/v1/auth/config")
+    assert response.status_code == 200
+    assert response.json() == {"google_client_id": None, "password_auth_enabled": False}
+
+
+def test_login_succeeds_with_no_google_client_id_configured(client):
+    response = client.post("/api/v1/auth/login", json={"credential": "anything"})
     assert response.status_code == 200
     assert response.json() == {"ok": True}
 
 
-def test_login_succeeds_with_correct_password_and_sets_cookie(client, monkeypatch):
-    monkeypatch.setenv("API_PASSWORD_HASH", hash_password("correct-horse"))
-    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
-    get_settings.cache_clear()
+def test_login_succeeds_with_valid_google_credential_and_sets_cookie(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("sandeep.thota@databeat.io")
+    )
 
-    response = client.post("/api/v1/auth/login", json={"password": "correct-horse"})
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
 
     assert response.status_code == 200
     assert "cos_session" in response.cookies
 
 
-def test_login_rejects_incorrect_password(client, monkeypatch):
-    monkeypatch.setenv("API_PASSWORD_HASH", hash_password("correct-horse"))
-    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
+def test_login_sets_a_secure_httponly_samesite_lax_cookie(client, monkeypatch):
+    # Asserts the actual cookie attributes, not just presence -- httpx's
+    # cookie jar (asserted on via response.cookies elsewhere in this file)
+    # doesn't expose Set-Cookie flags, so this reads the raw header instead.
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("sandeep.thota@databeat.io")
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    set_cookie = response.headers["set-cookie"]
+    assert "HttpOnly" in set_cookie
+    assert "Secure" in set_cookie
+    assert "SameSite=lax" in set_cookie
+
+
+def test_login_fails_with_500_when_secret_key_is_unset(client, monkeypatch):
+    # google_oauth_client_id configured but api_secret_key missing -- a real
+    # misconfiguration (nothing to sign a session with), must fail loudly
+    # rather than silently accepting the login or crashing uncontrolled.
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", _GOOGLE_CLIENT_ID)
+    monkeypatch.delenv("API_SECRET_KEY", raising=False)
     get_settings.cache_clear()
 
-    response = client.post("/api/v1/auth/login", json={"password": "wrong"})
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 500
+
+
+def test_login_rejects_invalid_google_credential(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(auth_router, "verify_google_id_token", lambda credential, client_id: None)
+
+    response = client.post("/api/v1/auth/login", json={"credential": "garbage"})
 
     assert response.status_code == 401
     assert "cos_session" not in response.cookies
 
 
-def test_protected_route_returns_401_without_a_session_when_auth_is_configured(client, monkeypatch):
+def test_login_rejects_unverified_email(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(
+        auth_router,
+        "verify_google_id_token",
+        lambda credential, client_id: _google_claims("sandeep.thota@databeat.io", email_verified=False),
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 401
+    assert "cos_session" not in response.cookies
+
+
+def test_login_rejects_email_outside_allowed_domain(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("someone@gmail.com")
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 403
+    assert "cos_session" not in response.cookies
+
+
+def test_login_allows_any_verified_account_when_domain_restriction_is_disabled(client, monkeypatch):
+    _configure_google_auth(monkeypatch, allowed_email_domain=None)
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("someone@gmail.com")
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 200
+    assert "cos_session" in response.cookies
+
+
+def test_login_with_password_succeeds_with_no_password_configured(client):
+    response = client.post("/api/v1/auth/login/password", json={"password": "anything"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_login_with_password_succeeds_with_correct_password_and_sets_cookie(client, monkeypatch):
+    _configure_password_auth(monkeypatch)
+
+    response = client.post("/api/v1/auth/login/password", json={"password": "correct-horse"})
+
+    assert response.status_code == 200
+    assert "cos_session" in response.cookies
+
+
+def test_login_with_password_rejects_incorrect_password(client, monkeypatch):
+    _configure_password_auth(monkeypatch)
+
+    response = client.post("/api/v1/auth/login/password", json={"password": "wrong"})
+
+    assert response.status_code == 401
+    assert "cos_session" not in response.cookies
+
+
+def test_login_with_password_fails_with_500_when_secret_key_is_unset(client, monkeypatch):
     monkeypatch.setenv("API_PASSWORD_HASH", hash_password("correct-horse"))
-    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
+    monkeypatch.delenv("API_SECRET_KEY", raising=False)
     get_settings.cache_clear()
+
+    response = client.post("/api/v1/auth/login/password", json={"password": "correct-horse"})
+
+    assert response.status_code == 500
+
+
+def test_protected_route_succeeds_after_password_login_when_configured(client, monkeypatch):
+    _configure_password_auth(monkeypatch)
+
+    login_response = client.post("/api/v1/auth/login/password", json={"password": "correct-horse"})
+    assert login_response.status_code == 200
+
+    response = client.get("/api/v1/people")
+    assert response.status_code == 200
+
+
+def test_protected_route_returns_401_without_a_session_when_password_auth_is_configured(client, monkeypatch):
+    _configure_password_auth(monkeypatch)
 
     response = client.get("/api/v1/people")
 
     assert response.status_code == 401
 
 
-def test_protected_route_succeeds_after_login_when_auth_is_configured(client, monkeypatch):
-    monkeypatch.setenv("API_PASSWORD_HASH", hash_password("correct-horse"))
-    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
+def test_logout_clears_the_session_cookie_set_by_password_login(client, monkeypatch):
+    _configure_password_auth(monkeypatch)
+    client.post("/api/v1/auth/login/password", json={"password": "correct-horse"})
+
+    response = client.post("/api/v1/auth/logout")
+
+    assert response.status_code == 200
+    assert client.get("/api/v1/people").status_code == 401
+
+
+def test_verify_google_id_token_returns_none_on_any_verification_failure(monkeypatch):
+    from app.api import auth as auth_module
+
+    def _raise(*args, **kwargs):
+        raise ValueError("Token used too early")
+
+    monkeypatch.setattr(auth_module.google_id_token, "verify_oauth2_token", _raise)
+
+    assert auth_module.verify_google_id_token("whatever", "client-id") is None
+
+
+def test_verify_google_id_token_passes_client_id_as_the_audience(monkeypatch):
+    from app.api import auth as auth_module
+
+    captured: dict = {}
+
+    def _fake_verify(credential, request, audience):
+        captured["credential"] = credential
+        captured["audience"] = audience
+        return {"email": "x@databeat.io", "email_verified": True}
+
+    monkeypatch.setattr(auth_module.google_id_token, "verify_oauth2_token", _fake_verify)
+
+    claims = auth_module.verify_google_id_token("a-token", "the-client-id")
+
+    assert captured == {"credential": "a-token", "audience": "the-client-id"}
+    assert claims == {"email": "x@databeat.io", "email_verified": True}
+
+
+def test_protected_route_returns_401_without_a_session_when_auth_is_configured(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+
+    response = client.get("/api/v1/people")
+
+    assert response.status_code == 401
+
+
+def test_protected_route_returns_401_for_an_expired_session_cookie(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    settings = get_settings()
+    expired_token = create_session_token(
+        settings.api_secret_key, ttl_minutes=-1, now=datetime.now(timezone.utc) - timedelta(minutes=5)
+    )
+    client.cookies.set(SESSION_COOKIE_NAME, expired_token)
+
+    response = client.get("/api/v1/people")
+
+    assert response.status_code == 401
+
+
+def test_protected_route_returns_401_for_a_session_cookie_signed_with_the_wrong_secret(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    forged_token = create_session_token("a-different-secret-entirely", ttl_minutes=60)
+    client.cookies.set(SESSION_COOKIE_NAME, forged_token)
+
+    response = client.get("/api/v1/people")
+
+    assert response.status_code == 401
+
+
+def test_protected_route_fails_with_500_when_secret_key_is_unset(client, monkeypatch):
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", _GOOGLE_CLIENT_ID)
+    monkeypatch.delenv("API_SECRET_KEY", raising=False)
     get_settings.cache_clear()
 
-    login_response = client.post("/api/v1/auth/login", json={"password": "correct-horse"})
+    response = client.get("/api/v1/people")
+
+    assert response.status_code == 500
+
+
+def test_protected_route_succeeds_after_login_when_auth_is_configured(client, monkeypatch):
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("sandeep.thota@databeat.io")
+    )
+
+    login_response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
     assert login_response.status_code == 200
 
     response = client.get("/api/v1/people")
@@ -121,18 +359,19 @@ def test_protected_route_succeeds_after_login_when_auth_is_configured(client, mo
 
 
 def test_protected_route_succeeds_with_no_auth_configured_at_all(client):
-    # Default state -- no API_PASSWORD_HASH -- every route is reachable with
-    # no login at all, mirroring dashboard_password's own unset-bypasses-gate
-    # contract.
+    # Default state -- no GOOGLE_OAUTH_CLIENT_ID -- every route is reachable
+    # with no login at all, mirroring dashboard_password's own
+    # unset-bypasses-gate contract.
     response = client.get("/api/v1/people")
     assert response.status_code == 200
 
 
 def test_logout_clears_the_session_cookie(client, monkeypatch):
-    monkeypatch.setenv("API_PASSWORD_HASH", hash_password("correct-horse"))
-    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
-    get_settings.cache_clear()
-    client.post("/api/v1/auth/login", json={"password": "correct-horse"})
+    _configure_google_auth(monkeypatch)
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("sandeep.thota@databeat.io")
+    )
+    client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
 
     response = client.post("/api/v1/auth/logout")
 

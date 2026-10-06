@@ -318,8 +318,9 @@ same repo, same image, different start command:
    - `DASHBOARD_READ_ONLY=true` — for anyone other than the operator. Hides
      every approve/reject/edit/create-on-calendar/ignore button; this is the
      entire safety boundary for a non-operator viewer.
-   - `API_PASSWORD_HASH`/`API_SECRET_KEY` — see "FastAPI backend" below;
-     leaving these unset means the dashboard requires no login at all.
+   - `GOOGLE_OAUTH_CLIENT_ID`/`API_PASSWORD_HASH` + `API_SECRET_KEY` — see
+     "FastAPI backend" below for both auth options; leaving all of these
+     unset means the dashboard requires no login at all.
 4. Deploy. The dashboard is served directly at
    `https://<your-second-render-service>.onrender.com/`.
 
@@ -340,17 +341,47 @@ uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
 ```
 
 **Auth is opt-in**, mirroring `DASHBOARD_PASSWORD`'s own zero-configuration
-contract: leaving `API_PASSWORD_HASH`/`API_SECRET_KEY` unset means the API
-requires no login at all (fine for local dev or a deployment already behind
-some other access control). To enable it:
+contract: leaving every auth env var below unset means the API requires no
+login at all (fine for local dev or a deployment already behind some other
+access control). Two independent login mechanisms are available — pick
+whichever one suits a given deployment; they share the same session cookie
+once a login succeeds, and enabling one never requires the other:
+
+**Google SSO** (recommended for a deployment holding real customer/deal
+data, e.g. the production dashboard):
+1. In [Google Cloud Console](https://console.cloud.google.com) → "APIs &
+   Services" → "Credentials", create an OAuth 2.0 **Web application** Client
+   ID. Add this deployment's real origin (e.g.
+   `https://cos-dashboard-cto.onrender.com`) under "Authorized JavaScript
+   origins" — no redirect URI is needed (Google Identity Services' token flow
+   doesn't redirect).
+2. Set `GOOGLE_OAUTH_CLIENT_ID` to that Client ID (public by design — it's
+   embedded in the browser's Sign-In-With-Google button, never a secret) and
+   `API_SECRET_KEY` to a long random string (used to sign the session
+   cookie) in your environment.
+3. `ALLOWED_EMAIL_DOMAIN` (default `databeat.io`) restricts sign-in to one
+   email domain, checked server-side against the verified Google ID token's
+   own `email`/`email_verified` claims. Set it to an empty string to allow
+   any verified Google account (not recommended for a deployment holding
+   real customer/deal data).
+
+**Password** (simpler alternative for a deployment that hasn't set up a
+Google OAuth client, e.g. a testing deployment):
 1. Generate a bcrypt hash for your chosen password:
    `python -m app.api.auth hash "<your password>"`
 2. Set `API_PASSWORD_HASH` to that hash's output (never the plaintext
-   password itself) and `API_SECRET_KEY` to a long random string (used to
-   sign the session cookie) in your environment.
-3. `DASHBOARD_READ_ONLY=true` disables every mutation endpoint (reply
-   approve/reject/edit, calendar approve/ignore, project/opportunity field
-   updates) with a 403, server-side, regardless of what a client sends.
+   password itself) and `API_SECRET_KEY` to a long random string.
+
+Both mechanisms honor `DASHBOARD_READ_ONLY=true`, which disables every
+mutation endpoint (reply approve/reject/edit, calendar approve/ignore,
+project/opportunity field updates) with a 403, server-side, regardless of
+what a client sends.
+
+For example, with the two deployments this project currently runs:
+`cos-dashboard-cto.onrender.com` sets `GOOGLE_OAUTH_CLIENT_ID`/
+`API_SECRET_KEY` (Google SSO, real customer data); `cos-dashboard-o1hb.onrender.com`
+(testing) sets `API_PASSWORD_HASH`/`API_SECRET_KEY` instead (password gate,
+unchanged from before) — same image, same code, different Render env vars.
 
 This API auth is a completely separate mechanism from the MCP server's own
 `MCP_AUTH_TOKEN` bearer-token auth — neither affects the other.

@@ -1,12 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { login as loginRequest, logout as logoutRequest } from '../api/auth'
+import {
+  loginWithGoogle as loginWithGoogleRequest,
+  loginWithPassword as loginWithPasswordRequest,
+  logout as logoutRequest,
+} from '../api/auth'
 import { apiGet, UNAUTHORIZED_EVENT } from '../api/client'
 
 export type AuthStatus = 'checking' | 'authenticated' | 'anonymous'
 
 interface AuthContextValue {
   status: AuthStatus
-  login: (password: string) => Promise<void>
+  loginWithGoogle: (credential: string) => Promise<void>
+  loginWithPassword: (password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -28,15 +33,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useEffect(() => {
     // No dedicated "whoami" endpoint exists -- a cheap, already-existing
     // protected route doubles as the session probe. require_auth bypasses
-    // entirely when api_password_hash is unset, so this also succeeds for a
-    // deployment that never configured auth at all.
+    // entirely when neither google_oauth_client_id nor api_password_hash is
+    // set, so this also succeeds for a deployment that never configured
+    // auth at all.
     apiGet('/commitments?limit=1')
       .then(() => setStatus('authenticated'))
       .catch(() => setStatus('anonymous'))
   }, [])
 
-  const login = useCallback(async (password: string) => {
-    await loginRequest(password)
+  const loginWithGoogle = useCallback(async (credential: string) => {
+    await loginWithGoogleRequest(credential)
+    setStatus('authenticated')
+  }, [])
+
+  const loginWithPassword = useCallback(async (password: string) => {
+    await loginWithPasswordRequest(password)
     setStatus('authenticated')
   }, [])
 
@@ -45,7 +56,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setStatus('anonymous')
   }, [])
 
-  return <AuthContext.Provider value={{ status, login, logout }}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={{ status, loginWithGoogle, loginWithPassword, logout }}>
+      {children}
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth(): AuthContextValue {
