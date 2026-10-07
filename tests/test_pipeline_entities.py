@@ -65,7 +65,7 @@ def test_pipeline_populates_entity_metadata_on_the_email(db, settings):
     assert "date" not in stored  # removed -- was timestamp's date-only component
     assert stored["message_id"] == "EML-001"
     assert stored["goal_pillar"] == "Sales"
-    assert stored["label_applied"] in {"Needs reply: ASAP", "Read only"}
+    assert stored["label_applied"] in {"1. Needs reply: ASAP", "1. Read only"}
     assert "priority" not in stored
     assert "confidence" not in stored
     assert "source_type" not in stored
@@ -193,7 +193,7 @@ class _NoPeopleLLM(LLMProvider):
             "companies": [], "products": [],
             "people_mentioned": [],
             "projects_mentioned": [], "commitments_mentioned": [], "meetings_mentioned": [],
-            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "Read only",
+            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "1. Read only",
             "confidence": 0.8,
         }
 

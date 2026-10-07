@@ -156,8 +156,8 @@ def test_mock_llm_classification_fields_are_deterministic():
     without_signal = provider.analyze_email(_email("Just an FYI, no action needed."))
 
     assert with_signal["goal_pillar"] == "Sales"
-    assert with_signal["label_applied"] == "Needs reply: ASAP"
-    assert without_signal["label_applied"] == "Read only"
+    assert with_signal["label_applied"] == "1. Needs reply: ASAP"
+    assert without_signal["label_applied"] == "1. Read only"
     # EmailAnalysis.model_validate must accept both -- proves the mock's output is
     # actually schema-valid, not just internally consistent with itself.
     from app.analysis.schemas import EmailAnalysis

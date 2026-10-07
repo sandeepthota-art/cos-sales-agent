@@ -64,7 +64,7 @@ COLUMN_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "stored but not otherwise acted on. Independent of label_applied."
         ),
         "label_applied": (
-            'Six-way reply-urgency triage label (e.g. "Needs reply", "Read only"). '
+            'Six-way reply-urgency triage label (e.g. "1. Needs reply", "1. Read only"). '
             "Independent of goal_pillar -- an email can be Sales-classified and Read-only "
             "at the same time."
         ),

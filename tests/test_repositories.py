@@ -112,7 +112,7 @@ def test_email_repository_set_stage_emits_a_structured_log_record(db, caplog):
     assert record.error_message == "boom"
 
 
-def _set_entity_metadata(repo, message_id, label_applied="Needs reply"):
+def _set_entity_metadata(repo, message_id, label_applied="1. Needs reply"):
     repo.set_entity_metadata(
         message_id=message_id,
         entities_referenced={},
@@ -125,11 +125,11 @@ def test_set_entity_metadata_writes_label_applied_and_appends_to_labels(db):
     repo = EmailRepository(db)
     repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "labels": []})
 
-    _set_entity_metadata(repo, "msg_001", label_applied="Needs reply: ASAP")
+    _set_entity_metadata(repo, "msg_001", label_applied="1. Needs reply: ASAP")
 
     doc = repo.find_one({"message_id": "msg_001"})
-    assert doc["label_applied"] == "Needs reply: ASAP"
-    assert doc["labels"] == ["Needs reply: ASAP"]
+    assert doc["label_applied"] == "1. Needs reply: ASAP"
+    assert doc["labels"] == ["1. Needs reply: ASAP"]
 
 
 def test_set_entity_metadata_preserves_existing_raw_gmail_labels(db):
@@ -139,21 +139,21 @@ def test_set_entity_metadata_preserves_existing_raw_gmail_labels(db):
     repo = EmailRepository(db)
     repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "labels": ["IMPORTANT", "STARRED"]})
 
-    _set_entity_metadata(repo, "msg_001", label_applied="Read only")
+    _set_entity_metadata(repo, "msg_001", label_applied="1. Read only")
 
     doc = repo.find_one({"message_id": "msg_001"})
-    assert set(doc["labels"]) == {"IMPORTANT", "STARRED", "Read only"}
+    assert set(doc["labels"]) == {"IMPORTANT", "STARRED", "1. Read only"}
 
 
 def test_set_entity_metadata_does_not_duplicate_labels_on_reprocessing(db):
     repo = EmailRepository(db)
     repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "labels": []})
 
-    _set_entity_metadata(repo, "msg_001", label_applied="Delete")
-    _set_entity_metadata(repo, "msg_001", label_applied="Delete")
+    _set_entity_metadata(repo, "msg_001", label_applied="1. Delete")
+    _set_entity_metadata(repo, "msg_001", label_applied="1. Delete")
 
     doc = repo.find_one({"message_id": "msg_001"})
-    assert doc["labels"] == ["Delete"]
+    assert doc["labels"] == ["1. Delete"]
 
 
 def test_context_snapshot_repository_latest_for_thread(db):

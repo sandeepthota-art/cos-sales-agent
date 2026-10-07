@@ -85,7 +85,7 @@ class _AttributedCommitmentAndMeetingLLM(LLMProvider):
             "meetings_mentioned": [
                 {"date_phrase": None, "attendees": ["John"], "is_past": False, "actions_raised": []}
             ],
-            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "Needs reply",
+            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "1. Needs reply",
         }
 
     def update_context(self, previous_context, new_analysis):
@@ -207,7 +207,7 @@ def test_project_backfill_on_reuse_produces_project_updated_event(db, settings):
                 ],
                 "projects_mentioned": [{"name": "Project Alpha", "org": "CustomerCo", "objective_hint": None}],
                 "commitments_mentioned": [], "meetings_mentioned": [], "personal_items_mentioned": [],
-                "goal_pillar": "Sales", "label_applied": "Read only",
+                "goal_pillar": "Sales", "label_applied": "1. Read only",
             }
 
         def update_context(self, previous_context, new_analysis):

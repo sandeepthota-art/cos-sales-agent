@@ -95,7 +95,9 @@ class EmailAnalysis(BaseModel):
     # BRD 6.1's six labels. "Needs reply: Soon" (this repo's original name for the
     # BRD's plain "Needs reply") is retired in favor of the BRD's own wording; "Needs
     # reply: mention" is new -- see app.providers.llm.claude._ANALYSIS_INSTRUCTIONS for
-    # the per-label semantics drawn from the BRD.
+    # the per-label semantics drawn from the BRD. Every value additionally carries a
+    # "1. " prefix (e.g. "1. Needs reply") -- a user-requested display-order marker,
+    # not a BRD naming change.
     label_applied: Literal[
-        "Needs reply: ASAP", "Needs reply", "Needs reply: mention", "Read only", "Delete", "Undecided"
-    ] = "Undecided"
+        "1. Needs reply: ASAP", "1. Needs reply", "1. Needs reply: mention", "1. Read only", "1. Delete", "1. Undecided"
+    ] = "1. Undecided"

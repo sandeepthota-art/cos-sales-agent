@@ -62,7 +62,7 @@ def _email(**overrides):
 def _analysis(**overrides) -> EmailAnalysis:
     base = dict(
         email_id="msg_1", summary="", intent="evaluation", goal_pillar="Sales",
-        label_applied="Undecided", confidence=0.8,
+        label_applied="1. Undecided", confidence=0.8,
     )
     base.update(overrides)
     return EmailAnalysis.model_validate(base)

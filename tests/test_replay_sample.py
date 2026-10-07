@@ -130,7 +130,7 @@ class _SalesProjectLLM(LLMProvider):
             ],
             "projects_mentioned": [{"name": "CustomerCo Renewal", "org": "CustomerCo", "objective_hint": "Q4 renewal"}],
             "commitments_mentioned": [], "meetings_mentioned": [], "personal_items_mentioned": [],
-            "goal_pillar": "Sales", "label_applied": "Needs reply", "priority": "P1", "confidence": 0.9,
+            "goal_pillar": "Sales", "label_applied": "1. Needs reply", "priority": "P1", "confidence": 0.9,
         }
 
     def update_context(self, previous_context, new_analysis):

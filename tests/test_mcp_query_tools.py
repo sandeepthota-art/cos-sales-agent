@@ -193,25 +193,25 @@ def test_search_emails_filters_by_subject_substring_case_insensitive(db):
 
 def test_search_emails_filters_by_label_applied(db):
     EmailRepository(db).upsert_by_key(
-        {"message_id": "m1"}, _email("m1", label_applied="Needs reply: ASAP")
+        {"message_id": "m1"}, _email("m1", label_applied="1. Needs reply: ASAP")
     )
-    EmailRepository(db).upsert_by_key({"message_id": "m2"}, _email("m2", label_applied="Read only"))
+    EmailRepository(db).upsert_by_key({"message_id": "m2"}, _email("m2", label_applied="1. Read only"))
 
-    results = tools.search_emails(db, label_applied="Needs reply: ASAP")
+    results = tools.search_emails(db, label_applied="1. Needs reply: ASAP")
 
     assert [r["message_id"] for r in results] == ["m1"]
 
 
 def test_search_emails_combines_filters(db):
     EmailRepository(db).upsert_by_key(
-        {"message_id": "m1"}, _email("m1", subject="Renewal", label_applied="Read only")
+        {"message_id": "m1"}, _email("m1", subject="Renewal", label_applied="1. Read only")
     )
     EmailRepository(db).upsert_by_key(
         {"message_id": "m2"},
-        _email("m2", subject="Renewal", label_applied="Needs reply: ASAP"),
+        _email("m2", subject="Renewal", label_applied="1. Needs reply: ASAP"),
     )
 
-    results = tools.search_emails(db, subject_contains="renewal", label_applied="Read only")
+    results = tools.search_emails(db, subject_contains="renewal", label_applied="1. Read only")
 
     assert [r["message_id"] for r in results] == ["m1"]
 
@@ -1027,14 +1027,14 @@ def test_set_reply_draft_gmail_id_does_not_touch_other_drafts(db):
 
 def test_set_reply_withheld_reason_records_the_reason_and_preserves_other_fields(db):
     EmailRepository(db).upsert_by_key(
-        {"message_id": "m1"}, _email("m1", label_applied="Needs reply")
+        {"message_id": "m1"}, _email("m1", label_applied="1. Needs reply")
     )
 
     result = tools.set_reply_withheld_reason(db, "m1", "Requests bank account details -- withheld, sensitive data.")
 
     assert result["reply_withheld_reason"] == "Requests bank account details -- withheld, sensitive data."
     assert result["message_id"] == "m1"
-    assert result["label_applied"] == "Needs reply"
+    assert result["label_applied"] == "1. Needs reply"
 
 
 def test_set_reply_withheld_reason_raises_for_an_unknown_message_id(db):
@@ -1206,7 +1206,7 @@ def test_whats_on_my_table_includes_every_category_key_even_when_empty(db, setti
 
 def test_whats_on_my_table_aggregates_real_data_per_category(db, settings):
     EmailRepository(db).upsert_by_key(
-        {"message_id": "m1"}, _email("m1", label_applied="Needs reply: ASAP")
+        {"message_id": "m1"}, _email("m1", label_applied="1. Needs reply: ASAP")
     )
     ReplyDraftRepository(db).upsert_by_key(
         {"source_email_id": "m1"},

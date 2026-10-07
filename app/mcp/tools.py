@@ -1159,7 +1159,7 @@ def set_reply_withheld_reason(db: Database, message_id: str, reason: str) -> dic
     judgment call decided an automated draft wasn't appropriate. Persisted directly
     on the Email document as `reply_withheld_reason`, so the dashboard's email
     lookup box and anyone querying `emails` can see the reason instead of an
-    unexplained gap between label_applied="Needs reply" and no reply_drafts record.
+    unexplained gap between label_applied="1. Needs reply" and no reply_drafts record.
 
     This tool never creates or edits a reply draft itself, and never overwrites
     label_applied, processing_status, or entities_referenced -- purely additive.

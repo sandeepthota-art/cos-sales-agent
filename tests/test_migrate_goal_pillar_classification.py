@@ -34,7 +34,7 @@ def _full_email_doc(message_id, goal_pillar, **overrides):
         "timestamp": "2026-09-26T09:00:00Z",
         "labels": ["IMPORTANT"],
         "goal_pillar": goal_pillar,
-        "label_applied": "Read only",
+        "label_applied": "1. Read only",
         "priority": "P2",
         "confidence": 0.8,
         "entities_referenced": {"people": [], "projects": [], "commitments": [], "meetings": []},

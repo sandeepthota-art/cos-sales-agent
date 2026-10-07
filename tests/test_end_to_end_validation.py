@@ -99,7 +99,7 @@ class _ThirdPersonCommitmentLLM(LLMProvider):
             "meetings_mentioned": [],
             "personal_items_mentioned": [],
             "goal_pillar": "Sales",
-            "label_applied": "Needs reply",
+            "label_applied": "1. Needs reply",
             "confidence": 0.8,
         }
 

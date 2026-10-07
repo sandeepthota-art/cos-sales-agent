@@ -16,7 +16,7 @@ def _email_doc(message_id, **overrides):
         "timestamp": "2026-09-26T09:00:00Z",
         "labels": ["IMPORTANT"],
         "goal_pillar": "Sales",
-        "label_applied": "Read only",
+        "label_applied": "1. Read only",
         "record_id": message_id,
         "source_type": "gmail",
         "source_link": f"https://mail.google.com/mail/u/0/#all/{message_id}",

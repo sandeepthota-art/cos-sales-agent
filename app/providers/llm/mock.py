@@ -143,7 +143,7 @@ class MockLLMProvider(LLMProvider):
             for m in meetings_mentioned
         ]
 
-        label_applied = "Needs reply: ASAP" if buying_signals else "Read only"
+        label_applied = "1. Needs reply: ASAP" if buying_signals else "1. Read only"
 
         return {
             "email_id": email.message_id,

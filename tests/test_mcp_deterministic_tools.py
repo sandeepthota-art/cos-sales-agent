@@ -62,7 +62,7 @@ def _analysis(message_id="EML-001", **overrides):
         summary="a summary",
         intent="evaluation",
         goal_pillar="Sales",
-        label_applied="Read only",
+        label_applied="1. Read only",
         confidence=0.8,
     )
     base.update(overrides)

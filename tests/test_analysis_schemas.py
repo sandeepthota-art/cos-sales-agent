@@ -29,18 +29,18 @@ def test_email_analysis_entity_signal_defaults():
     assert analysis.meetings_mentioned == []
     assert analysis.personal_items_mentioned == []
     assert analysis.goal_pillar == ""
-    assert analysis.label_applied == "Undecided"
+    assert analysis.label_applied == "1. Undecided"
 
 
 @pytest.mark.parametrize(
     "label",
     [
-        "Needs reply: ASAP",
-        "Needs reply",
-        "Needs reply: mention",
-        "Read only",
-        "Delete",
-        "Undecided",
+        "1. Needs reply: ASAP",
+        "1. Needs reply",
+        "1. Needs reply: mention",
+        "1. Read only",
+        "1. Delete",
+        "1. Undecided",
     ],
 )
 def test_email_analysis_accepts_every_brd_label(label):

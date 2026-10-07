@@ -96,11 +96,11 @@ def test_retrieve_email_activity_date_scoped(db):
 
 
 def test_retrieve_email_activity_never_fabricates_sentiment_or_priority(db):
-    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1", label_applied="Needs reply: ASAP"))
+    EmailRepository(db).upsert_by_key({"message_id": "m1"}, _email("m1", label_applied="1. Needs reply: ASAP"))
 
     result = retrieval.retrieve_email_activity(db)
 
-    assert result[0]["label_applied"] == "Needs reply: ASAP"  # passed through, real field
+    assert result[0]["label_applied"] == "1. Needs reply: ASAP"  # passed through, real field
     assert "sentiment" not in result[0]
     assert "priority" not in result[0]
     assert "sales_stage" not in result[0]

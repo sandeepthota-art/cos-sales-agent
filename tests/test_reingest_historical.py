@@ -201,7 +201,7 @@ class _SalesProjectLLM(LLMProvider):
                 {"what": "send updated MSA", "class": "mine", "owed_by": None, "owed_to": None, "date_phrase": None, "importance_hint": None}
             ],
             "meetings_mentioned": [], "personal_items_mentioned": [],
-            "goal_pillar": "Sales", "label_applied": "Needs reply", "priority": "P1", "confidence": 0.9,
+            "goal_pillar": "Sales", "label_applied": "1. Needs reply", "priority": "P1", "confidence": 0.9,
         }
 
     def update_context(self, previous_context, new_analysis):

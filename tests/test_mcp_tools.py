@@ -126,7 +126,7 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
         _raw_email("1a08090646ebaa45", "I will send the proposal on Friday."),
         analysis=EmailAnalysis(
             email_id="EML-001", summary="", intent="",
-            goal_pillar="Sales", label_applied="Needs reply: ASAP",
+            goal_pillar="Sales", label_applied="1. Needs reply: ASAP",
         ),
     )
 
@@ -134,7 +134,7 @@ def test_list_processed_emails_includes_entity_metadata(db, settings):
 
     entry = results[0]
     assert entry["goal_pillar"] == "Sales"
-    assert entry["label_applied"] == "Needs reply: ASAP"
+    assert entry["label_applied"] == "1. Needs reply: ASAP"
     # John (sender) + the operator's own dedicated profile (Ashok, settings.agent_email).
     assert len(entry["entities_referenced"]["people"]) == 2
 

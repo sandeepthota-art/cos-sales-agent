@@ -114,7 +114,7 @@ class _NamedFactLLMProvider(LLMProvider):
             "people": [], "companies": [], "products": [],
             "people_mentioned": [{"name": "John", "email": "john@customerco.example", "org": None, "role_hint": None}],
             "projects_mentioned": [], "commitments_mentioned": [], "meetings_mentioned": [],
-            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "Needs reply",
+            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "1. Needs reply",
         }
 
     def update_context(self, previous_context, new_analysis):
@@ -151,7 +151,7 @@ class _AttributedCommitmentAndMeetingLLM(LLMProvider):
             "meetings_mentioned": [
                 {"date_phrase": None, "attendees": ["John"], "is_past": False, "actions_raised": []}
             ],
-            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "Needs reply",
+            "personal_items_mentioned": [], "goal_pillar": "Sales", "label_applied": "1. Needs reply",
         }
 
     def update_context(self, previous_context, new_analysis):

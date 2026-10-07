@@ -18,12 +18,12 @@ def test_analysis_instructions_mention_entity_signal_fields():
 
 def test_analysis_instructions_mention_all_six_brd_labels_with_semantics():
     for label in [
-        "Needs reply: ASAP",
-        "Needs reply",
-        "Needs reply: mention",
-        "Read only",
-        "Delete",
-        "Undecided",
+        "1. Needs reply: ASAP",
+        "1. Needs reply",
+        "1. Needs reply: mention",
+        "1. Read only",
+        "1. Delete",
+        "1. Undecided",
     ]:
         assert label in _ANALYSIS_INSTRUCTIONS
     # The retired name must not linger anywhere in the live prompt.

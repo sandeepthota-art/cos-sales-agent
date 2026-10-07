@@ -100,7 +100,7 @@ class _PersonFactsLLM(LLMProvider):
             "people_mentioned": self._people_mentioned, "projects_mentioned": [], "commitments_mentioned": [],
             "meetings_mentioned": [], "personal_items_mentioned": [],
             "person_facts_mentioned": self._person_facts_mentioned,
-            "goal_pillar": "Sales", "label_applied": "Read only",
+            "goal_pillar": "Sales", "label_applied": "1. Read only",
         }
 
     def update_context(self, previous_context, new_analysis):

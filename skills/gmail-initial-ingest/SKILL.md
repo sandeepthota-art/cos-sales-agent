@@ -100,12 +100,14 @@ For each message, in order (oldest to newest within a batch):
      genuine deal evidence -- "Sales" means the user's own pipeline, never
      someone else's pitch to the user.
    - **The six labels** (`label_applied`, exactly one, re-evaluated per
-     message, never inherited from the thread): `Needs reply: ASAP` (must
-     respond, time-critical or a key relationship), `Needs reply` (must
-     respond, not urgent), `Needs reply: mention` (a thread being read asks
-     something by name), `Read only` (informational, nothing asked), `Delete`
-     (meeting accept/decline notices, cold outreach with no prior
-     relationship), `Undecided` (genuinely can't place it).
+     message, never inherited from the thread -- every value carries a "1. "
+     prefix, e.g. `1. Needs reply: ASAP`): `1. Needs reply: ASAP` (must
+     respond, time-critical or a key relationship), `1. Needs reply` (must
+     respond, not urgent), `1. Needs reply: mention` (a thread being read asks
+     something by name), `1. Read only` (informational, nothing asked),
+     `1. Delete` (meeting accept/decline notices, cold outreach with no prior
+     relationship, or any email from tiplus.prod@kotak.com -- always Delete
+     regardless of content), `1. Undecided` (genuinely can't place it).
    - **Every commitment needs a `date_phrase` when one is stated or clearly
      implied.** `commitments_mentioned` entries must set `date_phrase` to
      the exact raw text phrase from the email (e.g. "Oct 6", "by Friday",
