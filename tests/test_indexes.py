@@ -38,6 +38,7 @@ def test_initialize_indexes_creates_expected_unique_indexes():
         (("thread_id", 1), ("meeting_fingerprint", 1)): True
     }
     assert index_keys("ingested_files") == {(("filename", 1),): True}
+    assert index_keys("raw_emails_dump") == {(("source_message_id", 1),): True}
 
 
 def test_initialize_indexes_creates_opportunities_unique_id_index():

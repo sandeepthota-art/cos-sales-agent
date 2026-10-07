@@ -64,6 +64,26 @@ def ingest_email(email: Email) -> dict[str, Any]:
 
 
 @mcp.tool()
+def ingest_raw_email_only(email: Email) -> dict[str, Any]:
+    """Ingestion-dump branch: pure persistence, ZERO analysis. Stores the raw
+    Gmail message into its own `raw_emails_dump` collection -- completely
+    separate from `ingest_email`/the `emails` collection/ProcessingStage.
+    Never calls an LLM, never classifies, never extracts entities/knowledge,
+    never creates a Gmail label or reply draft, never calls persist_email_analysis
+    or persist_context_delta. After this call succeeds, STOP -- do not proceed
+    to any other cos-sales-agent tool for this message.
+
+    Map Gmail fields exactly as ingest_email does: message_id, thread_id (omit
+    if unknown), from/to/cc as {"name", "email"} objects, timestamp as
+    ISO-8601, in_reply_to/references from the Message-ID headers if available.
+
+    Idempotent: calling this again for the same Gmail message updates the same
+    stored document rather than creating a duplicate.
+    """
+    return tools.ingest_raw_email_only(_get_db(), email)
+
+
+@mcp.tool()
 def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str, Any]:
     """Deterministic, LLM-free persistence of an email analysis YOU already produced
     by reading the email yourself. Accepts the EmailAnalysis schema's fields

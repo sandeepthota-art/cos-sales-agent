@@ -75,6 +75,12 @@ def initialize_indexes(db: Database) -> None:
 
     db.ingested_files.create_index("filename", unique=True)
 
+    # Ingestion-dump branch: completely separate from the `emails` collection's
+    # own source_message_id index above -- this one backs app.mcp.tools.
+    # ingest_raw_email_only's idempotent upsert, never shared with the
+    # analysis pipeline's dedup/ProcessingStage machinery.
+    db.raw_emails_dump.create_index("source_message_id", unique=True)
+
     db.person_context_snapshots.create_index("id", unique=True)
     # The idempotency guarantee (Phase 5): a retried email always resolves to the
     # same canonical source_email_id (EML-nnn), so re-running enrichment for the

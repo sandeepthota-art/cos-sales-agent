@@ -25,6 +25,7 @@ from app.database.repositories import (
     PersonalItemRepository,
     PersonRepository,
     ProjectRepository,
+    RawEmailDumpRepository,
     ReplyDraftRepository,
     ThreadRepository,
 )
@@ -219,6 +220,36 @@ def ingest_email(db: Database, email: Email) -> dict[str, Any]:
         "previous_context": snapshot["context"] if snapshot else None,
         "thread_timeline": thread_timeline,
     }
+
+
+def ingest_raw_email_only(db: Database, email: Email) -> dict[str, Any]:
+    """Ingestion-dump branch: pure persistence, zero analysis. Stores the raw
+    Gmail email exactly as received into its own `raw_emails_dump` collection
+    (RawEmailDumpRepository) -- completely isolated from the `emails`
+    collection, ProcessingStage, and every analysis-path function in this
+    module (_process_entities, _process_knowledge, persist_email_analysis,
+    persist_context_delta, persist_organization_research,
+    persist_person_profile, create_reply_draft, detect_meeting,
+    build_calendar_action). Never canonicalizes message_id to an EML-nnn id
+    (that's app.pipeline.ingest_raw_email's job for the analyzed pipeline
+    only, not called here) -- the Gmail-provided id is stored as-is, in both
+    `message_id` and `source_message_id` (the latter via Email's own
+    `_shim_source_ids` validator when the caller doesn't supply one
+    separately).
+
+    Idempotent: upserts by `source_message_id`, so ingesting the same Gmail
+    message twice updates the same document in place rather than creating a
+    duplicate (backed by raw_emails_dump's unique index on that field, see
+    app.database.indexes.initialize_indexes).
+
+    This function calls nothing else in this module, in app.pipeline, or in
+    any LLM provider -- there is no path from here to any analysis code.
+    """
+    repo = RawEmailDumpRepository(db)
+    document = email.model_dump(mode="json", by_alias=True)
+    document["source"] = "gmail"
+    document["ingested_at"] = datetime.now(timezone.utc).isoformat()
+    return repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
 
 
 def persist_email_analysis(

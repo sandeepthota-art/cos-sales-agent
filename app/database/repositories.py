@@ -232,6 +232,14 @@ class IngestedFileRepository(_BaseRepository):
     collection_name = "ingested_files"
 
 
+class RawEmailDumpRepository(_BaseRepository):
+    """Ingestion-dump branch: a deliberately separate collection from `emails`,
+    with no ProcessingStage/analysis machinery -- see app.mcp.tools.ingest_raw_email_only.
+    """
+
+    collection_name = "raw_emails_dump"
+
+
 class MigrationRunRepository(_BaseRepository):
     collection_name = "migration_runs"
 
