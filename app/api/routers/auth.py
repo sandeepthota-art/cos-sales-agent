@@ -8,6 +8,22 @@ from app.config.settings import Settings
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+def _is_email_authorized(email: str, settings: Settings) -> bool:
+    """allowed_emails, when set, is an exact-match allowlist checked INSTEAD
+    of allowed_email_domain -- not in addition to it. This is deliberate:
+    "only ashok@databeat.io" must mean exactly that person, not that person
+    OR anyone else on the databeat.io domain. allowed_email_domain is only
+    ever consulted when allowed_emails is unset."""
+    allowed_emails = settings.allowed_emails or ""
+    emails = {e.strip().lower() for e in allowed_emails.split(",") if e.strip()}
+    if emails:
+        return email in emails
+    allowed_domain = (settings.allowed_email_domain or "").strip().lower()
+    if allowed_domain:
+        return email.endswith(f"@{allowed_domain}")
+    return True
+
+
 def _set_session_cookie(response: Response, settings: Settings) -> None:
     token = create_session_token(settings.api_secret_key, settings.api_session_ttl_minutes)
     response.set_cookie(
@@ -53,8 +69,7 @@ def login(
         if not claims.get("email_verified"):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Google account email is not verified")
         email = (claims.get("email") or "").strip().lower()
-        allowed_domain = (settings.allowed_email_domain or "").strip().lower()
-        if allowed_domain and not email.endswith(f"@{allowed_domain}"):
+        if not _is_email_authorized(email, settings):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "This Google account is not authorized for this dashboard"
             )

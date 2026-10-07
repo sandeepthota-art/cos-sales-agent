@@ -141,6 +141,7 @@ def test_settings_api_auth_fields_default_to_disabled(monkeypatch):
     monkeypatch.delenv("API_SECRET_KEY", raising=False)
     monkeypatch.delenv("API_SESSION_TTL_MINUTES", raising=False)
     monkeypatch.delenv("ALLOWED_EMAIL_DOMAIN", raising=False)
+    monkeypatch.delenv("ALLOWED_EMAILS", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.google_oauth_client_id is None
@@ -148,6 +149,7 @@ def test_settings_api_auth_fields_default_to_disabled(monkeypatch):
     assert settings.api_secret_key is None
     assert settings.api_session_ttl_minutes == 720
     assert settings.allowed_email_domain == "databeat.io"
+    assert settings.allowed_emails is None
     get_settings.cache_clear()
 
 
@@ -157,6 +159,7 @@ def test_settings_api_auth_env_override(monkeypatch):
     monkeypatch.setenv("API_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("API_SESSION_TTL_MINUTES", "30")
     monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "example.com")
+    monkeypatch.setenv("ALLOWED_EMAILS", "ashok@databeat.io")
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.google_oauth_client_id == "123-abc.apps.googleusercontent.com"
@@ -164,6 +167,7 @@ def test_settings_api_auth_env_override(monkeypatch):
     assert settings.api_secret_key == "test-secret-key"
     assert settings.api_session_ttl_minutes == 30
     assert settings.allowed_email_domain == "example.com"
+    assert settings.allowed_emails == "ashok@databeat.io"
     get_settings.cache_clear()
 
 

@@ -110,7 +110,11 @@ class Settings(BaseSettings):
     #   verified Google ID token's own `email`/`email_verified` claims --
     #   never trusted from the client; set to None to allow any verified
     #   Google account (not recommended for a deployment holding real
-    #   customer/deal data).
+    #   customer/deal data). allowed_emails, when set, is a stricter,
+    #   exact-match allowlist (comma-separated) checked INSTEAD of
+    #   allowed_email_domain -- e.g. "ashok@databeat.io" to admit only that
+    #   one person regardless of domain. Add more people later by editing
+    #   this one env var, no code/redeploy beyond the env change needed.
     # - Password: api_password_hash is a bcrypt hash the operator precomputes
     #   once (`python -m app.api.auth hash "<password>"`), never a plaintext
     #   password. Kept as an alternative for a deployment that doesn't want
@@ -128,6 +132,7 @@ class Settings(BaseSettings):
     # session cookie stays valid before a fresh login is required.
     google_oauth_client_id: str | None = None
     allowed_email_domain: str | None = "databeat.io"
+    allowed_emails: str | None = None
     api_password_hash: str | None = None
     api_secret_key: str | None = None
     api_session_ttl_minutes: int = 720

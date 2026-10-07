@@ -54,18 +54,19 @@ def _no_auth_by_default(monkeypatch):
     monkeypatch.delenv("API_SECRET_KEY", raising=False)
     monkeypatch.delenv("DASHBOARD_READ_ONLY", raising=False)
     monkeypatch.delenv("ALLOWED_EMAIL_DOMAIN", raising=False)
+    monkeypatch.delenv("ALLOWED_EMAILS", raising=False)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
 
 
-def _configure_google_auth(monkeypatch, allowed_email_domain: str | None = "databeat.io") -> None:
+def _configure_google_auth(
+    monkeypatch, allowed_email_domain: str | None = "databeat.io", allowed_emails: str | None = None
+) -> None:
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", _GOOGLE_CLIENT_ID)
     monkeypatch.setenv("API_SECRET_KEY", "test-secret")
-    if allowed_email_domain is None:
-        monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "")
-    else:
-        monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", allowed_email_domain)
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "" if allowed_email_domain is None else allowed_email_domain)
+    monkeypatch.setenv("ALLOWED_EMAILS", "" if allowed_emails is None else allowed_emails)
     get_settings.cache_clear()
 
 
@@ -213,6 +214,47 @@ def test_login_allows_any_verified_account_when_domain_restriction_is_disabled(c
     assert "cos_session" in response.cookies
 
 
+def test_login_allows_the_exact_email_on_the_allowlist(client, monkeypatch):
+    _configure_google_auth(monkeypatch, allowed_emails="ashok@databeat.io")
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("ashok@databeat.io")
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 200
+    assert "cos_session" in response.cookies
+
+
+def test_login_rejects_a_same_domain_email_not_on_the_allowlist(client, monkeypatch):
+    # The whole point of allowed_emails: an exact allowlist overrides the
+    # domain check entirely -- a DIFFERENT @databeat.io address must still be
+    # rejected, not admitted just because the domain matches.
+    _configure_google_auth(monkeypatch, allowed_emails="ashok@databeat.io")
+    monkeypatch.setattr(
+        auth_router,
+        "verify_google_id_token",
+        lambda credential, client_id: _google_claims("someone.else@databeat.io"),
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 403
+    assert "cos_session" not in response.cookies
+
+
+def test_login_allowlist_check_is_case_insensitive(client, monkeypatch):
+    _configure_google_auth(monkeypatch, allowed_emails="Ashok@DataBeat.io")
+    monkeypatch.setattr(
+        auth_router, "verify_google_id_token", lambda credential, client_id: _google_claims("ashok@databeat.io")
+    )
+
+    response = client.post("/api/v1/auth/login", json={"credential": "a-real-looking-jwt"})
+
+    assert response.status_code == 200
+    assert "cos_session" in response.cookies
+
+
 def test_login_with_password_succeeds_with_no_password_configured(client):
     response = client.post("/api/v1/auth/login/password", json={"password": "anything"})
     assert response.status_code == 200
@@ -235,6 +277,38 @@ def test_login_with_password_rejects_incorrect_password(client, monkeypatch):
 
     assert response.status_code == 401
     assert "cos_session" not in response.cookies
+
+
+def test_is_email_authorized_allowlist_overrides_domain_entirely():
+    from app.api.routers.auth import _is_email_authorized
+    from app.config.settings import Settings
+
+    settings = Settings(allowed_emails="ashok@databeat.io", allowed_email_domain="databeat.io")
+
+    assert _is_email_authorized("ashok@databeat.io", settings) is True
+    assert _is_email_authorized("someone.else@databeat.io", settings) is False
+    assert _is_email_authorized("ashok@gmail.com", settings) is False
+
+
+def test_is_email_authorized_supports_multiple_comma_separated_emails():
+    from app.api.routers.auth import _is_email_authorized
+    from app.config.settings import Settings
+
+    settings = Settings(allowed_emails="ashok@databeat.io, sandeep.thota@databeat.io")
+
+    assert _is_email_authorized("ashok@databeat.io", settings) is True
+    assert _is_email_authorized("sandeep.thota@databeat.io", settings) is True
+    assert _is_email_authorized("someone.else@databeat.io", settings) is False
+
+
+def test_is_email_authorized_falls_back_to_domain_when_allowlist_unset():
+    from app.api.routers.auth import _is_email_authorized
+    from app.config.settings import Settings
+
+    settings = Settings(allowed_emails=None, allowed_email_domain="databeat.io")
+
+    assert _is_email_authorized("anyone@databeat.io", settings) is True
+    assert _is_email_authorized("anyone@gmail.com", settings) is False
 
 
 def test_login_with_password_fails_with_500_when_secret_key_is_unset(client, monkeypatch):

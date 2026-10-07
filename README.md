@@ -364,6 +364,12 @@ data, e.g. the production dashboard):
    own `email`/`email_verified` claims. Set it to an empty string to allow
    any verified Google account (not recommended for a deployment holding
    real customer/deal data).
+4. For an even stricter gate — only specific people, not an entire domain —
+   set `ALLOWED_EMAILS` to a comma-separated list of exact addresses (e.g.
+   `ashok@databeat.io`, or `ashok@databeat.io,sandeep.thota@databeat.io` for
+   more than one). When set, it's checked **instead of** `ALLOWED_EMAIL_DOMAIN`,
+   not in addition to it — so "only ashok@databeat.io" really does mean only
+   that one person, not that person or anyone else on the domain.
 
 **Password** (simpler alternative for a deployment that hasn't set up a
 Google OAuth client, e.g. a testing deployment):
