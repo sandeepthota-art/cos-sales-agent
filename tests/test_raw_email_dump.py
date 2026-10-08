@@ -2,13 +2,18 @@
 
 app.mcp.tools.ingest_raw_email_only is a pure persistence function: it stores
 a raw Gmail email into its own `raw_emails_dump` collection and performs ZERO
-analysis. These tests prove: basic ingestion, field preservation, dedup via
-source_message_id, the unique index backing that dedup, and that none of the
-existing analysis-path functions are ever called from it.
+analysis. app.mcp.tools.get_raw_ingestion_status is the companion read-only
+checkpoint, telling a caller where to resume Gmail fetching from. These tests
+prove: basic ingestion, field preservation, dedup via source_message_id (never
+thread_id, never timestamp), the unique index backing that dedup (enforced at
+the database level, not just by application logic), checkpoint behavior for
+both the empty and non-empty cases, and that none of the existing
+analysis-path functions are ever called from either function.
 """
 from unittest.mock import patch
 
 import mongomock
+import pymongo
 import pytest
 
 from app.database.indexes import initialize_indexes
@@ -127,9 +132,143 @@ def test_ingest_raw_email_only_never_calls_analysis_functions(db):
         mock_calendar_action.assert_not_called()
 
 
+def test_get_raw_ingestion_status_never_calls_analysis_functions(db):
+    tools.ingest_raw_email_only(db, parse_email(_raw_email()))
+
+    with (
+        patch("app.mcp.tools.persist_email_analysis") as mock_analysis,
+        patch("app.mcp.tools.persist_context_delta") as mock_context_delta,
+        patch("app.mcp.tools._process_entities") as mock_entities,
+        patch("app.mcp.tools._process_knowledge") as mock_knowledge,
+        patch("app.mcp.tools.persist_organization_research") as mock_org_research,
+        patch("app.mcp.tools.persist_person_profile") as mock_profile,
+        patch("app.mcp.tools.create_reply_draft") as mock_reply,
+    ):
+        tools.get_raw_ingestion_status(db)
+
+        mock_analysis.assert_not_called()
+        mock_context_delta.assert_not_called()
+        mock_entities.assert_not_called()
+        mock_knowledge.assert_not_called()
+        mock_org_research.assert_not_called()
+        mock_profile.assert_not_called()
+        mock_reply.assert_not_called()
+
+
 def test_ingest_raw_email_only_leaves_emails_collection_untouched(db):
     email = parse_email(_raw_email())
 
     tools.ingest_raw_email_only(db, email)
 
     assert db.emails.count_documents({}) == 0
+
+
+# --- get_raw_ingestion_status (checkpoint) ------------------------------------------------
+
+
+def test_get_raw_ingestion_status_reports_no_existing_data_when_empty(db):
+    status = tools.get_raw_ingestion_status(db)
+
+    assert status == {"has_existing_data": False, "latest_email_timestamp": None, "latest_ingested_at": None}
+
+
+def test_get_raw_ingestion_status_reports_latest_email_timestamp_chronologically(db):
+    # Deliberately out of insertion order, and with mixed UTC offsets -- proves
+    # the comparison is chronological (via _parse_timestamp_for_sort), not a
+    # plain string/insertion-order comparison. "+05:30" on Oct 7 09:00 is the
+    # same instant as "03:30Z"; "Z" on Oct 7 10:00 is later than both.
+    tools.ingest_raw_email_only(db, parse_email(_raw_email("gmail-msg-001", timestamp="2026-10-05T09:00:00Z")))
+    tools.ingest_raw_email_only(db, parse_email(_raw_email("gmail-msg-002", timestamp="2026-10-07T10:00:00Z")))
+    tools.ingest_raw_email_only(
+        db, parse_email(_raw_email("gmail-msg-003", timestamp="2026-10-07T09:00:00+05:30"))
+    )
+
+    status = tools.get_raw_ingestion_status(db)
+
+    assert status["has_existing_data"] is True
+    assert status["latest_email_timestamp"].startswith("2026-10-07T10:00:00")
+    assert "latest_ingested_at" in status
+
+
+def test_get_raw_ingestion_status_never_touches_emails_collection(db):
+    """The raw-dump checkpoint must read raw_emails_dump only -- never the
+    analyzed emails collection (that's get_last_ingested_email's job)."""
+    db.emails.insert_one(
+        {"message_id": "EML-999", "source_message_id": "EML-999", "timestamp": "2026-10-07T00:00:00Z"}
+    )
+
+    status = tools.get_raw_ingestion_status(db)
+
+    assert status == {"has_existing_data": False, "latest_email_timestamp": None, "latest_ingested_at": None}
+
+
+# --- Deduplication -------------------------------------------------------------------------
+
+
+def test_ingest_raw_email_only_reports_already_existed_for_a_duplicate(db):
+    first = tools.ingest_raw_email_only(db, parse_email(_raw_email("gmail-msg-001")))
+    second = tools.ingest_raw_email_only(db, parse_email(_raw_email("gmail-msg-001")))
+
+    assert first["already_existed"] is False
+    assert second["already_existed"] is True
+    assert RawEmailDumpRepository(db).find_many({}).__len__() == 1
+
+
+def test_ingest_raw_email_only_reports_already_existed_false_for_a_new_message(db):
+    result = tools.ingest_raw_email_only(db, parse_email(_raw_email("gmail-msg-002")))
+
+    assert result["already_existed"] is False
+
+
+def test_ingest_raw_email_only_mixed_batch_skips_existing_stores_new(db):
+    # MongoDB already contains msg-001 and msg-003.
+    tools.ingest_raw_email_only(db, parse_email(_raw_email("msg-001")))
+    tools.ingest_raw_email_only(db, parse_email(_raw_email("msg-003")))
+
+    # Gmail returns msg-001, msg-002, msg-003, msg-004.
+    results = {
+        message_id: tools.ingest_raw_email_only(db, parse_email(_raw_email(message_id)))["already_existed"]
+        for message_id in ("msg-001", "msg-002", "msg-003", "msg-004")
+    }
+
+    assert results == {"msg-001": True, "msg-002": False, "msg-003": True, "msg-004": False}
+    stored_ids = {doc["source_message_id"] for doc in RawEmailDumpRepository(db).find_many({})}
+    assert stored_ids == {"msg-001", "msg-002", "msg-003", "msg-004"}
+
+
+def test_ingest_raw_email_only_does_not_dedupe_by_timestamp(db):
+    """Two distinct messages sharing the exact same timestamp must both be
+    stored -- the unique message id is the only dedup key, never the
+    timestamp, even when it coincidentally matches an existing checkpoint."""
+    same_timestamp = "2026-10-07T09:00:00Z"
+    tools.ingest_raw_email_only(db, parse_email(_raw_email("msg-same-ts-1", timestamp=same_timestamp)))
+    result = tools.ingest_raw_email_only(db, parse_email(_raw_email("msg-same-ts-2", timestamp=same_timestamp)))
+
+    assert result["already_existed"] is False
+    assert RawEmailDumpRepository(db).find_many({}).__len__() == 2
+
+
+def test_ingest_raw_email_only_does_not_dedupe_by_thread_id(db):
+    """Multiple messages in the same Gmail thread must each be stored once --
+    thread_id is never a dedup key."""
+    for message_id in ("message-001", "message-002", "message-003"):
+        tools.ingest_raw_email_only(
+            db, parse_email(_raw_email(message_id, thread_id="thread-001"))
+        )
+
+    docs = RawEmailDumpRepository(db).find_many({})
+    assert len(docs) == 3
+    assert {d["source_message_id"] for d in docs} == {"message-001", "message-002", "message-003"}
+    assert all(d["source_thread_id"] == "thread-001" for d in docs)
+
+
+def test_raw_emails_dump_unique_index_rejects_duplicate_source_message_id_at_db_level(db):
+    """Tool-level checks alone are not the guarantee -- the database itself
+    must refuse a second document with the same source_message_id, so two
+    concurrent ingestion attempts can never both succeed in creating a
+    duplicate even if their application-level existence checks both ran
+    before either insert landed."""
+    db.raw_emails_dump.insert_one({"source_message_id": "gmail-msg-001", "subject": "First"})
+
+    with pytest.raises(pymongo.errors.DuplicateKeyError):
+        db.raw_emails_dump.insert_one({"source_message_id": "gmail-msg-001", "subject": "Second"})

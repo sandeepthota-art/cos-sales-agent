@@ -77,10 +77,33 @@ def ingest_raw_email_only(email: Email) -> dict[str, Any]:
     if unknown), from/to/cc as {"name", "email"} objects, timestamp as
     ISO-8601, in_reply_to/references from the Message-ID headers if available.
 
-    Idempotent: calling this again for the same Gmail message updates the same
-    stored document rather than creating a duplicate.
+    Idempotent: calling this again for the same Gmail message leaves the
+    existing document untouched rather than creating a duplicate, and the
+    return value's `already_existed` tells you which happened -- tally these
+    across a batch to report how many were newly stored vs. already present.
     """
     return tools.ingest_raw_email_only(_get_db(), email)
+
+
+@mcp.tool()
+def get_raw_ingestion_status() -> dict[str, Any]:
+    """Ingestion-dump branch: read-only checkpoint for the raw-only dump path.
+    Call this FIRST, before searching Gmail, to decide where to resume from --
+    completely separate from get_last_ingested_email (that one reads the
+    *analyzed* `emails` collection; this one reads `raw_emails_dump`. Never
+    mix the two up).
+
+    Returns {has_existing_data, latest_email_timestamp, latest_ingested_at}.
+    If has_existing_data is false, nothing has been raw-dumped yet -- search
+    Gmail from this project's agreed start date (2026-10-01) instead. If
+    true, search Gmail `after:<latest_email_timestamp's date, YYYY/MM/DD>` --
+    no `before:` bound (Gmail's `before:` is exclusive of the named day and
+    would silently exclude mail that arrived today). Use
+    latest_email_timestamp for this, never latest_ingested_at -- the former
+    is the email's own send/receive date (what a Gmail search needs), the
+    latter is only bookkeeping for when this tool happened to run.
+    """
+    return tools.get_raw_ingestion_status(_get_db())
 
 
 @mcp.tool()

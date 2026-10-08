@@ -237,19 +237,67 @@ def ingest_raw_email_only(db: Database, email: Email) -> dict[str, Any]:
     `_shim_source_ids` validator when the caller doesn't supply one
     separately).
 
-    Idempotent: upserts by `source_message_id`, so ingesting the same Gmail
-    message twice updates the same document in place rather than creating a
-    duplicate (backed by raw_emails_dump's unique index on that field, see
-    app.database.indexes.initialize_indexes).
+    Idempotent: a `source_message_id` already present is left untouched and
+    returned as-is with `already_existed: True` -- never re-upserted, never
+    duplicated (backed by raw_emails_dump's unique index on that field, see
+    app.database.indexes.initialize_indexes, which is the final guarantee
+    even if two ingestion attempts race each other). `already_existed` is
+    also how a caller doing incremental ingestion over several messages
+    tallies "duplicates skipped" vs "new emails stored" without needing a
+    separate batch/counting tool -- the same per-message-call shape every
+    other tool in this module already uses.
 
     This function calls nothing else in this module, in app.pipeline, or in
     any LLM provider -- there is no path from here to any analysis code.
     """
     repo = RawEmailDumpRepository(db)
+    existing = repo.find_one({"source_message_id": email.source_message_id})
+    if existing:
+        return {**existing, "already_existed": True}
+
     document = email.model_dump(mode="json", by_alias=True)
     document["source"] = "gmail"
     document["ingested_at"] = datetime.now(timezone.utc).isoformat()
-    return repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
+    stored = repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
+    return {**stored, "already_existed": False}
+
+
+def get_raw_ingestion_status(db: Database) -> dict[str, Any]:
+    """Ingestion-dump branch: read-only checkpoint for the raw-only path,
+    completely separate from get_last_ingested_email (which reads the
+    *analyzed* `emails` collection -- a different collection, a different
+    pipeline, never shared with this one).
+
+    Never decides a fallback start date itself -- that stays owned by the
+    gmail-raw-dump skill's own prose (mirroring how get_last_ingested_email
+    stays a pure data reader and gmail-initial-ingest's Mode C owns the
+    Oct-1-2026 fallback), so this function has exactly one job: report what's
+    already in raw_emails_dump.
+
+    `latest_email_timestamp` is the latest dumped email's own Email.timestamp
+    (its real send/receive date -- what a Gmail date-range search needs),
+    compared chronologically via the same _parse_timestamp_for_sort
+    get_last_ingested_email already uses, never lexicographically.
+    `latest_ingested_at` is this collection's own bookkeeping field (when we
+    happened to run the dump) -- reported for visibility only, and
+    deliberately never used to decide where to resume a Gmail search:
+    Gmail's own send/receive date is the correct axis for "what mail is
+    newer than what we already have," not when we happened to run this tool.
+
+    No `processing_status`/stage concept applies here (raw-dumped documents
+    never have one), so unlike get_last_ingested_email there is no
+    "earliest unprocessed" to track -- every raw-dumped email is equally
+    "done" the moment it's stored.
+    """
+    emails = RawEmailDumpRepository(db).find_many({})
+    if not emails:
+        return {"has_existing_data": False, "latest_email_timestamp": None, "latest_ingested_at": None}
+    latest = max(emails, key=lambda e: _parse_timestamp_for_sort(e.get("timestamp")))
+    return {
+        "has_existing_data": True,
+        "latest_email_timestamp": latest.get("timestamp"),
+        "latest_ingested_at": latest.get("ingested_at"),
+    }
 
 
 def persist_email_analysis(
