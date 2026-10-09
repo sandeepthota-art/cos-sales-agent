@@ -146,8 +146,11 @@ def persist_email_analysis(
     email if it fires, but don't treat it as an error.
 
     skip_knowledge (default false -- leave unset for normal inbox processing): set
-    true only for a deliberate entities-only test run (see the raw-dump-replay
-    skill). When true, no knowledge_items document is written for this email at
+    true only for a deliberate entities-only test run, with no skill in this
+    codebase currently wired to do that (context-building, the current
+    equivalent stage, calls this without skip_knowledge on purpose -- it
+    builds the knowledge layer too). When true, no knowledge_items document is
+    written for this email at
     all -- entity resolution (people/projects/commitments/follow_ups/meetings/
     opportunities/personal_items) still runs and is persisted exactly as always.
     """

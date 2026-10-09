@@ -1,9 +1,11 @@
-"""persist_email_analysis's optional skip_knowledge flag: lets a caller (the
-raw-dump-replay skill, specifically) run the deterministic entity-resolution
-path (_process_entities) for a test batch of emails without also writing
-knowledge_items -- useful when testing entity resolution against your own
-email set and you don't want knowledge facts cluttering the result. Default
-(skip_knowledge unset / False) is byte-identical to pre-existing behavior.
+"""persist_email_analysis's optional skip_knowledge flag: lets a caller run
+the deterministic entity-resolution path (_process_entities) for a test batch
+of emails without also writing knowledge_items -- useful for a deliberate
+entities-only test run. No skill in this codebase is currently wired to use
+it (context-building, the stage that calls persist_email_analysis for real,
+does so without skip_knowledge on purpose, since it builds the knowledge
+layer too). Default (skip_knowledge unset / False) is byte-identical to
+pre-existing behavior.
 """
 import mongomock
 import pytest

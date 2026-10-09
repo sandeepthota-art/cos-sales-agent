@@ -333,9 +333,10 @@ def persist_email_analysis(
     and not this function's own explicit Person->WORKS_AT->Organization fact below.
     Canonical entity resolution (people/projects/commitments/follow_ups/meetings/
     opportunities/personal_items) still runs exactly as it always does -- only the
-    knowledge layer is skipped. Exists for the raw-dump-replay skill, testing entity
-    resolution against your own email set without also generating knowledge facts you
-    don't care about for that test. The ANALYZED -> KNOWLEDGE_PROCESSED ->
+    knowledge layer is skipped. Exists for a deliberate entities-only test run --
+    no skill in this codebase is currently wired to use it (context-building, the
+    current equivalent stage, calls this without skip_knowledge on purpose, since
+    it builds the knowledge layer too). The ANALYZED -> KNOWLEDGE_PROCESSED ->
     ENTITIES_PROCESSED stage sequence on the email doc is unaffected either way --
     KNOWLEDGE_PROCESSED is still recorded as a stage transition even when the
     knowledge step itself was skipped, so stage ordering stays meaningful.
