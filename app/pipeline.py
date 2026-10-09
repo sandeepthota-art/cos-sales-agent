@@ -384,6 +384,7 @@ def _process_entities(
     agent_email: str,
     llm_provider: LLMProvider,
     agent_name: str | None = None,
+    skip_knowledge: bool = False,
 ) -> dict[str, list[str]]:
     # reference_now is the email's OWN timestamp, not wall-clock "now" -- this matches the
     # existing detect_meeting's established pattern (app/calendar/detector.py, called with
@@ -523,7 +524,8 @@ def _process_entities(
     # P0 person-knowledge fix: explicit, canonical-person-attributed qualitative
     # facts (role/responsibility/preference/goal/interest/concern/pain_point/
     # objection/buying_signal) -- see _process_person_facts' own docstring.
-    _process_person_facts(db, thread_id, email, analysis, resolved_people, llm_provider, reference_now)
+    if not skip_knowledge:
+        _process_person_facts(db, thread_id, email, analysis, resolved_people, llm_provider, reference_now)
 
     # org_id -> [project_id, ...], built only from projects actually resolved for THIS
     # email (never a fresh collection-wide scan) -- reused below to link a commitment to

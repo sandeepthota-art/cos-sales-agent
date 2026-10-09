@@ -301,7 +301,7 @@ def get_raw_ingestion_status(db: Database) -> dict[str, Any]:
 
 
 def persist_email_analysis(
-    db: Database, message_id: str, analysis: EmailAnalysis, settings: Settings
+    db: Database, message_id: str, analysis: EmailAnalysis, settings: Settings, skip_knowledge: bool = False
 ) -> dict[str, Any]:
     """Deterministic MCP entry point: accepts an EmailAnalysis a reasoning caller
     (e.g. Claude Desktop) produced externally -- the SAME schema
@@ -326,6 +326,19 @@ def persist_email_analysis(
 
     Requires ingest_email to have already run for this message_id (raises ValueError
     otherwise, rather than silently fabricating a thread).
+
+    skip_knowledge (default False, unchanged production behavior when omitted): when
+    True, nothing writes to knowledge_items for this email -- not _process_knowledge,
+    not _process_entities' own person_facts_mentioned handling (_process_person_facts),
+    and not this function's own explicit Person->WORKS_AT->Organization fact below.
+    Canonical entity resolution (people/projects/commitments/follow_ups/meetings/
+    opportunities/personal_items) still runs exactly as it always does -- only the
+    knowledge layer is skipped. Exists for the raw-dump-replay skill, testing entity
+    resolution against your own email set without also generating knowledge facts you
+    don't care about for that test. The ANALYZED -> KNOWLEDGE_PROCESSED ->
+    ENTITIES_PROCESSED stage sequence on the email doc is unaffected either way --
+    KNOWLEDGE_PROCESSED is still recorded as a stage transition even when the
+    knowledge step itself was skipped, so stage ordering stays meaningful.
     """
     email_repo = EmailRepository(db)
     knowledge_repo = KnowledgeRepository(db)
@@ -346,13 +359,15 @@ def persist_email_analysis(
 
     email_repo.set_stage(message_id, ProcessingStage.ANALYZED.value)
 
-    _process_knowledge(
-        db, knowledge_repo, thread_id, analysis, MockLLMProvider(), thread_id, message_id, datetime.now(timezone.utc)
-    )
+    if not skip_knowledge:
+        _process_knowledge(
+            db, knowledge_repo, thread_id, analysis, MockLLMProvider(), thread_id, message_id, datetime.now(timezone.utc)
+        )
     email_repo.set_stage(message_id, ProcessingStage.KNOWLEDGE_PROCESSED.value)
 
     entities_referenced = _process_entities(
-        db, thread_id, email, analysis, reference_now, settings.agent_email, MockLLMProvider(), settings.agent_name
+        db, thread_id, email, analysis, reference_now, settings.agent_email, MockLLMProvider(), settings.agent_name,
+        skip_knowledge=skip_knowledge,
     )
     email_repo.set_entity_metadata(
         message_id=message_id,
@@ -402,6 +417,8 @@ def persist_email_analysis(
     # dedup, since a WORKS_AT fact's identity is always exactly one person and
     # one org_id, never free text requiring fuzzy matching.
     for person_id in entities_referenced.get("people", []):
+        if skip_knowledge:
+            continue
         person = person_repo.find_one({"id": person_id})
         if not person or not person.get("org_id"):
             continue

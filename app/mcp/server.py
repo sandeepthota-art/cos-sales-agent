@@ -107,7 +107,9 @@ def get_raw_ingestion_status() -> dict[str, Any]:
 
 
 @mcp.tool()
-def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str, Any]:
+def persist_email_analysis(
+    message_id: str, analysis: EmailAnalysis, skip_knowledge: bool = False
+) -> dict[str, Any]:
     """Deterministic, LLM-free persistence of an email analysis YOU already produced
     by reading the email yourself. Accepts the EmailAnalysis schema's fields
     (people_mentioned, projects_mentioned, commitments_mentioned, meetings_mentioned,
@@ -142,8 +144,14 @@ def persist_email_analysis(message_id: str, analysis: EmailAnalysis) -> dict[str
     empty but the body contains commitment-shaped language ("I'll...", "could
     you..."). It's a prompt to double-check, not proof you missed one -- re-read the
     email if it fires, but don't treat it as an error.
+
+    skip_knowledge (default false -- leave unset for normal inbox processing): set
+    true only for a deliberate entities-only test run (see the raw-dump-replay
+    skill). When true, no knowledge_items document is written for this email at
+    all -- entity resolution (people/projects/commitments/follow_ups/meetings/
+    opportunities/personal_items) still runs and is persisted exactly as always.
     """
-    return tools.persist_email_analysis(_get_db(), message_id, analysis, get_settings())
+    return tools.persist_email_analysis(_get_db(), message_id, analysis, get_settings(), skip_knowledge=skip_knowledge)
 
 
 @mcp.tool()
