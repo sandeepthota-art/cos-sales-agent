@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -43,7 +44,13 @@ mcp = FastMCP("cos-sales-agent", host="0.0.0.0", port=_HTTP_PORT)
 # errors), and every real caller had already moved to these granular tools instead.
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # true -- it persists the raw email and resolves/persists its thread
+        destructiveHint=False,  # never deletes anything, only creates/updates
+        idempotentHint=True,  # calling it again with the same email is a safe no-op (dedup on source_message_id)
+    )
+)
 def ingest_email(email: Email) -> dict[str, Any]:
     """Deterministic, LLM-free first step for reasoning about a Gmail message
     yourself: performs the existing duplicate check (message_id + COMPLETED),

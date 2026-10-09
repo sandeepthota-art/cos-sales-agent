@@ -184,7 +184,7 @@ def ingest_email(db: Database, email: Email) -> dict[str, Any]:
     every reader across the codebase; see
     scripts/remove_email_id_record_id_date_fields.py and
     scripts/remove_thread_id_field.py).
-
+ 
     thread_timeline (only present when already_completed is False) is every PRIOR
     message in this thread, oldest first, capped to the most recent 20 -- read this
     before reasoning about the new email so the classification reflects what it's

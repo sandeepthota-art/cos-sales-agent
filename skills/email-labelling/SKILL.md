@@ -1,6 +1,6 @@
 ---
 name: email-labelling
-description: Stage 3 (final) of a 3-stage email-processing sequence (email-ingestion -> context-building -> email-labelling). Decides label_applied using the six-label-classification skill's criteria, persists it, applies the matching REAL Gmail label via the Gmail connector, and marks the email completed. Requires context-building to have already run for the message_id. This skill changes your actual Gmail inbox -- a label becomes visible there.
+description: Stage 3 (final) of a 3-stage email-processing sequence (email-ingestion -> context-building -> email-labelling). Decides label_applied (criteria included below, self-contained -- does not require the separate six-label-classification skill to be installed), persists it, applies the matching REAL Gmail label via the Gmail connector, and marks the email completed. Requires context-building to have already run for the message_id. This skill changes your actual Gmail inbox -- a label becomes visible there.
 ---
 
 # Email Labelling (stage 3 of 3, final)
@@ -23,19 +23,56 @@ Requires `context-building` (stage 2) to have already run for this
 
 ## Hard rules
 
-- **Follow the `six-label-classification` skill's criteria exactly** to
-  decide `label_applied`. Judge by whether the sender's intent is
-  identifiable, never by message length alone.
+- **Decide `label_applied` using the criteria in "The six label values and
+  criteria" below** -- embedded here directly, deliberately duplicating the
+  separate `six-label-classification` skill's content, so this skill works
+  correctly even in an environment where that skill isn't installed/synced.
+  If `six-label-classification` IS available, its content is the same;
+  either source is correct, but don't skip this step relying on the other
+  skill being present -- treat the section below as authoritative for this
+  skill specifically.
 - **Use the Gmail connector only to label** -- never send, reply, forward,
   delete, trash, or mark spam from this skill.
 - **Never call `create_reply_draft`** -- deciding to reply is a separate
   concern from labelling.
 - **Never call Claude, OpenAI, or any other LLM API.**
 
+## The six label values and criteria
+
+`label_applied` is exactly one of six values, re-evaluated fresh for every
+email -- never inherited from how a prior message in the same thread was
+labeled. Every value carries a `"1. "` prefix (a display-order marker, not
+a priority ranking). Judge by whether the sender's intent is identifiable
+from the message itself or its available thread context -- never by
+message length alone. A short message with a clear topic is not
+automatically `Undecided`; a long message with no identifiable ask is not
+automatically `Needs reply`.
+
+1. **`1. Needs reply: ASAP`** -- must respond, time-critical or a key
+   relationship.
+2. **`1. Needs reply`** -- a question or request has a reasonably
+   identifiable purpose, from the message itself or its available thread
+   context. A SHORT message is NOT automatically `Undecided` -- "Thoughts
+   on the attached pricing proposal?" has a clear, identifiable purpose
+   (feedback on that proposal) despite being one line, and is
+   `Needs reply`.
+3. **`1. Needs reply: mention`** -- a thread being read asks something by
+   name.
+4. **`1. Read only`** -- informational, nothing asked.
+5. **`1. Delete`** -- meeting accept/decline notices, cold outreach with no
+   prior relationship.
+6. **`1. Undecided`** -- the message is too ambiguous to determine the
+   appropriate action, even after checking thread context. This means
+   genuinely CONTEXTLESS, not merely short: a standalone "Thoughts?" with
+   no accessible prior message or stated topic (nothing to know what's
+   being asked about) is `Undecided` -- but the same word attached to a
+   clear subject ("Thoughts on the attached pricing proposal?") is
+   `Needs reply`, not `Undecided`, despite being equally short.
+
 ## Step by step, per email, in order
 
-1. **Decide `label_applied`** using the `six-label-classification` skill's
-   criteria (one of the six values, judged by identifiable sender intent).
+1. **Decide `label_applied`** using the criteria above (one of the six
+   values, judged by identifiable sender intent).
 2. **Re-supply the same `EmailAnalysis` fields `context-building` already
    decided for this email** (the same `people_mentioned`,
    `projects_mentioned`, `commitments_mentioned`, `meetings_mentioned`,

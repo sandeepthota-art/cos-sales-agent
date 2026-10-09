@@ -67,7 +67,7 @@ For each requested message, in order (oldest to newest):
 1. **Call `get_raw_ingestion_status`** first, before searching Gmail.
 2. **Determine the start date:**
    - `has_existing_data: false` -> nothing has ever been raw-dumped. Start
-     from this project's agreed fallback: **2026-10-01**.
+     from this project's agreed fallback: **2026-09-15**.
    - `has_existing_data: true` -> start from `latest_email_timestamp`'s own
      date (not `latest_ingested_at` -- that field only records when the tool
      happened to run, not what mail is actually new).
