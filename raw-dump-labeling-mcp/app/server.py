@@ -60,6 +60,20 @@ def get_next_unprocessed_raw_email() -> JsonDoc | None:
 
 
 @mcp.tool()
+def get_next_unprocessed_raw_email_batch(batch_size: int = 10) -> list[JsonDoc]:
+    """Same eligibility/atomicity as get_next_unprocessed_raw_email, but
+    claims up to batch_size emails in ONE call instead of one call per
+    email -- for a large run (e.g. 100 emails dumped via ingest_raw_email_only,
+    then labelled in batches of 10), this cuts the claim round-trips from
+    ~N to ~N/batch_size. Each returned document has its own thread_context.
+    Returns [] when nothing is eligible -- stop the labeling loop. You still
+    read and decide a label for each email individually; only the claim
+    step batches, never the classification itself.
+    """
+    return tools.get_next_unprocessed_raw_email_batch(_get_db(), batch_size)
+
+
+@mcp.tool()
 def persist_raw_email_label(message_id: str, label_applied: EmailLabel) -> JsonDoc:
     """Records the classification label YOU already decided for one
     raw-dumped email. Overwrites the current label but appends to
@@ -87,6 +101,23 @@ def mark_gmail_label_synced(message_id: str) -> JsonDoc:
     Raises if message_id doesn't exist.
     """
     return tools.mark_gmail_label_synced(_get_db(), message_id)
+
+
+@mcp.tool()
+def get_unsynced_labels(limit: int = 10) -> list[JsonDoc]:
+    """Every raw-dumped email whose MongoDB label is already correct but
+    whose real Gmail label is NOT confirmed to match (gmail_label_synced ==
+    False). Closes a real gap: once a label is persisted, the claim tools
+    (get_next_unprocessed_raw_email / _batch) never return that document
+    again, even if the Gmail write that was supposed to follow it failed --
+    this is the only way to find those stragglers again, from this run or a
+    past one. Classification completion and Gmail-sync completion are
+    separate states; this tool only ever reports on the second. Read-only,
+    never reclassifies or touches classification_version; for each result,
+    re-apply its already-decided label_applied in Gmail, then call
+    mark_gmail_label_synced once that succeeds.
+    """
+    return tools.get_unsynced_labels(_get_db(), limit)
 
 
 def main() -> None:

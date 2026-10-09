@@ -101,8 +101,17 @@ also succeeded — those are two separate systems, two separate writes. Every
 document carries `gmail_label_synced` (bool); `persist_raw_email_label` and
 the auto-close path both set it `False`, and only `mark_gmail_label_synced`
 — called after the skill confirms the real Gmail API call worked — sets it
-back to `True`. No automatic retry; a `False` value is just visibly,
-honestly out of sync until someone runs it again.
+back to `True`.
+
+Classification completion and Gmail-sync completion are separate states.
+Once `persist_raw_email_label` succeeds, `classification_version` becomes
+current, so **re-running Mode B never resurfaces a `gmail_label_synced:
+false` document again** — it's already current, there's nothing left to
+classify. (This README previously claimed otherwise; verified false by a
+live test against Atlas.) `get_unsynced_labels(limit=10)` is the actual
+fix: a read-only query on `gmail_label_synced: false`, independent of the
+claim tools, that lets a caller re-apply the already-decided label and
+call `mark_gmail_label_synced` again.
 
 ## 4. Code walkthrough
 
@@ -194,9 +203,9 @@ single-operator, Claude-Desktop-driven workflow doesn't have:
   from grabbing the same email, which is the actual concurrency guarantee
   this workflow needs.
 - **Gmail-sync retry/backoff automation.** `gmail_label_synced: false` is
-  visible and manually retryable by re-running Mode B — an automated retry
-  loop would be new infrastructure for a failure mode that, so far, hasn't
-  recurred.
+  visible and manually retryable via `get_unsynced_labels` (see §3.3) — an
+  automated retry loop would be new infrastructure for a failure mode
+  this read-only query already makes discoverable without one.
 - **A generic list/query tool.** No way to ask "show me everything
   currently labelled X" without re-deriving it from a live Claude session's
   own memory. A real, acknowledged gap — not fixed, because nothing has

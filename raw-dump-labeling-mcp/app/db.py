@@ -55,8 +55,15 @@ class _BaseRepository:
     def find_one(self, key: JsonDoc) -> JsonDoc | None:
         return self._collection.find_one(key, {"_id": 0})
 
-    def find_many(self, key: JsonDoc) -> list[JsonDoc]:
-        return list(self._collection.find(key, {"_id": 0}))
+    def find_many(
+        self, key: JsonDoc, limit: int | None = None, sort: list[tuple[str, int]] | None = None
+    ) -> list[JsonDoc]:
+        cursor = self._collection.find(key, {"_id": 0})
+        if sort is not None:
+            cursor = cursor.sort(sort)
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        return list(cursor)
 
 
 class RawEmailDumpRepository(_BaseRepository):
@@ -105,6 +112,46 @@ class RawEmailDumpRepository(_BaseRepository):
             return None
         before["label_claimed_at"] = now_iso
         return before
+
+    def claim_batch_unclassified(
+        self, max_classification_version: int, claim_cutoff_iso: str, max_attempts: int, now_iso: str, batch_size: int
+    ) -> list[JsonDoc]:
+        """Atomically finds AND claims up to batch_size oldest-eligible emails
+        in ONE round trip (a find + one update_many), instead of batch_size
+        separate claim_next_unclassified calls. For a 100-email run in
+        batches of 10, this is ~10 Mongo round-trips instead of ~100.
+
+        Deliberately NOT batch_size separate find_one_and_update calls under
+        the hood: a find().limit(batch_size) then one update_many on the
+        resulting ids is faster (2 round-trips vs batch_size), and the
+        single-operator operating model this project is built for (see
+        README "What was deliberately not built") doesn't need per-document
+        atomicity against a concurrent claimant -- claim_next_unclassified's
+        stronger per-document guarantee stays available for callers that do.
+
+        Same eligibility rule as claim_next_unclassified. Returns [] if
+        nothing is eligible, otherwise up to batch_size documents, oldest
+        first, each with label_claimed_at already patched to now_iso.
+        """
+        candidates = list(
+            self._collection.find(
+                {
+                    "classification_version": {"$lt": max_classification_version},
+                    "label_attempts": {"$lt": max_attempts},
+                    "label_claimed_at": {"$lt": claim_cutoff_iso},
+                },
+                {"_id": 0},
+            )
+            .sort("sort_key", 1)
+            .limit(batch_size)
+        )
+        if not candidates:
+            return []
+        message_ids = [doc["message_id"] for doc in candidates]
+        self._collection.update_many({"message_id": {"$in": message_ids}}, {"$set": {"label_claimed_at": now_iso}})
+        for doc in candidates:
+            doc["label_claimed_at"] = now_iso
+        return candidates
 
     def siblings_in_thread(self, thread_id: str, exclude_message_id: str) -> list[JsonDoc]:
         """Every OTHER raw-dumped email in this thread, oldest first -- the

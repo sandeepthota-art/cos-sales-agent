@@ -209,12 +209,47 @@ def get_next_unprocessed_raw_email(db: Database) -> JsonDoc | None:
     )
     if claimed is None:
         return None
+    _attach_thread_context(repo, claimed)
+    return claimed
+
+
+def get_next_unprocessed_raw_email_batch(db: Database, batch_size: int = 10) -> list[JsonDoc]:
+    """Same eligibility and atomicity guarantees as get_next_unprocessed_raw_email,
+    but claims up to batch_size emails in ONE round trip instead of one call
+    per email -- for a 100-email run, calling this in batches of 10 (the
+    default) means ~10 claim calls instead of ~100. Each returned document
+    still carries its own thread_context, same as the single-claim version;
+    Claude still reads and decides each one individually -- only the CLAIM
+    step batches, never the classification decision itself.
+
+    Returns [] when nothing is eligible (same meaning as None from the
+    single-claim version -- stop the labeling loop).
+    """
+    repo = RawEmailDumpRepository(db)
+    now = datetime.now(timezone.utc)
+    claim_cutoff_iso = (now - timedelta(minutes=_LABEL_CLAIM_TTL_MINUTES)).isoformat()
+    claimed_batch = repo.claim_batch_unclassified(
+        max_classification_version=_CURRENT_LABEL_CLASSIFICATION_VERSION,
+        claim_cutoff_iso=claim_cutoff_iso,
+        max_attempts=_MAX_LABEL_ATTEMPTS,
+        now_iso=now.isoformat(),
+        batch_size=batch_size,
+    )
+    for claimed in claimed_batch:
+        _attach_thread_context(repo, claimed)
+    return claimed_batch
+
+
+def _attach_thread_context(repo: RawEmailDumpRepository, claimed: JsonDoc) -> None:
+    """Mutates `claimed` in place, adding thread_context -- every OTHER
+    raw-dumped email sharing its thread_id, oldest first, or [] when
+    thread_id is unset. Shared by both the single and batch claim paths so
+    the two can never drift on what "context" means."""
     claimed["thread_context"] = (
         repo.siblings_in_thread(claimed["thread_id"], exclude_message_id=claimed["message_id"])
         if claimed.get("thread_id")
         else []
     )
-    return claimed
 
 
 def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailLabel) -> JsonDoc:
@@ -284,4 +319,36 @@ def mark_raw_email_label_failed(db: Database, message_id: str, reason: str) -> J
             "label_attempts": existing.get("label_attempts", 0) + 1,
             "label_claimed_at": "",
         },
+    )
+
+
+def get_unsynced_labels(db: Database, limit: int = 10) -> list[JsonDoc]:
+    """Every raw-dumped email whose MongoDB label_applied is correct but
+    whose real Gmail label is NOT confirmed to match (gmail_label_synced ==
+    False) -- a real gap get_next_unprocessed_raw_email/_batch cannot catch:
+    once persist_raw_email_label succeeds, classification_version becomes
+    current and the claim queries will NEVER return that document again,
+    even if the Gmail write that was supposed to follow it failed. This is
+    the only way to find those again -- classification completion
+    (classification_version/label_applied) and Gmail-sync completion
+    (gmail_label_synced) are separate states; this tool exposes outstanding
+    work in the second, never the first.
+
+    Read-only, no claim/lease semantics, never touches classification_version
+    or label_applied -- a caller re-applies the Gmail label for each returned
+    document (its label_applied is already the correct, decided value;
+    nothing to reclassify) and calls mark_gmail_label_synced once the Gmail
+    call actually succeeds. limit is applied server-side (via find_many), so
+    a large backlog is never pulled into memory just to return `limit` of it.
+
+    Ordered oldest-stuck-first by labelled_at (set by both
+    persist_raw_email_label and the auto-close path whenever they set
+    gmail_label_synced=False), message_id as a stable tie-breaker -- without
+    this, repeated calls over a backlog larger than `limit` have no
+    guaranteed progress (the same unordered page could repeat, or different
+    arbitrary subsets could appear each call).
+    """
+    repo = RawEmailDumpRepository(db)
+    return repo.find_many(
+        {"gmail_label_synced": False}, limit=limit, sort=[("labelled_at", 1), ("message_id", 1)]
     )
