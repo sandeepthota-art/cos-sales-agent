@@ -23,8 +23,8 @@ retry.
 
 - **Never decide `label_applied`.** Leave it unset on the `EmailAnalysis`
   object you build -- its schema default (`"1. Undecided"`) applies
-  automatically. Do not use the `six-label-classification` skill's criteria
-  here; that's `email-labelling`'s job, in stage 3.
+  automatically. Deciding the real label is `email-labelling`'s job alone,
+  in stage 3.
 - **Never call `create_label`, `label_message`, `create_reply_draft`, or
   `mark_email_completed`** from this skill -- `mark_email_completed` belongs
   to the end of stage 3, once labelling has also run.

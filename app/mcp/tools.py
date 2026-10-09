@@ -268,11 +268,11 @@ def get_raw_ingestion_status(db: Database) -> dict[str, Any]:
     *analyzed* `emails` collection -- a different collection, a different
     pipeline, never shared with this one).
 
-    Never decides a fallback start date itself -- that stays owned by the
-    gmail-raw-dump skill's own prose (mirroring how get_last_ingested_email
-    stays a pure data reader and gmail-initial-ingest's Mode C owns the
-    Oct-1-2026 fallback), so this function has exactly one job: report what's
-    already in raw_emails_dump.
+    Never decides a fallback start date itself -- that stays owned by
+    whatever caller drives the raw-dump sweep (mirroring how
+    get_last_ingested_email stays a pure data reader and
+    gmail-initial-ingest's Mode C owns the Oct-1-2026 fallback), so this
+    function has exactly one job: report what's already in raw_emails_dump.
 
     `latest_email_timestamp` is the latest dumped email's own Email.timestamp
     (its real send/receive date -- what a Gmail date-range search needs),

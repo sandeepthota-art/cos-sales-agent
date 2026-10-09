@@ -1,6 +1,6 @@
 ---
 name: email-labelling
-description: Stage 3 (final) of a 3-stage email-processing sequence (email-ingestion -> context-building -> email-labelling). Decides label_applied (criteria included below, self-contained -- does not require the separate six-label-classification skill to be installed), persists it, applies the matching REAL Gmail label via the Gmail connector, and marks the email completed. Requires context-building to have already run for the message_id. This skill changes your actual Gmail inbox -- a label becomes visible there.
+description: Stage 3 (final) of a 3-stage email-processing sequence (email-ingestion -> context-building -> email-labelling). Decides label_applied (criteria included below, self-contained), persists it, applies the matching REAL Gmail label via the Gmail connector, and marks the email completed. Requires context-building to have already run for the message_id. This skill changes your actual Gmail inbox -- a label becomes visible there.
 ---
 
 # Email Labelling (stage 3 of 3, final)
@@ -24,13 +24,7 @@ Requires `context-building` (stage 2) to have already run for this
 ## Hard rules
 
 - **Decide `label_applied` using the criteria in "The six label values and
-  criteria" below** -- embedded here directly, deliberately duplicating the
-  separate `six-label-classification` skill's content, so this skill works
-  correctly even in an environment where that skill isn't installed/synced.
-  If `six-label-classification` IS available, its content is the same;
-  either source is correct, but don't skip this step relying on the other
-  skill being present -- treat the section below as authoritative for this
-  skill specifically.
+  criteria" below.**
 - **Use the Gmail connector only to label** -- never send, reply, forward,
   delete, trash, or mark spam from this skill.
 - **Never call `create_reply_draft`** -- deciding to reply is a separate
