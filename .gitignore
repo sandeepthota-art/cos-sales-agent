@@ -1,0 +1,26 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Eval fixtures/outputs with real personal email data (STEP 1 privacy scan,
+# 2026-10-13) -- explicit filenames, not a blanket eval/*.xlsx, since other
+# files in eval/ are synthetic-only and stay committed.
+eval/label_eval_set.xlsx
+eval/golden_set_live_run_results.xlsx
+eval/golden_set_live_run_report.md
+eval/fill_golden_set_live_run.py
+eval/fill_gmail_ids.py
+eval/fill_actual_results.py
+
+# Future guard for anything explicitly marked private
+eval/private/
+*.private.*
+
+# OS / editor
+.DS_Store
