@@ -94,13 +94,22 @@ def mark_raw_email_label_failed(message_id: str, reason: str) -> JsonDoc:
 
 
 @mcp.tool()
-def mark_gmail_label_synced(message_id: str) -> JsonDoc:
+def mark_gmail_label_synced(message_id: str, label_applied: str) -> JsonDoc:
     """Call ONLY after confirming the real Gmail label call actually
     succeeded for this message. A successful MongoDB label write is never
     proof the Gmail side changed too -- these are two separate writes.
+
+    label_applied must be the exact label you just applied to the real
+    Gmail message. This is a compare-and-swap: if the document's current
+    label_applied has since changed (a relabel raced ahead of this call),
+    gmail_label_synced is deliberately left False instead of being stamped
+    True -- Gmail now holds a stale value against the newer decision, so it
+    genuinely isn't synced. The returned document's label_applied tells you
+    what to actually apply and retry.
+
     Raises if message_id doesn't exist.
     """
-    return tools.mark_gmail_label_synced(_get_db(), message_id)
+    return tools.mark_gmail_label_synced(_get_db(), message_id, label_applied)
 
 
 @mcp.tool()

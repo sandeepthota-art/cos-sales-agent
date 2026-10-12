@@ -69,8 +69,11 @@ For each message you've been asked to dump:
    message_id(s). For each one: update the REAL Gmail label to match (same
    list_labels/create_label map as Mode B's step 3a -- build it once per run
    if you haven't already), then call **`mark_gmail_label_synced`** with
-   that message_id once the Gmail call actually succeeds. If the Gmail call
-   fails, do NOT call `mark_gmail_label_synced` -- leave it unsynced and
+   that message_id AND `label_applied="1. Read only"` (the value this
+   auto-close just set -- `mark_gmail_label_synced` is a compare-and-swap
+   against the document's current label_applied, so passing the wrong value
+   here silently no-ops) once the Gmail call actually succeeds. If the
+   Gmail call fails, do NOT call `mark_gmail_label_synced` -- leave it unsynced and
    note the failure in your report; it'll still be correct in MongoDB and
    simply retryable later (re-run this step against the same message_id).
 4b. **Check `reopened_in_thread` on the return value.** If this message is
@@ -249,10 +252,17 @@ batch comes back empty:
    first (`label_message` with the old label id removed, new one added) so
    a message never carries two of the six at once.
 3b. **Confirm the sync.** If step 3a's Gmail call succeeded, call
-   **`mark_gmail_label_synced`** with this email's `message_id`. If it
-   failed, do NOT call it -- the document stays `gmail_label_synced: false`,
-   which is the correct, honest state (MongoDB has the new label, Gmail
-   doesn't yet); note the failure in your report so it can be retried.
+   **`mark_gmail_label_synced`** with this email's `message_id` AND
+   `label_applied` set to the SAME value you just persisted in step 3 --
+   this is a compare-and-swap, not an unconditional write: if another pass
+   relabelled this email in between (rare, but possible with a scheduled
+   task overlapping an interactive run), the confirmation is silently
+   skipped and `gmail_label_synced` correctly stays `false`, because Gmail
+   now holds a value that's stale against the newer decision. If step 3a
+   failed, do NOT call `mark_gmail_label_synced` at all -- the document
+   stays `gmail_label_synced: false`, which is the correct, honest state
+   (MongoDB has the new label, Gmail doesn't yet); note the failure in your
+   report so it can be retried.
 4. **Confirm persistence** -- the `persist_raw_email_label` return value is
    the stored document; check it came back with no error.
 5. Move to the next email in the batch. Once the batch is exhausted, go
@@ -313,8 +323,15 @@ this one bounds Gmail re-write attempts on already-classified documents.
    map (built once per run, shared with Mode B's 3a and Mode A's 4a: never
    build it twice, never remove anything outside the six taxonomy labels),
    apply `label_applied` (already decided, nothing to reclassify).
-3. **On success**, call `mark_gmail_label_synced`. On failure, leave it
-   and note it in the report -- still retryable later, same as Mode B's
+3. **On success**, call `mark_gmail_label_synced` with `label_applied` set
+   to the SAME value you just read in step 1 and applied in step 2 -- not
+   a re-read, the exact value from that one document. If something
+   relabelled this email between your step-1 read and this call, the
+   compare-and-swap correctly refuses to confirm (stays `false`); that's
+   not a bug to work around, it means Gmail is now stale against a newer
+   decision and genuinely needs a fresh retry against the current label,
+   which the next catch-up pass will pick up. On Gmail-call failure, leave
+   it and note it in the report -- still retryable later, same as Mode B's
    3a/3b.
 4. Repeat from step 1 if the page was full (`limit` results), **up to 5
    pages (50 documents) per scheduled run.** If a 6th page would still be

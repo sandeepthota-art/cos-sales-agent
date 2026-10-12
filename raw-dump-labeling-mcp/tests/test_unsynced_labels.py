@@ -52,7 +52,7 @@ def test_unsynced_label_returned_despite_current_classification_version(db):
 def test_already_synced_labels_are_excluded(db):
     settings = _settings()
     _ingest_and_label(db, settings, "MSG-SYNCED")
-    tools.mark_gmail_label_synced(db, "MSG-SYNCED")
+    tools.mark_gmail_label_synced(db, "MSG-SYNCED", "1. Needs reply")
 
     assert tools.get_unsynced_labels(db) == []
 
@@ -84,7 +84,7 @@ def test_successful_retry_marks_synced_and_removes_from_results(db):
     _ingest_and_label(db, settings, "MSG-OK")
     assert [d["message_id"] for d in tools.get_unsynced_labels(db)] == ["MSG-OK"]
 
-    tools.mark_gmail_label_synced(db, "MSG-OK")
+    tools.mark_gmail_label_synced(db, "MSG-OK", "1. Needs reply")
 
     assert tools.get_unsynced_labels(db) == []
 
@@ -98,7 +98,7 @@ def test_get_unsynced_labels_is_ordered_oldest_stuck_first_for_stable_pagination
     assert [d["message_id"] for d in first_page] == ["MSG-0", "MSG-1"]
 
     for doc in first_page:
-        tools.mark_gmail_label_synced(db, doc["message_id"])
+        tools.mark_gmail_label_synced(db, doc["message_id"], doc["label_applied"])
 
     second_page = tools.get_unsynced_labels(db, limit=2)
     assert [d["message_id"] for d in second_page] == ["MSG-2", "MSG-3"]

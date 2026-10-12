@@ -86,7 +86,7 @@ def _run_catch_up(db, *, max_pages: int) -> list[str]:
             break
         for doc in page:
             # Simulated successful Gmail re-apply of doc["label_applied"].
-            tools.mark_gmail_label_synced(db, doc["message_id"])
+            tools.mark_gmail_label_synced(db, doc["message_id"], doc["label_applied"])
             processed.append(doc["message_id"])
     return processed
 
@@ -113,8 +113,8 @@ def test_repeated_gmail_label_application_is_idempotent(db):
     settings = _settings()
     _seed_unsynced(db, settings, "MSG-DUP", "2026-01-01T00:00:00.000Z")
 
-    first = tools.mark_gmail_label_synced(db, "MSG-DUP")
-    second = tools.mark_gmail_label_synced(db, "MSG-DUP")
+    first = tools.mark_gmail_label_synced(db, "MSG-DUP", "1. Needs reply")
+    second = tools.mark_gmail_label_synced(db, "MSG-DUP", "1. Needs reply")
 
     assert first["gmail_label_synced"] is True
     assert second["gmail_label_synced"] is True
@@ -122,6 +122,36 @@ def test_repeated_gmail_label_application_is_idempotent(db):
     assert first["label_history"] == second["label_history"]
     assert len(second["label_history"]) == 1
     assert second["classification_version"] == tools._CURRENT_LABEL_CLASSIFICATION_VERSION
+
+
+def test_stale_sync_confirmation_does_not_clobber_a_newer_relabel(db):
+    """The race this module's docstring flags as out of scope for a test,
+    now actually exercised: a catch-up retry reads label_applied=X (stale),
+    then BEFORE it calls mark_gmail_label_synced, a concurrent relabel
+    (simulating an overlapping Mode B pass on the same message) persists
+    label_applied=Y. The catch-up's confirmation, still carrying the old X
+    it read, must NOT mark gmail_label_synced=True -- Gmail (just set to X)
+    is genuinely stale against Y, and stamping it synced would hide that."""
+    settings = _settings()
+    _seed_unsynced(db, settings, "MSG-RACE", "2026-01-01T00:00:00.000Z")
+    stale_read = tools.get_unsynced_labels(db)[0]
+    assert stale_read["label_applied"] == "1. Needs reply"
+
+    # Concurrent relabel races ahead, between the stale read and the confirm.
+    tools.persist_raw_email_label(db, "MSG-RACE", "1. Read only")
+
+    # Catch-up confirms sync using the label it actually (stale-ly) applied.
+    result = tools.mark_gmail_label_synced(db, "MSG-RACE", stale_read["label_applied"])
+
+    assert result["gmail_label_synced"] is False  # NOT clobbered to True
+    assert result["label_applied"] == "1. Read only"  # the newer decision stands
+    # Still correctly discoverable for a retry against the real current label.
+    assert [d["message_id"] for d in tools.get_unsynced_labels(db)] == ["MSG-RACE"]
+
+    # The correct retry -- confirming against the CURRENT label -- succeeds.
+    retried = tools.mark_gmail_label_synced(db, "MSG-RACE", "1. Read only")
+    assert retried["gmail_label_synced"] is True
+    assert tools.get_unsynced_labels(db) == []
 
 
 def test_persistent_sync_failure_stays_visible_across_many_runs(db):

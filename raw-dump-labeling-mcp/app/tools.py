@@ -288,18 +288,33 @@ def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailL
     )
 
 
-def mark_gmail_label_synced(db: Database, message_id: str) -> JsonDoc:
+def mark_gmail_label_synced(db: Database, message_id: str, label_applied: str | None) -> JsonDoc:
     """Call this ONLY after confirming the real Gmail label call actually
     succeeded for this message -- a successful MongoDB write
     (persist_raw_email_label, or the deterministic auto-close path) is never
     proof the Gmail side also changed; those are two separate writes to two
-    separate systems. Sets gmail_label_synced=True.
+    separate systems.
+
+    label_applied MUST be the exact value you just applied to the real Gmail
+    message (read it from whatever call handed you this message_id --
+    persist_raw_email_label's return value, or a get_unsynced_labels/
+    get_next_unprocessed_raw_email(_batch) document's label_applied field).
+    This is a compare-and-swap, not an unconditional write: if the
+    document's CURRENT label_applied no longer matches what you pass (a
+    relabel raced ahead of you -- e.g. a catch-up retry overlapping a fresh
+    Mode B pass on the same message), gmail_label_synced is deliberately
+    left False and the CURRENT document is returned instead. That's correct,
+    not a bug -- Gmail now holds a stale label against the newer decision,
+    so it genuinely isn't synced; stamping it True anyway would hide a real
+    gap. Re-read label_applied from what's returned and retry against the
+    (now current) real Gmail label if you need to close it out.
 
     Raises ValueError if message_id doesn't exist in raw_emails_dump.
     """
     repo = RawEmailDumpRepository(db)
     _require_existing(repo, message_id)
-    return repo.upsert_by_key({"message_id": message_id}, {"gmail_label_synced": True})
+    updated = repo.mark_synced_if_label_unchanged(message_id, label_applied)
+    return updated if updated is not None else repo.find_one({"message_id": message_id})
 
 
 def mark_raw_email_label_failed(db: Database, message_id: str, reason: str) -> JsonDoc:

@@ -153,6 +153,24 @@ class RawEmailDumpRepository(_BaseRepository):
             doc["label_claimed_at"] = now_iso
         return candidates
 
+    def mark_synced_if_label_unchanged(self, message_id: str, expected_label_applied: str | None) -> JsonDoc | None:
+        """Compare-and-swap: only confirms gmail_label_synced=True if the
+        document's CURRENT label_applied still equals expected_label_applied
+        (the value the caller just actually applied to the real Gmail
+        message). Returns the updated document, or None if label_applied has
+        since changed -- a concurrent relabel raced ahead of this
+        confirmation, meaning Gmail now holds a STALE value against the
+        newer decision, so gmail_label_synced must stay False, not be
+        stamped True. Filters on label_applied (not the field being set,
+        gmail_label_synced), so this does not hit the AFTER/mongomock bug
+        documented on claim_next_unclassified."""
+        return self._collection.find_one_and_update(
+            {"message_id": message_id, "label_applied": expected_label_applied},
+            {"$set": {"gmail_label_synced": True}},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+
     def siblings_in_thread(self, thread_id: str, exclude_message_id: str) -> list[JsonDoc]:
         """Every OTHER raw-dumped email in this thread, oldest first -- the
         conversation context a caller needs to classify one message correctly
