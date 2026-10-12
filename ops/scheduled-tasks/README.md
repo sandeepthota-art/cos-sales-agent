@@ -1,0 +1,77 @@
+# Scheduled tasks
+
+Two real scheduled tasks today: `ingestion.md` (Mode A), `labeling.md`
+(Mode B + sync catch-up). `context-building.md` is a stub — not built.
+
+## One-time setup: create the six Gmail labels manually
+
+Neither scheduled task calls `create_label` anymore (removed
+2026-10-13 — see `labeling.md`). Before either task runs for the first
+time, create these six labels in Gmail by hand (Settings → Labels →
+Create new label), exact text, including the `1. ` prefix:
+
+- [ ] `1. Needs reply: ASAP`
+- [ ] `1. Needs reply`
+- [ ] `1. Needs reply: mention`
+- [ ] `1. Read only`
+- [ ] `1. Delete`
+- [ ] `1. Undecided`
+
+If a label is later renamed or deleted in Gmail, both tasks will fail
+loudly (`list_labels` won't find it) rather than silently recreate or
+substitute one — re-run this checklist to fix it.
+
+## Enforcement
+
+Prompt text (in `ingestion.md`/`labeling.md`) is an instruction to
+Claude, not a technical guarantee — a model can misread a request, and a
+scheduled task runs unattended with no human reviewing each call before
+it happens. **The actual enforcement boundary is what the Claude Desktop
+connector permissions allow the task to call at all**, not what the
+prompt says. Set these to **blocked** in the Gmail connector's permissions
+for both scheduled tasks, regardless of what each task's own allowlist
+says it needs:
+
+| Tool category | Blocked for |
+|---|---|
+| Send / reply / forward any email | Both tasks — neither ever needs this |
+| Trash / delete a message | Both tasks |
+| Mark as spam | Both tasks |
+| Create a draft | Both tasks |
+| `create_label`, `update_label`, `delete_label` | Both tasks — label-definition CRUD is never used anywhere in this skill (removed 2026-10-13, see `labeling.md`) |
+| Any `*_thread` label variant | Both tasks — this skill operates per-message, never per-thread |
+| Any `apply_sensitive_*` tool | Both tasks — unrelated to the six-label taxonomy, never used |
+| `label_message`, `unlabel_message` | **Ingestion task only, in principle** — see the note below; this is NOT a real technical guarantee today |
+| Gmail read/search | **Labeling task only, in principle** — same caveat |
+
+**Names beyond `list_labels`/`label_message`/`unlabel_message` above are
+inferred from the Gmail connector's general shape, not individually
+confirmed** — confirm the connector's actual full tool list from a live
+Claude Desktop session before finalizing permissions.
+
+### What's actually enforceable today
+
+**Blocking the dangerous, never-needed-by-either-task tools account-wide
+(send/reply/forward/trash/spam/draft, and all the label-definition/
+thread/sensitivity tools in the top half of the table) is effective** —
+neither task has any legitimate use for them, so blocking them account-wide
+costs nothing and is a real technical guarantee, not just a prompt
+convention.
+
+**Preventing ingestion specifically from using `label_message`/
+`unlabel_message` is prompt-level only, not a technical guarantee**,
+because those two tools MUST stay available account-wide for the labeling
+task to function — if the connector permissions UI only has one
+permission set per connector (not per scheduled task), there is no way to
+block them for ingestion while leaving them usable for labeling. The only
+thing stopping ingestion from calling them today is its own prompt text
+(`ingestion.md`) saying not to. Same caveat in reverse for Gmail
+read/search and the labeling task. If the permissions UI ever supports
+per-task scoping, tighten this immediately; until then, this gap is real
+and should be treated as an accepted risk, not a solved one.
+
+**Do not treat a correct prompt as sufficient on its own** for the tools
+in the top half of the table — block them account-wide, don't rely on the
+prompt. For `label_message`/`unlabel_message`/Gmail read, the prompt IS
+currently the only enforcement available, which is a materially weaker
+guarantee — know the difference.

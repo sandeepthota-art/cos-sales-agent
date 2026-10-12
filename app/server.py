@@ -10,6 +10,7 @@ from app.models import Email, EmailLabel
 from app import tools
 
 mcp = FastMCP("raw-dump-labeling")
+logger = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -135,6 +136,14 @@ def main() -> None:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    if not settings.agent_email:
+        logger.warning(
+            "AGENT_EMAIL is not set -- auto-close of 'Needs reply*' siblings "
+            "when the agent's own reply lands in a thread is DISABLED. Every "
+            "threaded ingest, including the agent's own future replies, will "
+            "take the reopen-for-reevaluation path instead. Set AGENT_EMAIL "
+            "in .env to enable auto-close (see .env.example)."
+        )
     mcp.run()
 
 

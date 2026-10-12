@@ -5,7 +5,7 @@ Phase tracker. Checkboxes reflect verified state as of 2026-10-13 (see `docs/BAS
 ## Phase 0 — Baseline
 
 - [x] Repo inventory documented (git state, layout, entrypoints, MCP tools, collections/indexes, skills, tests, config, network surface) — `docs/BASELINE_REPORT.md` STEP 1.
-- [x] Tests run once and results recorded — 33/33 passed in 2.87s against `mongomock`, no network (`docs/BASELINE_REPORT.md` STEP 1, Tests).
+- [x] Tests run once and results recorded — 33/33 passed in 2.87s against `mongomock`, no network (`docs/BASELINE_REPORT.md` STEP 1, Tests). **Updated 2026-10-13**: now 42/42 (33 baseline + 9 added for the thread-resolution fallback carry-over, `tests/test_thread_resolution_fallback.py`).
 - [x] Gap check done (README/.gitignore/.env.example/dependency pinning/test command/DB docs/`docs/` folder) — `docs/BASELINE_REPORT.md` STEP 2.
 - [x] Secrets/real-data/operator-specific-value scan done — found a real Atlas credential and a real operator email in `.env` (file:line only, not reproduced); no secrets in code or test fixtures.
 - [x] `.gitignore` added (covers `.env`, local data, caches).
@@ -13,14 +13,22 @@ Phase tracker. Checkboxes reflect verified state as of 2026-10-13 (see `docs/BAS
 - [x] Carry-over candidates inventoried from cos-sales-agent (12 components) — `docs/CARRYOVER.md`.
 - [x] Tracker and decisions files created — this file, `docs/DECISIONS.md`.
 - [x] Open questions written down — `docs/DECISIONS.md` Open questions.
-- [ ] Not a git repository yet — no branch, no commits, no version control at all. Out of scope for this task to initialize (task only documents state); flagged here so Phase 1 doesn't assume git exists.
+- [x] **Updated 2026-10-13**: `git init -b main` done, Phase 1 STEP 1 privacy scan completed first, two commits made (baseline; eval harness, real-data files gitignored not committed). See Phase 1 below.
 - [ ] Atlas vs. local `.env` discrepancy unresolved (locked decision says Atlas; live `.env` points at local `mongodb://localhost:27017`) — user decision needed, see `docs/DECISIONS.md`.
 
 ## Phase 1 — Protect
 
-- [ ] `git init` + first commit (currently no version control at all).
-- [ ] Confirm `.gitignore` actually keeps `.env`/secrets/local data out of the first commit (re-check after `git init`, since it was added before any repo existed).
-- [ ] Decide and resolve the Atlas-vs-local `.env` discrepancy before any shared/deployed use.
+- [x] Privacy scan before `git init` — `.gitignore` additions and `docs/CARRYOVER.md` scrub (real third-party domain replaced with a generic phrase) done first.
+- [x] `git init -b main` + two commits: baseline (`eea1dab`, 20 files), eval harness (`80f6f49`, 7 files — only the privacy-scan-approved synthetic files).
+- [x] Confirmed `.gitignore` actually keeps `.env`/caches/the 6 real-data eval files out — verified via `git status --ignored` after init, before staging.
+- [x] Tool allowlists written per scheduler, with exact Gmail tool names (`list_labels`, `label_message`, `unlabel_message`) and an expanded forbidden list (`create_label`/`update_label`/`delete_label`/`*_thread` variants/`apply_sensitive_*`) — `ops/scheduled-tasks/ingestion.md`, `labeling.md`.
+- [x] Scheduled-task specs written (purpose, cadence, allowed/forbidden tools, exact prompt text, concurrency, failure modes) — `ops/scheduled-tasks/` (`ingestion.md`, `labeling.md`, `context-building.md` stub, `README.md` with one-time label-setup checklist and Enforcement section).
+- [x] No operator-specific hardcoding confirmed — grepped `app/`/`skills/` for known real domains and always-Delete/Read-only-for-X patterns, zero matches.
+- [x] `AGENT_EMAIL` empty-case handled: startup warning (`app/server.py::main`) and a regression test (`tests/test_core_engine_reliability.py::test_empty_agent_email_takes_reopen_path_never_auto_closes`) confirming no auto-close, reopen path taken instead.
+- [x] Gmail sync moved out of ingestion entirely (`skills/raw-dump-labeling/SKILL.md` step 4a) into labeling's sync catch-up — ingestion now makes zero Gmail write calls. See `docs/DECISIONS.md` decision log.
+- [ ] Decide and resolve the Atlas-vs-local `.env` discrepancy before any shared/deployed use — still open (user confirmed "keep local for now" as an interim exception, not a resolution).
+- [ ] Confirm the real Gmail connector's exact tool names (`list_labels`/`label_message`/`unlabel_message` and the full forbidden list) from a live Claude Desktop session — everything in `ops/scheduled-tasks/` is evidence-based from `SKILL.md`'s own documentation, not a verified live tool schema (no Gmail MCP tools are loadable from this coding session).
+- [ ] Connector-permissions UI may not support per-scheduled-task scoping — `ops/scheduled-tasks/README.md`'s Enforcement section documents that blocking `label_message`/`unlabel_message` for ingestion specifically (and Gmail read for labeling specifically) is prompt-level only today, not a technical guarantee.
 
 ## Phase 2 — Safe independence
 

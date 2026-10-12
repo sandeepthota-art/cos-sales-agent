@@ -12,7 +12,9 @@ Legend: **FACT** = verified directly. **OPINION** = judgment, labeled. `NOT FOUN
 
 ### Git state
 
-**FACT.** `git status` in this repo returns `fatal: not a git repository (or any of the parent directories): .git`. There is no version control in place here — no branch, no commit history, no uncommitted-file diff to report. This is expected for a brand-new baseline repo, not an error condition.
+**FACT (as of Phase 0, 2026-10-13).** `git status` in this repo returned `fatal: not a git repository (or any of the parent directories): .git`. There was no version control in place — no branch, no commit history. This was expected for a brand-new baseline repo, not an error condition.
+
+**Updated (Phase 1, 2026-10-13).** `git init -b main` run after the Phase 1 STEP 1 privacy scan. Two commits on `main`: `eea1dab` (baseline — app/tests/skills/docs/config, 20 files) and `80f6f49` (eval harness — 7 privacy-scan-approved synthetic files only). `.env`, `.pytest_cache/`, and the 6 real-data eval files confirmed gitignored, not committed (verified via `git status --ignored` before staging).
 
 ### Top-level layout
 
@@ -86,7 +88,7 @@ No other collection, no `runs`/`processing_runs` log collection, no counters col
 
 ### Tests
 
-**FACT.** 3 test files, 33 tests total, run via `pytest tests/ -v`. Result of running them once, this session, against `mongomock` (no network):
+**FACT (as of Phase 0, 2026-10-13).** 3 test files, 33 tests total, run via `pytest tests/ -v`. Result of running them once, this session, against `mongomock` (no network):
 
 ```
 33 passed in 2.87s
@@ -96,6 +98,8 @@ All 33 passed, 0 failed, 0 skipped. Breakdown (per `TESTING.md:14-30`, cross-che
 - `test_core_engine_reliability.py` — 22 tests (claim atomicity, TTL crash recovery, 3-attempt circuit breaker, classification_version eligibility, thread close/reopen lifecycle, ingestion idempotency, UTC sort_key normalization).
 - `test_unsynced_labels.py` — 7 tests (`get_unsynced_labels` ordering, limit, exclusion of synced docs).
 - `test_catch_up_scheduled_workflow.py` — 4 tests (5-page/50-doc catch-up budget, idempotent re-sync, persistent-failure visibility, stale-sync-confirmation race fix).
+
+**Updated (Phase 1, 2026-10-13).** Now 4 test files, 42 tests total (33 above + `tests/test_thread_resolution_fallback.py`, 9 tests for the thread-resolution fallback carried over from `cos-sales-agent/app/email/threading.py` — see `docs/CARRYOVER.md` row 4 and `docs/ROADMAP.md`'s "Imported from CoS" table).
 
 Separately, `eval/` contains two **non-pytest** evaluation harnesses (not run as part of this baseline — they are judgment-graded, not pass/fail code tests):
 - Offline rule-boundary eval (16 synthetic cases): last recorded result 15/16 match (`TESTING.md:63-67`, read as a doc claim, not re-verified by me since grading is a manual Claude judgment pass, not a deterministic re-run).

@@ -66,16 +66,12 @@ For each message you've been asked to dump:
    from the configured agent's own mailbox and landed in a thread that had
    an earlier "Needs reply*" item, that item was just deterministically
    closed to `1. Read only` in MongoDB -- `closed_in_thread` lists its
-   message_id(s). For each one: update the REAL Gmail label to match (same
-   list_labels/create_label map as Mode B's step 3a -- build it once per run
-   if you haven't already), then call **`mark_gmail_label_synced`** with
-   that message_id AND `label_applied="1. Read only"` (the value this
-   auto-close just set -- `mark_gmail_label_synced` is a compare-and-swap
-   against the document's current label_applied, so passing the wrong value
-   here silently no-ops) once the Gmail call actually succeeds. If the
-   Gmail call fails, do NOT call `mark_gmail_label_synced` -- leave it unsynced and
-   note the failure in your report; it'll still be correct in MongoDB and
-   simply retryable later (re-run this step against the same message_id).
+   message_id(s). **Take no Gmail action here.** This mode never writes to
+   Gmail (see Hard rules below) -- the real Gmail label for each
+   closed_in_thread entry is synced later by the labeling task's sync
+   catch-up, which treats it exactly like any other `gmail_label_synced:
+   false` document (it already is one; the MongoDB-side close sets that
+   flag unconditionally). Just note the count in your report.
 4b. **Check `reopened_in_thread` on the return value.** If this message is
    an inbound message (not from the agent) and landed in a thread with
    already-classified siblings, those siblings just became eligible for
@@ -95,8 +91,10 @@ For each message you've been asked to dump:
   classification-adjacent decision made in this mode -- steps 4a/4b are
   both deterministic (structural `from`-address matches), never a judgment
   call Claude makes.
-- Use the Gmail connector only to *read*, except for step 4a's label
-  correction. Never send, reply, forward, trash, or mark spam.
+- Use the Gmail connector only to *read*, with no exceptions -- this mode
+  makes zero Gmail write calls of any kind (no `label_message`,
+  `unlabel_message`, or any other write tool). Never send, reply,
+  forward, trash, or mark spam.
 - There is no stored boundary/watermark tool on this connector. This
   explicit sub-mode always dumps exactly the messages the request named (a
   count, a date range, or specific messages) -- never guess a boundary
@@ -109,9 +107,10 @@ For each message you've been asked to dump:
   state if Mode B has already labelled it.
 
 Report in plain English: how many messages were dumped, any that failed
-(by Gmail id), how many prior items were auto-closed (step 4a) and whether
-their Gmail labels were successfully synced, and how many siblings became
-eligible for re-evaluation (step 4b). Do not dump raw JSON/tool output.
+(by Gmail id), how many prior items were auto-closed (step 4a -- their
+Gmail sync happens in the next labeling run's catch-up, not here), and
+how many siblings became eligible for re-evaluation (step 4b). Do not
+dump raw JSON/tool output.
 
 ## Mode A: Scheduled incremental dump (sliding window)
 
@@ -171,7 +170,8 @@ the missed range from Mongo state yourself.
 Operates on `raw_emails_dump` via this connector's own tools, THEN applies
 the matching label in the real Gmail mailbox via the Gmail connector. The
 email's `message_id` on this connector is the real, uncanonicalized Gmail
-id (set by Mode A, never reassigned) -- the same id `label_message` needs.
+id (set by Mode A, never reassigned) -- the same id `label_message`/
+`unlabel_message` need.
 
 ### The six labels
 
@@ -243,14 +243,18 @@ batch comes back empty:
    `mark_raw_email_label_failed` for the same email.
 3a. **Apply the matching Gmail label.** Build the name -> label id map ONCE
    per run (not per batch, not per email): call the Gmail connector's
-   `list_labels`; for each of the six label names not already present, call
-   `create_label` with that exact string as `displayName` (plain text, no
-   color needed). Then, for THIS email, call `label_message` with its
-   `message_id` (the real Gmail id) and the label id matching the
-   `label_applied` value you just persisted. If a different one of the six
-   labels is already on this message from a prior run, remove that one
-   first (`label_message` with the old label id removed, new one added) so
-   a message never carries two of the six at once.
+   `list_labels`. **Never call `create_label`** -- the six labels are
+   created once, manually, as one-time setup (see
+   `ops/scheduled-tasks/README.md`), not by this skill. If one of the six
+   names is missing from `list_labels`'s result, STOP and report it as a
+   setup problem for that label -- never silently skip it or substitute a
+   different one.
+   Then, for THIS email: if a different one of the six labels is already
+   on this message from a prior run, call `unlabel_message` with that old
+   label id first, then call `label_message` with the new label id
+   matching the `label_applied` value you just persisted -- two separate
+   calls, so a message never carries two of the six at once. If no prior
+   one of the six is present, just call `label_message`.
 3b. **Confirm the sync.** If step 3a's Gmail call succeeded, call
    **`mark_gmail_label_synced`** with this email's `message_id` AND
    `label_applied` set to the SAME value you just persisted in step 3 --
@@ -285,12 +289,14 @@ small handful -- batching is for the "dump 100, label them all" case.
 - Never call `ingest_raw_email_only` in this mode -- that's Mode A's job.
 - Relabeling an already-labelled email is expected, not a bug -- it's
   recorded in `label_history`, never silently lost -- and the real Gmail
-  label must be updated to match (step 3a's remove-old-add-new), never left
+  label must be updated to match (step 3a's unlabel-then-label), never left
   stale from a prior run.
 - Mongo succeeding is never proof Gmail succeeded too -- always run step 3b
   as its own check, never assume it from step 3a alone.
-- Use the Gmail connector only to read, create a label, and apply/remove a
-  label on a message. Never send, reply, forward, trash, or mark spam.
+- Use the Gmail connector only to list labels (`list_labels`) and
+  apply/remove one on a message (`label_message`/`unlabel_message`) --
+  never to read email content (that comes from MongoDB, see step 2), and
+  never `create_label`. Never send, reply, forward, trash, or mark spam.
 
 Report in plain English when the loop ends: how many were newly labelled
 vs. corrected (relabelled after a reopen) vs. failed this run, the label
@@ -306,8 +312,11 @@ Once `persist_raw_email_label` succeeds, `classification_version` becomes
 current -- so if the matching Gmail write then failed (step 3a/3b),
 `get_next_unprocessed_raw_email(_batch)` will NEVER surface that message
 again; its MongoDB label is already correct, only its real Gmail label is
-stale. Run this whenever asked to retry/catch up on sync, or at the end of
-a Mode B run that reported any Gmail-sync failures:
+stale. The same applies to Mode A's `closed_in_thread` entries -- Mode A
+makes no Gmail calls at all, so EVERY auto-close is first synced here, not
+there. Run this whenever asked to retry/catch up on sync, at the end of a
+Mode B run that reported any Gmail-sync failures, or as the second half
+of every scheduled labeling run (see `ops/scheduled-tasks/labeling.md`):
 
 This budget is separate from, and does not count against, Mode B's 20-email
 classification cap above -- that cap limits classification attempts only;
@@ -320,9 +329,10 @@ this one bounds Gmail re-write attempts on already-classified documents.
    tie-breaker, so repeated calls make real progress through a backlog
    instead of risking the same or an arbitrary subset each time.
 2. **For each returned document**, re-run step 3a verbatim -- same label
-   map (built once per run, shared with Mode B's 3a and Mode A's 4a: never
-   build it twice, never remove anything outside the six taxonomy labels),
-   apply `label_applied` (already decided, nothing to reclassify).
+   map (built once per run, shared with Mode B's own step 3a earlier in
+   this same run: never build it twice, never remove anything outside the
+   six taxonomy labels), apply `label_applied` (already decided, nothing
+   to reclassify).
 3. **On success**, call `mark_gmail_label_synced` with `label_applied` set
    to the SAME value you just read in step 1 and applied in step 2 -- not
    a re-read, the exact value from that one document. If something

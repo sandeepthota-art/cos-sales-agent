@@ -255,6 +255,31 @@ def test_closed_sibling_classification_version_is_untouched_so_it_is_not_reclaim
     assert claimed["message_id"] == "MSG-AGENT-REPLY"
 
 
+def test_empty_agent_email_takes_reopen_path_never_auto_closes(db):
+    """Documents the behavior app/server.py's startup warning flags: with
+    AGENT_EMAIL unset, bool("") is False, so is_from_agent is always False
+    -- even a message from the exact address that WOULD be the agent if
+    configured goes through the reopen path, never the auto-close path."""
+    settings = _settings(agent_email="")
+    _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply")
+
+    result = _ingest(
+        db,
+        settings,
+        "MSG-WOULD-BE-AGENT-REPLY",
+        thread_id="T-1",
+        timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc),
+        **{"from": {"name": "Agent", "email": "agent@ourcompany.example"}},
+    )
+
+    assert result["closed_in_thread"] == []  # never auto-closed, no AGENT_EMAIL to match against
+    assert result["reopened_in_thread"] == ["MSG-ASK"]  # took the reopen path instead
+    sibling = RawEmailDumpRepository(db).find_one({"message_id": "MSG-ASK"})
+    assert sibling["label_applied"] == "1. Needs reply"  # untouched, not force-closed to Read only
+    assert sibling["classification_version"] == 0  # reset, eligible for re-evaluation
+
+
 def test_inbound_reply_reopens_already_classified_siblings_for_reevaluation(db):
     settings = _settings()
     _ingest(db, settings, "MSG-OLD", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
