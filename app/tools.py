@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from pymongo.database import Database
@@ -31,6 +32,17 @@ _NEEDS_REPLY_LABELS = ["1. Needs reply: ASAP", "1. Needs reply", "1. Needs reply
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _cleared_claim_fields() -> JsonDoc:
+    """Shared by _close_open_needs_reply_in_thread and
+    _reopen_thread_siblings_for_reevaluation -- any ingestion-driven write
+    to a document invalidates whatever claim it currently holds, since the
+    context a claimant is classifying from (thread_context snapshotted at
+    claim time) just became stale. Merge this into every write either of
+    those two make, unconditionally -- clearing an already-empty claim is a
+    harmless no-op."""
+    return {"label_claimed_at": "", "claim_id": None}
 
 
 def _require_existing(repo: RawEmailDumpRepository, message_id: str) -> JsonDoc:
@@ -86,6 +98,7 @@ def _close_open_needs_reply_in_thread(
                 # genuinely disagrees with Gmail until the caller confirms
                 # the Gmail update too (see mark_gmail_label_synced).
                 "gmail_label_synced": False,
+                **_cleared_claim_fields(),
             },
         )
         closed_ids.append(doc["message_id"])
@@ -114,7 +127,9 @@ def _reopen_thread_siblings_for_reevaluation(
     )
     reopened_ids = [doc["message_id"] for doc in candidates]
     if reopened_ids:
-        repo.update_many_by_key({"message_id": {"$in": reopened_ids}}, {"classification_version": 0})
+        repo.update_many_by_key(
+            {"message_id": {"$in": reopened_ids}}, {"classification_version": 0, **_cleared_claim_fields()}
+        )
     return reopened_ids
 
 
@@ -168,6 +183,7 @@ def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> Jso
             # "" (never None) is the "not currently claimed" sentinel -- see
             # RawEmailDumpRepository.claim_next_unclassified's own docstring.
             "label_claimed_at": "",
+            "claim_id": None,
             "label_attempts": 0,
             "label_error": None,
             # No label exists yet, so there's nothing for Gmail to be out of
@@ -227,6 +243,7 @@ def get_next_unprocessed_raw_email(db: Database) -> JsonDoc | None:
         max_classification_version=_CURRENT_LABEL_CLASSIFICATION_VERSION,
         claim_cutoff_iso=claim_cutoff_iso,
         max_attempts=_MAX_LABEL_ATTEMPTS,
+        claim_id=uuid.uuid4().hex,
         now_iso=now.isoformat(),
     )
     if claimed is None:
@@ -254,6 +271,7 @@ def get_next_unprocessed_raw_email_batch(db: Database, batch_size: int = 10) -> 
         max_classification_version=_CURRENT_LABEL_CLASSIFICATION_VERSION,
         claim_cutoff_iso=claim_cutoff_iso,
         max_attempts=_MAX_LABEL_ATTEMPTS,
+        claim_id=uuid.uuid4().hex,
         now_iso=now.isoformat(),
         batch_size=batch_size,
     )
@@ -274,40 +292,55 @@ def _attach_thread_context(repo: RawEmailDumpRepository, claimed: JsonDoc) -> No
     )
 
 
-def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailLabel) -> JsonDoc:
+def persist_raw_email_label(
+    db: Database, message_id: str, label_applied: EmailLabel, claim_id: str | None = None
+) -> JsonDoc:
     """Records the classification label YOU already decided for one raw-dumped
     email. Overwrites label_applied/labelled_at outright but APPENDS to
     label_history, so a relabel is never lossy. Advances
     classification_version, releases the claim, resets the failure counter.
 
+    claim_id MUST be the exact value returned by whichever claim call handed
+    you this message_id (get_next_unprocessed_raw_email(_batch)'s
+    claim_id field). This is a compare-and-swap: if the document's current
+    claim_id no longer matches (your lease expired and someone else
+    reclaimed it, or an ingestion-driven reopen/auto-close invalidated your
+    claim because the thread changed mid-classification), the write is
+    REJECTED -- you get back {"ok": False, "reason": "claim_lost"} instead
+    of silently overwriting newer or more-correct work. Omitting claim_id
+    (None) only succeeds against a document that was never claimed at all
+    (its own claim_id is also None by default).
+
     Sets gmail_label_synced=False -- this call only ever touches MongoDB;
     the caller must confirm the real Gmail label was also updated and call
     mark_gmail_label_synced, or this stays visibly out of sync.
 
-    Raises ValueError if message_id doesn't exist in raw_emails_dump.
+    Raises ValueError if message_id doesn't exist in raw_emails_dump at all
+    (a genuinely different failure mode from a lost claim).
     """
     repo = RawEmailDumpRepository(db)
-    existing = _require_existing(repo, message_id)
     now_iso = _now_iso()
     history_entry = {
         "label_applied": label_applied,
         "labelled_at": now_iso,
         "classification_version": _CURRENT_LABEL_CLASSIFICATION_VERSION,
     }
-    history = list(existing.get("label_history") or []) + [history_entry]
-    return repo.upsert_by_key(
-        {"message_id": message_id},
-        {
-            "label_applied": label_applied,
-            "labelled_at": now_iso,
-            "classification_version": _CURRENT_LABEL_CLASSIFICATION_VERSION,
-            "label_history": history,
-            "label_claimed_at": "",
-            "label_attempts": 0,
-            "label_error": None,
-            "gmail_label_synced": False,
-        },
-    )
+    set_fields = {
+        "label_applied": label_applied,
+        "labelled_at": now_iso,
+        "classification_version": _CURRENT_LABEL_CLASSIFICATION_VERSION,
+        "label_claimed_at": "",
+        "claim_id": None,
+        "label_attempts": 0,
+        "label_error": None,
+        "gmail_label_synced": False,
+    }
+    updated = repo.update_if_claim_matches(message_id, claim_id, set_fields, push_fields={"label_history": history_entry})
+    if updated is not None:
+        return updated
+    if repo.find_one({"message_id": message_id}) is None:
+        raise ValueError(f"no raw-dumped email found for message_id={message_id!r}")
+    return {"ok": False, "reason": "claim_lost"}
 
 
 def mark_gmail_label_synced(db: Database, message_id: str, label_applied: str | None) -> JsonDoc:
@@ -339,24 +372,35 @@ def mark_gmail_label_synced(db: Database, message_id: str, label_applied: str | 
     return updated if updated is not None else repo.find_one({"message_id": message_id})
 
 
-def mark_raw_email_label_failed(db: Database, message_id: str, reason: str) -> JsonDoc:
+def mark_raw_email_label_failed(
+    db: Database, message_id: str, reason: str, claim_id: str | None = None
+) -> JsonDoc:
     """Records that classification was attempted but could not be completed.
     Increments label_attempts and releases the claim so a later run can
     retry it, up to _MAX_LABEL_ATTEMPTS. Never sets label_applied -- a
     failure is not a label.
 
-    Raises ValueError if message_id doesn't exist in raw_emails_dump.
+    claim_id compare-and-swap, same contract as persist_raw_email_label --
+    returns {"ok": False, "reason": "claim_lost"} if claim_id no longer
+    matches, instead of silently recording a failure count against a claim
+    you no longer actually hold.
+
+    Raises ValueError if message_id doesn't exist in raw_emails_dump at all.
     """
     repo = RawEmailDumpRepository(db)
-    existing = _require_existing(repo, message_id)
-    return repo.upsert_by_key(
-        {"message_id": message_id},
-        {
-            "label_error": reason,
-            "label_attempts": existing.get("label_attempts", 0) + 1,
-            "label_claimed_at": "",
-        },
-    )
+    existing = repo.find_one({"message_id": message_id})
+    if existing is None:
+        raise ValueError(f"no raw-dumped email found for message_id={message_id!r}")
+    set_fields = {
+        "label_error": reason,
+        "label_attempts": existing.get("label_attempts", 0) + 1,
+        "label_claimed_at": "",
+        "claim_id": None,
+    }
+    updated = repo.update_if_claim_matches(message_id, claim_id, set_fields)
+    if updated is not None:
+        return updated
+    return {"ok": False, "reason": "claim_lost"}
 
 
 def get_unsynced_labels(db: Database, limit: int = 10) -> list[JsonDoc]:
@@ -388,4 +432,20 @@ def get_unsynced_labels(db: Database, limit: int = 10) -> list[JsonDoc]:
     repo = RawEmailDumpRepository(db)
     return repo.find_many(
         {"gmail_label_synced": False}, limit=limit, sort=[("labelled_at", 1), ("message_id", 1)]
+    )
+
+
+def get_stuck_emails(db: Database, limit: int = 20) -> list[JsonDoc]:
+    """Every raw-dumped email that tripped the circuit breaker
+    (label_attempts >= _MAX_LABEL_ATTEMPTS) -- SKILL.md promises these stop
+    being returned by either claim tool "until a human reviews it
+    directly", but until this tool existed there was no way to actually
+    FIND them through the MCP surface (only direct DB access could). Purely
+    read-only -- recovery (resetting label_attempts) is deliberately NOT an
+    MCP tool, see scripts/reset_stuck.py, a local-only dry-run-by-default
+    script, never reachable from a scheduled task.
+    """
+    repo = RawEmailDumpRepository(db)
+    return repo.find_many(
+        {"label_attempts": {"$gte": _MAX_LABEL_ATTEMPTS}}, limit=limit, sort=[("message_id", 1)]
     )

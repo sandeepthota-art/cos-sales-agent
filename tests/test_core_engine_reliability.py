@@ -160,9 +160,9 @@ def test_abandoned_claim_becomes_reclaimable_after_ttl_expires(db):
 def test_mark_failed_increments_attempts_and_releases_claim(db):
     settings = _settings()
     _ingest(db, settings, "MSG-FAIL")
-    tools.get_next_unprocessed_raw_email(db)  # claim it first
+    claimed = tools.get_next_unprocessed_raw_email(db)  # claim it first
 
-    result = tools.mark_raw_email_label_failed(db, "MSG-FAIL", "garbled body")
+    result = tools.mark_raw_email_label_failed(db, "MSG-FAIL", "garbled body", claim_id=claimed["claim_id"])
 
     assert result["label_attempts"] == 1
     assert result["label_error"] == "garbled body"
@@ -177,7 +177,7 @@ def test_email_stops_being_claimable_after_max_attempts(db):
     for _ in range(tools._MAX_LABEL_ATTEMPTS):
         claimed = tools.get_next_unprocessed_raw_email(db)
         assert claimed is not None
-        tools.mark_raw_email_label_failed(db, "MSG-STUCK", "still garbled")
+        tools.mark_raw_email_label_failed(db, "MSG-STUCK", "still garbled", claim_id=claimed["claim_id"])
 
     assert tools.get_next_unprocessed_raw_email(db) is None  # circuit breaker tripped
 
@@ -185,11 +185,11 @@ def test_email_stops_being_claimable_after_max_attempts(db):
 def test_persist_label_resets_the_attempts_counter(db):
     settings = _settings()
     _ingest(db, settings, "MSG-RECOVERED")
-    tools.get_next_unprocessed_raw_email(db)
-    tools.mark_raw_email_label_failed(db, "MSG-RECOVERED", "first attempt failed")
+    first_claim = tools.get_next_unprocessed_raw_email(db)
+    tools.mark_raw_email_label_failed(db, "MSG-RECOVERED", "first attempt failed", claim_id=first_claim["claim_id"])
 
     claimed = tools.get_next_unprocessed_raw_email(db)
-    result = tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only")
+    result = tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only", claim_id=claimed["claim_id"])
 
     assert result["label_attempts"] == 0
 
@@ -201,7 +201,7 @@ def test_persist_label_makes_the_email_no_longer_claimable(db):
     settings = _settings()
     _ingest(db, settings, "MSG-DONE")
     claimed = tools.get_next_unprocessed_raw_email(db)
-    tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only")
+    tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only", claim_id=claimed["claim_id"])
 
     assert tools.get_next_unprocessed_raw_email(db) is None
 
@@ -351,7 +351,7 @@ def test_ingest_is_idempotent_and_never_resets_existing_classification_progress(
     settings = _settings()
     _ingest(db, settings, "MSG-DUP")
     claimed = tools.get_next_unprocessed_raw_email(db)
-    tools.persist_raw_email_label(db, claimed["message_id"], "1. Delete")
+    tools.persist_raw_email_label(db, claimed["message_id"], "1. Delete", claim_id=claimed["claim_id"])
 
     # Re-ingesting the SAME Gmail message (e.g. a sliding-window overlap re-read).
     result = _ingest(db, settings, "MSG-DUP")

@@ -75,23 +75,34 @@ def get_next_unprocessed_raw_email_batch(batch_size: int = 10) -> list[JsonDoc]:
 
 
 @mcp.tool()
-def persist_raw_email_label(message_id: str, label_applied: EmailLabel) -> JsonDoc:
+def persist_raw_email_label(message_id: str, label_applied: EmailLabel, claim_id: str | None = None) -> JsonDoc:
     """Records the classification label YOU already decided for one
     raw-dumped email. Overwrites the current label but appends to
     label_history for audit. Sets gmail_label_synced=False -- after updating
     the real Gmail label to match, call mark_gmail_label_synced to confirm
-    it. Raises if message_id doesn't exist.
+    it.
+
+    claim_id must be the claim_id field from whichever claim call (
+    get_next_unprocessed_raw_email(_batch)) handed you this message_id --
+    compare-and-swap, not an unconditional write. Returns
+    {"ok": false, "reason": "claim_lost"} instead of writing if claim_id no
+    longer matches (lease expired and reclaimed, or invalidated by a
+    concurrent reopen/auto-close). Raises only if message_id doesn't exist
+    at all.
     """
-    return tools.persist_raw_email_label(_get_db(), message_id, label_applied)
+    return tools.persist_raw_email_label(_get_db(), message_id, label_applied, claim_id)
 
 
 @mcp.tool()
-def mark_raw_email_label_failed(message_id: str, reason: str) -> JsonDoc:
+def mark_raw_email_label_failed(message_id: str, reason: str, claim_id: str | None = None) -> JsonDoc:
     """Records that classification was attempted but could not be completed.
-    Releases the claim for retry, up to 3 attempts. Raises if message_id
-    doesn't exist.
+    Releases the claim for retry, up to 3 attempts.
+
+    claim_id compare-and-swap, same contract as persist_raw_email_label --
+    returns {"ok": false, "reason": "claim_lost"} if claim_id no longer
+    matches. Raises only if message_id doesn't exist at all.
     """
-    return tools.mark_raw_email_label_failed(_get_db(), message_id, reason)
+    return tools.mark_raw_email_label_failed(_get_db(), message_id, reason, claim_id)
 
 
 @mcp.tool()
@@ -128,6 +139,17 @@ def get_unsynced_labels(limit: int = 10) -> list[JsonDoc]:
     mark_gmail_label_synced once that succeeds.
     """
     return tools.get_unsynced_labels(_get_db(), limit)
+
+
+@mcp.tool()
+def get_stuck_emails(limit: int = 20) -> list[JsonDoc]:
+    """Every raw-dumped email that tripped the circuit breaker
+    (3 failed classification attempts) -- these stop being returned by
+    get_next_unprocessed_raw_email(_batch) until reviewed. Read-only; does
+    NOT reset anything. Recovery is deliberately not an MCP tool -- see
+    scripts/reset_stuck.py (local-only, dry-run by default).
+    """
+    return tools.get_stuck_emails(_get_db(), limit)
 
 
 def main() -> None:
