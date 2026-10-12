@@ -21,6 +21,19 @@ Requires `context-building` (stage 2) to have already run for this
 `message_id` before `ingest_email` canonicalized it to an `EML-nnn` id) --
 `label_message` needs the real Gmail id, never the canonical one.
 
+**Finding candidates for a scheduled/batch sweep:** when discovering which
+emails are ready for this stage (e.g. via `list_processed_emails`), filter
+on `processing_status.stage == "CONTEXT_BUILT"` -- **never**
+`"MEETING_PROCESSED"`. `context-building`'s own last call,
+`persist_context_delta`, is what sets the email's actual resting stage to
+`CONTEXT_BUILT`; `persist_email_analysis` (context-building's *first* call)
+passes through `MEETING_PROCESSED` on its way there, as one of several
+intermediate stages it sets internally, but that value is immediately
+superseded within the same context-building run and never persists. An
+email that has genuinely finished stage 2 will be sitting at
+`CONTEXT_BUILT`, not `MEETING_PROCESSED` -- filtering on the latter finds
+nothing, every time, regardless of how many emails are actually ready.
+
 ## Hard rules
 
 - **Decide `label_applied` using the criteria in "The six label values and
