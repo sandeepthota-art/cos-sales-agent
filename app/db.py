@@ -23,6 +23,17 @@ def initialize_indexes(db: Database) -> None:
     db.raw_emails_dump.create_index([("classification_version", 1), ("sort_key", 1)])
     # Backs the skill's end-of-run label breakdown.
     db.raw_emails_dump.create_index("label_applied")
+    # Backs claim_next_context_candidate's filter+sort shape, same reasoning
+    # as the classification_version index above, for the independent
+    # Phase 4 context-claim lifecycle.
+    db.raw_emails_dump.create_index([("context_version", 1), ("thread_id", 1), ("sort_key", 1)])
+    # observations is append-only; this unique index is what makes
+    # ObservationRepository.append idempotent -- re-persisting the exact
+    # same fact (same entity/attribute/value/source message) is a no-op.
+    db.observations.create_index(
+        [("entity_type", 1), ("entity_key", 1), ("attribute", 1), ("value_hash", 1), ("source_message_id", 1)],
+        unique=True,
+    )
 
 
 def initialize_database(client: MongoClient, database_name: str) -> Database:
@@ -153,28 +164,39 @@ class RawEmailDumpRepository(_BaseRepository):
         return claimed
 
     def update_if_claim_matches(
-        self, message_id: str, claim_id: str | None, set_fields: JsonDoc, push_fields: JsonDoc | None = None
+        self,
+        message_id: str,
+        claim_id: str | None,
+        set_fields: JsonDoc,
+        push_fields: JsonDoc | None = None,
+        claim_field: str = "claim_id",
     ) -> JsonDoc | None:
         """Compare-and-swap: only applies set_fields (and push_fields, each
-        appended via $push) if the document's CURRENT claim_id still equals
-        claim_id. Returns the resulting document, or None if claim_id no
+        appended via $push) if the document's CURRENT claim_field still
+        equals claim_id. Returns the resulting document, or None if it no
         longer matches -- the claim was lost (lease expired and reclaimed,
         or invalidated by a concurrent reopen/auto-close). The caller (see
-        app.tools.persist_raw_email_label/mark_raw_email_label_failed) is
-        responsible for distinguishing "claim lost" from "message_id doesn't
-        exist at all" -- this method returns None for both, on purpose (it
-        has no business-meaning knowledge, same boundary as the rest of this
-        class).
+        app.tools.persist_raw_email_label/mark_raw_email_label_failed, and
+        app.context's context-claim release/failure paths via
+        claim_field="context_claim_id") is responsible for distinguishing
+        "claim lost" from "message_id doesn't exist at all" -- this method
+        returns None for both, on purpose (it has no business-meaning
+        knowledge, same boundary as the rest of this class).
+
+        claim_field defaults to "claim_id" (the label-claim lineage this
+        method was built for) -- app.context passes "context_claim_id" so
+        the two independent claim lifecycles (label vs. context) never read
+        or write each other's fencing token.
 
         Uses BEFORE, not AFTER, and reconstructs the after-state manually --
         same documented mongomock-AFTER-bug workaround as claim_next_unclassified,
-        since the query filters on claim_id and set_fields may include a new
-        claim_id (the exact same-field-filtered-and-set combination)."""
+        since the query filters on claim_field and set_fields may include a
+        new value for it (the exact same-field-filtered-and-set combination)."""
         update: JsonDoc = {"$set": set_fields}
         if push_fields:
             update["$push"] = push_fields
         before = self._collection.find_one_and_update(
-            {"message_id": message_id, "claim_id": claim_id},
+            {"message_id": message_id, claim_field: claim_id},
             update,
             return_document=ReturnDocument.BEFORE,
             projection={"_id": 0},
@@ -204,6 +226,80 @@ class RawEmailDumpRepository(_BaseRepository):
             return_document=ReturnDocument.AFTER,
             projection={"_id": 0},
         )
+
+    def claim_next_context_candidate(
+        self, claim_cutoff_iso: str, max_attempts: int, claim_id: str, now_iso: str, thread_id: str | None = None
+    ) -> JsonDoc | None:
+        """Atomically finds AND claims the oldest (by sort_key) message
+        eligible for context extraction -- same BEFORE-workaround and same
+        fencing-token shape as claim_next_unclassified, but against the
+        context_* fields, which are fully independent of the label_*
+        claim lifecycle (a message can be label-claimed and
+        context-claimed at the same time; neither path reads the other's
+        fields).
+
+        Eligible: context_version == 0, context_attempts < max_attempts,
+        context_claimed_at < claim_cutoff_iso (unclaimed sorts before any
+        real timestamp, same "" sentinel trick as the label claim).
+        history_only docs ARE eligible here (Phase 4 principle: "history_only
+        docs ARE eligible for context") -- deliberately no history_only
+        filter, unlike claim_next_unclassified.
+
+        When thread_id is given, the claim is scoped to that thread -- this
+        is how claim_thread_for_context extends an already-won anchor claim
+        to the rest of its thread without ever being able to pick a
+        different thread. Making the anchor claim (thread_id=None) itself
+        atomic is what guarantees two concurrent claimers land on disjoint
+        threads: each can only ever win ONE specific document via this one
+        atomic op, so two callers can't both anchor on the same thread.
+        """
+        query: JsonDoc = {
+            "context_version": 0,
+            "context_attempts": {"$lt": max_attempts},
+            "context_claimed_at": {"$lt": claim_cutoff_iso},
+        }
+        if thread_id is not None:
+            query["thread_id"] = thread_id
+        before = self._collection.find_one_and_update(
+            query,
+            {"$set": {"context_claimed_at": now_iso, "context_claim_id": claim_id}},
+            sort=[("sort_key", 1)],
+            return_document=ReturnDocument.BEFORE,
+            projection={"_id": 0},
+        )
+        if before is None:
+            return None
+        before["context_claimed_at"] = now_iso
+        before["context_claim_id"] = claim_id
+        return before
+
+    def claim_thread_for_context(
+        self, claim_cutoff_iso: str, max_attempts: int, claim_id: str, now_iso: str, max_messages: int
+    ) -> list[JsonDoc]:
+        """Claims one whole thread's unprocessed messages for context
+        extraction: an atomic anchor claim (whichever thread holds the
+        oldest eligible message) followed by a loop of atomic claims scoped
+        to that thread_id, up to max_messages, all sharing one claim_id --
+        same loop-of-atomic-claims shape as claim_batch_unclassified.
+        Returns [] if nothing is eligible anywhere. If the anchor message
+        has no thread_id at all, returns just that one message (a thread of
+        one)."""
+        anchor = self.claim_next_context_candidate(claim_cutoff_iso, max_attempts, claim_id, now_iso)
+        if anchor is None:
+            return []
+        claimed = [anchor]
+        thread_id = anchor.get("thread_id")
+        if thread_id is None:
+            return claimed
+        for _ in range(max_messages - 1):
+            doc = self.claim_next_context_candidate(claim_cutoff_iso, max_attempts, claim_id, now_iso, thread_id=thread_id)
+            if doc is None:
+                break
+            claimed.append(doc)
+        return claimed
+
+    def find_by_context_claim_id(self, claim_id: str) -> list[JsonDoc]:
+        return list(self._collection.find({"context_claim_id": claim_id}, {"_id": 0}).sort("sort_key", 1))
 
     def siblings_in_thread(self, thread_id: str, exclude_message_id: str) -> list[JsonDoc]:
         """Every OTHER raw-dumped email in this thread, oldest first -- the

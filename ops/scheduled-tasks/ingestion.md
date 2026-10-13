@@ -56,6 +56,12 @@ that runs unattended most often.
 
 ## Forbidden
 
+All 4 context-building tools (`claim_next_thread_for_context`,
+`persist_context_delta`, `mark_context_failed`, `get_stuck_context`) —
+this task never touches context fields; context building is a separate
+scheduled task with its own skill (`skills/context-building/SKILL.md`,
+`ops/scheduled-tasks/context-building.md`).
+
 `send`, `reply`, `forward`, `trash`, `mark spam`, Gmail-side `delete`,
 draft creation, and label-related tools of ANY kind — `list_labels`,
 `label_message`, `unlabel_message`, `create_label`, `update_label`,
@@ -88,7 +94,10 @@ tells you to do.
    entries automatically.
 3. Never call any labeling tool (get_next_unprocessed_raw_email(_batch),
    persist_raw_email_label, mark_raw_email_label_failed,
-   get_unsynced_labels) in this task -- that's a separate scheduled task.
+   get_unsynced_labels) or any context-building tool
+   (claim_next_thread_for_context, persist_context_delta,
+   mark_context_failed, get_stuck_context) in this task -- those are
+   separate scheduled tasks.
 
 Report: window used, how many Gmail messages the broader search
 returned, how many fell inside the precise window, newly ingested vs.

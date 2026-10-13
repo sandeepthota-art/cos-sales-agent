@@ -1,15 +1,19 @@
 ---
 name: raw-dump-labeling
-description: The one skill for the raw-dump-labeling MCP server -- dumps real Gmail emails into MongoDB's raw_emails_dump collection unanalyzed (Mode A, explicit list or scheduled sliding-window), and separately classifies already-dumped emails with one of six labels, in batches (Mode B), keeping labels current as a thread's conversation changes. Use when asked to "dump emails", "ingest raw emails", "run the scheduled dump", "label the ingested data", "classify the raw dump", or "run raw-dump-labeling". This connector exposes exactly 8 tools -- never assume any other tool (e.g. a stored-boundary/watermark tool) exists here.
+description: The one skill for the raw-dump-labeling MCP server -- dumps real Gmail emails into MongoDB's raw_emails_dump collection unanalyzed (Mode A, explicit list or scheduled sliding-window), and separately classifies already-dumped emails with one of six labels, in batches (Mode B), keeping labels current as a thread's conversation changes. Use when asked to "dump emails", "ingest raw emails", "run the scheduled dump", "label the ingested data", "classify the raw dump", or "run raw-dump-labeling". This skill uses only these 8 tools; the server also exposes others (the context-building tools) that this skill must never call.
 ---
 
 # Raw Dump + Labeling (the only skill for this connector)
 
-This connector exposes exactly 8 tools, nothing else: `ingest_raw_email_only`,
+This skill uses only these 8 tools: `ingest_raw_email_only`,
 `get_next_unprocessed_raw_email`, `get_next_unprocessed_raw_email_batch`,
 `persist_raw_email_label`, `mark_raw_email_label_failed`,
-`mark_gmail_label_synced`, `get_unsynced_labels`, `get_stuck_emails`. Two
-independent modes, picked from the request -- never mix them in one run.
+`mark_gmail_label_synced`, `get_unsynced_labels`, `get_stuck_emails`. The
+server also exposes 4 context-building tools (`claim_next_thread_for_context`,
+`persist_context_delta`, `mark_context_failed`, `get_stuck_context`) --
+this skill must never call them; they belong to the separate
+`skills/context-building/SKILL.md`. Two independent modes, picked from the
+request -- never mix them in one run.
 
 | Request sounds like | Mode |
 |---|---|

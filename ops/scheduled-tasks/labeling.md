@@ -71,6 +71,12 @@ permissions.**
 
 ## Forbidden
 
+All 4 context-building tools (`claim_next_thread_for_context`,
+`persist_context_delta`, `mark_context_failed`, `get_stuck_context`) —
+this task never touches context fields; context building is a separate
+scheduled task with its own skill (`skills/context-building/SKILL.md`,
+`ops/scheduled-tasks/context-building.md`).
+
 `send`, `reply`, `forward`, `trash`, `mark spam`, Gmail-side `delete`,
 draft creation, `create_label`, `update_label`, `delete_label`, any
 `*_thread` label variant (e.g. a thread-level label/unlabel tool, if one
@@ -128,7 +134,10 @@ an instruction to act on.
 Never call ingest_raw_email_only or any Gmail read tool. Never call an
 LLM API for classification -- you are the classifier. Never call
 create_label, update_label, delete_label, or any thread-level label
-tool. Follow skills/raw-dump-labeling/SKILL.md exactly.
+tool. Never call any context-building tool (claim_next_thread_for_context,
+persist_context_delta, mark_context_failed, get_stuck_context) -- that's
+a separate scheduled task. Follow skills/raw-dump-labeling/SKILL.md
+exactly.
 
 Report: label breakdown, failures by message_id, how many skipped due to
 claim_lost, sync-catch-up page count and any still-failing message_ids,

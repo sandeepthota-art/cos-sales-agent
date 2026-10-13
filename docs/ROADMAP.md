@@ -47,11 +47,15 @@ Phase tracker. Checkboxes reflect verified state as of 2026-10-13 (see `docs/BAS
 
 ## Phase 4 — Complete the context model
 
-- [ ] Thread status (active/waiting/resolved) — does not exist here or in cos-sales-agent (`ThreadContext` has no such field either, per cos-sales-agent's own audit).
-- [ ] Email intent/sentiment — does not exist here; cos-sales-agent has `intent` (free text) but no `sentiment` field at all.
-- [ ] Person-org link with validity period — no Person/Organization entities exist here yet at all (`docs/CARRYOVER.md` #1/#2, both SKIPPED for now).
-- [ ] Rebuildable profiles — no profile concept exists here yet.
-- [ ] Decide the `raw_emails_dump` vs. future `emails`/context collection relationship (see `docs/DECISIONS.md` open question #1) before starting this phase.
+Done 2026-10-13. See `docs/PHASE4_DESIGN.md` for the full design (collections,
+tools, rules, deviations) and `docs/DECISIONS.md`'s decision log entry.
+
+- [x] Thread status (active/waiting_on_us/waiting_on_them/resolved/unknown) — `threads.status`, set via `persist_context_delta`.
+- [x] Email intent/sentiment — `email_insights.intent`/`.sentiment`/`.sender_type`, one doc per message.
+- [x] Person-org link with validity period — `person_org_links` (`valid_from`/`valid_to`, `valid_to` set only on evidenced departure, never by a domain change alone).
+- [x] Rebuildable profiles — `people`/`organizations.profile` rebuilt from the append-only `observations` log (latest `observed_at` wins); `scripts/rebuild_profiles.py` reproduces this from scratch.
+- [x] Decide the `raw_emails_dump` vs. future `emails`/context collection relationship — closed, `docs/DECISIONS.md` closed question #1: read directly, no canonical id, no separate collection.
+- [ ] Deferred (not in this phase, see `docs/PHASE4_DESIGN.md`'s deferred-items table): weekly consolidation pass, relabel-on-context-arrival/`label_basis`, a run log, a sender-type gate in labeling.
 
 ## Phase 5 — Evaluation (golden set)
 

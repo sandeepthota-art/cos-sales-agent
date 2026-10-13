@@ -1,7 +1,35 @@
 # Scheduled tasks
 
-Two real scheduled tasks today: `ingestion.md` (Mode A), `labeling.md`
-(Mode B + sync catch-up). `context-building.md` is a stub — not built.
+Three real scheduled tasks: `ingestion.md` (Mode A, hourly), `labeling.md`
+(Mode B + sync catch-up, hourly), and `context-building.md` (every 2
+hours). All three are independent — separate claim fields, separate
+tool allowlists, none reads or writes another's state.
+
+## Stagger schedule
+
+Offset each task's start time so no two ever fire in the same minute:
+
+| Task | Cadence | Offset |
+|---|---|---|
+| Ingestion | hourly | `:00` |
+| Labeling | hourly | `:30` |
+| Context building | every 2 hours | `:15` |
+
+This is a scheduling convenience, not a correctness requirement — each
+task's own claim/lease or compare-and-swap mechanism is what actually
+makes concurrent/overlapping runs safe (see each task's own "Concurrency
+expectations" section). Staggering just keeps runs from competing for the
+same MongoDB connections/CPU at the same instant.
+
+## Installing the context-building skill
+
+`skills/context-building/SKILL.md` is new -- like any `SKILL.md` change,
+it must be (re-)installed in Claude Desktop (Settings → Connectors → the
+raw-dump-labeling connector → Skills, or wherever this Claude Desktop
+version surfaces skill installation) before the context-building
+scheduled task's prompt can use it. The same applies any time
+`skills/raw-dump-labeling/SKILL.md` or `skills/context-building/SKILL.md`
+changes -- Claude Desktop does not hot-reload a skill file from disk.
 
 ## One-time setup: create the six Gmail labels manually
 

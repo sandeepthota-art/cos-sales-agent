@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pymongo.database import Database
 
 from app.config import Settings
+from app.context_db import ThreadRepository
 from app.db import JsonDoc, RawEmailDumpRepository
 from app.models import Email, EmailLabel
 from app.text_clean import strip_quotes_and_signature
@@ -155,6 +156,22 @@ def _clear_active_claims_in_thread(repo: RawEmailDumpRepository, thread_id: str,
     )
 
 
+def _flag_rebuild_if_out_of_order(db: Database, repo: RawEmailDumpRepository, thread_id: str, new_sort_key: str) -> None:
+    """Phase 4: a newly-ingested message whose sort_key is EARLIER than its
+    thread's previously-recorded last_message_sort_key means the context
+    layer already summarized this thread without having seen this message.
+    Flags threads.needs_rebuild and resets context_version=0 for every
+    message of the thread so it's fully reprocessed -- safe because
+    observations dedupe via their unique index. Never touches any label
+    field -- context_version is independent of classification_version."""
+    thread_doc = ThreadRepository(db).find(thread_id)
+    if thread_doc is None:
+        return
+    if new_sort_key < thread_doc.get("last_message_sort_key", ""):
+        ThreadRepository(db).upsert(thread_id, {"needs_rebuild": True})
+        repo.update_many_by_key({"thread_id": thread_id}, {"context_version": 0})
+
+
 def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> JsonDoc:
     """Pure persistence, zero analysis. Stores the raw Gmail email exactly as
     received into its own `raw_emails_dump` collection. Idempotent: upserts by
@@ -212,6 +229,15 @@ def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> Jso
             # sync with -- True (in sync) until persist_raw_email_label/the
             # auto-close path below sets it False.
             "gmail_label_synced": True,
+            # Phase 4 context-claim lifecycle -- fully independent of the
+            # label fields above (separate claim_id, separate version,
+            # separate attempt counter). "" is the same "not currently
+            # claimed" sentinel as label_claimed_at.
+            "context_version": 0,
+            "context_claim_id": None,
+            "context_claimed_at": "",
+            "context_attempts": 0,
+            "context_last_error": None,
         }
         if not document.get("thread_id"):
             candidates = build_thread_candidates(repo.find_many({}))
@@ -233,6 +259,7 @@ def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> Jso
     thread_id = result.get("thread_id")
     if thread_id:
         _clear_active_claims_in_thread(repo, thread_id, result["message_id"])
+        _flag_rebuild_if_out_of_order(db, repo, thread_id, result["sort_key"])
         if is_from_agent:
             closed_ids = _close_open_needs_reply_in_thread(repo, thread_id, result["message_id"], _now_iso())
         else:
