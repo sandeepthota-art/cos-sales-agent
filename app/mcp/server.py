@@ -672,6 +672,17 @@ def check_profile_eligibility(person_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_person_story_history(person_id: str) -> list[dict[str, Any]]:
+    """Milestone 2: returns this person's committed story versions, oldest
+    first -- version number, summary, source_email_ids/source_snapshot_ids,
+    created_at, change_reason. Never returns a "pending" (interrupted-write)
+    version -- only fully committed history. Empty list means no versioned
+    history yet, not an error. Raises ValueError if person_id doesn't exist.
+    """
+    return tools.get_person_story_history(_get_db(), person_id)
+
+
+@mcp.tool()
 def mark_profile_generation_failed(person_id: str, reason: str) -> dict[str, Any]:
     """Call this if check_profile_eligibility said eligible=True but you were
     unable to actually compose and persist a profile (ambiguous/conflicting
@@ -701,7 +712,16 @@ def persist_person_profile(
     returned, for traceability -- optional, backward-compatible, omitting it
     leaves the person's existing value unchanged. Sets
     profile_status="generated" -- this is the only tool that does, and only
-    once this write actually succeeds. Raises ValueError if person_id
+    once this write actually succeeds.
+
+    Milestone 2: also evaluates whether this represents meaningful new
+    evidence and, if so, creates a new person_story_versions row before
+    updating this person's current profile -- never automatically, and
+    never merely because this tool was called again with the same evidence.
+    The returned dict includes story_version_created (bool),
+    story_version (the current version number either way), and
+    story_version_change_reason. Call get_person_story_history separately
+    to read the full version history. Raises ValueError if person_id
     doesn't exist.
     """
     return tools.persist_person_profile(

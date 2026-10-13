@@ -24,6 +24,7 @@ from app.database.repositories import (
     OrganizationRepository,
     PersonalItemRepository,
     PersonRepository,
+    PersonStoryVersionRepository,
     ProjectRepository,
     RawEmailDumpRepository,
     ReplyDraftRepository,
@@ -31,6 +32,7 @@ from app.database.repositories import (
 )
 from app.email.models import Email, parse_email
 from app.entities.person_context import enrich_person_context_from_email
+from app.entities.person_story import persist_story_version
 from app.entities.profile_eligibility import check_profile_eligibility as _check_profile_eligibility
 from app.entities.profile_eligibility import mark_profile_generation_failed as _mark_profile_generation_failed
 from app.entities.resolution import resolve_canonical_person_for_email
@@ -1350,6 +1352,20 @@ def mark_profile_generation_failed(db: Database, person_id: str, reason: str) ->
     return _mark_profile_generation_failed(db, person_id, reason)
 
 
+def get_person_story_history(db: Database, person_id: str) -> list[dict[str, Any]]:
+    """Milestone 2: returns this person's committed story versions, oldest
+    first (chronological -- the actual "story", not a reverse-chron feed).
+    Only commit_status="committed" rows are ever returned -- a "pending" row
+    left by an interrupted write (see app.entities.person_story) is never
+    mistaken for real history. Empty list for a person with no versioned
+    history yet (never an error). Raises ValueError if person_id doesn't
+    exist.
+    """
+    if PersonRepository(db).find_one({"id": person_id}) is None:
+        raise ValueError(f"no person found for person_id={person_id!r}")
+    return PersonStoryVersionRepository(db).all_committed_for_person(person_id)
+
+
 def persist_person_profile(
     db: Database,
     person_id: str,
@@ -1381,12 +1397,28 @@ def persist_person_profile(
     is ever set, i.e. "generated" is claimed only once this write actually
     succeeds, never merely because generation was attempted.
 
+    Milestone 2: before touching the `people` collection at all, the
+    resolved summary is run through app.entities.person_story.
+    persist_story_version, which decides (deterministically -- see that
+    module) whether this represents meaningful new evidence and, if so,
+    writes a new person_story_versions row. people.profile_summary is only
+    ever updated AFTER that write has fully committed -- it can never point
+    at an uncommitted version. The returned dict gains
+    story_version_created/story_version/story_version_change_reason;
+    nothing is written onto the Person document for these -- they are
+    call-result metadata only, not a new field on Person.
+
     Raises ValueError if person_id doesn't exist.
     """
     repo = PersonRepository(db)
     person = repo.find_one({"id": person_id})
     if person is None:
         raise ValueError(f"no person found for person_id={person_id!r}")
+
+    resolved_summary = profile_summary if profile_summary is not None else person.get("profile_summary")
+    story_result: dict[str, Any] = {"version_created": False, "version": None, "change_reason": None}
+    if resolved_summary is not None:
+        story_result = persist_story_version(db, person_id, resolved_summary, source_email_ids)
 
     # Every field is written explicitly (even when left unchanged), not just
     # the ones that got a new value -- so the returned/stored document always
@@ -1407,7 +1439,12 @@ def persist_person_profile(
     }
 
     repo.upsert_by_key({"id": person_id}, {**person, **update})
-    return {**person, **update}
+    return {
+        **person, **update,
+        "story_version_created": story_result["version_created"],
+        "story_version": story_result["version"],
+        "story_version_change_reason": story_result["change_reason"],
+    }
 
 
 def persist_organization_research(

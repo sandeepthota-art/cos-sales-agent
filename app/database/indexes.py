@@ -91,6 +91,13 @@ def initialize_indexes(db: Database) -> None:
     )
     db.person_context_snapshots.create_index([("person_id", 1), ("created_at", 1)])
 
+    # Milestone 2 (person_story_versions): the race-breaker for concurrent
+    # version creation -- app.entities.person_story relies on this index
+    # raising DuplicateKeyError (not just documentation) when two callers
+    # both compute the same next version number for the same person.
+    db.person_story_versions.create_index("id", unique=True)
+    db.person_story_versions.create_index([("person_id", 1), ("version", 1)], unique=True)
+
     db.thread_events.create_index("id", unique=True)
     # The idempotency guarantee (Thread Events, Phase 3): at most one event per
     # logical (thread, email, event_type, entity_type, entity_id) operation --

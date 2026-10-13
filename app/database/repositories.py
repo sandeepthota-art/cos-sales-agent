@@ -260,6 +260,65 @@ class PersonContextSnapshotRepository(_BaseRepository):
         total, not a capped recent window."""
         return list(self._collection.find({"person_id": person_id}, {"_id": 0}))
 
+    def find_for_email(self, person_id: str, source_email_id: str) -> dict[str, Any] | None:
+        return self._collection.find_one(
+            {"person_id": person_id, "source_email_id": source_email_id}, {"_id": 0}
+        )
+
+
+class PersonStoryVersionRepository(_BaseRepository):
+    """Milestone 2: versioned person-story history, additive and separate
+    from people.profile_summary (the current-version pointer) and from
+    person_context_snapshots (per-email structured evidence, a different
+    concept). See app.entities.person_story.
+    """
+
+    collection_name = "person_story_versions"
+
+    def all_committed_for_person(self, person_id: str) -> list[dict[str, Any]]:
+        """Chronological (oldest first) -- only commit_status="committed" rows;
+        a "pending" row from an interrupted write is never returned here."""
+        return list(
+            self._collection.find(
+                {"person_id": person_id, "commit_status": "committed"}, {"_id": 0}
+            ).sort("version", 1)
+        )
+
+    def latest_committed_for_person(self, person_id: str) -> dict[str, Any] | None:
+        docs = list(
+            self._collection.find(
+                {"person_id": person_id, "commit_status": "committed"}, {"_id": 0}
+            ).sort("version", -1).limit(1)
+        )
+        return docs[0] if docs else None
+
+    def pending_for_person(self, person_id: str) -> list[dict[str, Any]]:
+        return list(
+            self._collection.find({"person_id": person_id, "commit_status": "pending"}, {"_id": 0})
+        )
+
+    def insert_pending(self, document: dict[str, Any]) -> None:
+        """A true insert, never an upsert -- so a race between two callers
+        both computing the same next version number raises DuplicateKeyError
+        (backed by the unique (person_id, version) index), rather than one
+        silently overwriting the other."""
+        self._collection.insert_one(dict(document))
+
+    def set_commit_status(self, person_id: str, version: int, commit_status: str) -> None:
+        self._collection.update_one(
+            {"person_id": person_id, "version": version}, {"$set": {"commit_status": commit_status}}
+        )
+
+    def mark_superseded(self, person_id: str, version: int) -> None:
+        self._collection.update_one(
+            {"person_id": person_id, "version": version}, {"$set": {"superseded": True}}
+        )
+
+    def delete_pending(self, person_id: str, version: int) -> None:
+        self._collection.delete_one(
+            {"person_id": person_id, "version": version, "commit_status": "pending"}
+        )
+
 
 class ThreadEventRepository(_BaseRepository):
     collection_name = "thread_events"

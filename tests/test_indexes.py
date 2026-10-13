@@ -39,6 +39,9 @@ def test_initialize_indexes_creates_expected_unique_indexes():
     }
     assert index_keys("ingested_files") == {(("filename", 1),): True}
     assert index_keys("raw_emails_dump") == {(("source_message_id", 1),): True}
+    assert index_keys("person_story_versions") == {
+        (("id", 1),): True, (("person_id", 1), ("version", 1)): True,
+    }
 
 
 def test_initialize_indexes_creates_opportunities_unique_id_index():
