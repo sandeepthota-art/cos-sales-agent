@@ -29,6 +29,7 @@ from app.email.models import Email, parse_email
 from app.email.normalizer import normalize_email, normalize_subject
 from app.email.threading import ThreadCandidate, resolve_thread_id
 from app.entities.dates import classify_follow_up_timing, resolve_date_phrase
+from app.entities.evidence_validation import filter_validated_person_facts
 from app.entities.extraction import envelope_people
 from app.entities.ids import next_id
 from app.entities.person_context import enrich_person_context_from_email, get_bounded_person_context_for_llm
@@ -114,30 +115,41 @@ def _upsert_thread(
     system reference `thread_id`, never `threads.id`). Not written on new
     documents anymore; existing documents still carrying it are cleaned up by
     `scripts/remove_thread_id_field.py`, not by this function.
+
+    Concurrency-safety audit: adding this email's contribution to an
+    ALREADY-RESOLVED existing thread is the race-prone case -- two different
+    emails in the same thread, processed concurrently, both reading the same
+    `existing` snapshot and then each independently $set-ing a full merged
+    document would silently lose whichever one wrote second. That branch now
+    uses ThreadRepository.merge_message_atomic ($addToSet/$max) instead of a
+    read-modify-write. Creating a BRAND NEW thread has no equivalent race --
+    next_id() is atomic and a freshly minted thread_id can never collide with
+    a concurrent caller's -- so that branch is unchanged. The array fields are
+    no longer guaranteed sorted (a set, not sorted-list, data shape to begin
+    with; confirmed no reader anywhere depends on their order).
     """
     existing = thread_repo.find_one({"thread_id": resolved_thread_id}) if resolved_thread_id else None
-    participant_emails = set(existing["participant_emails"]) if existing else set()
-    message_ids = set(existing.get("message_ids", [])) if existing else set()
-    source_message_ids = set(existing.get("source_message_ids", [])) if existing else set()
+    participant_emails = sorted({email.from_.email, *(a.email for a in email.to), *(a.email for a in email.cc)})
 
-    participant_emails |= {email.from_.email, *(a.email for a in email.to), *(a.email for a in email.cc)}
-    message_ids.add(email.message_id)
-    source_message_ids.add(email.source_message_id)
+    if existing is not None:
+        thread_repo.merge_message_atomic(
+            thread_id=existing["thread_id"],
+            participant_emails=participant_emails,
+            message_id=email.message_id,
+            source_message_id=email.source_message_id,
+            last_message_at_iso=email.timestamp.isoformat(),
+        )
+        return existing["thread_id"]
 
-    last_message_at = email.timestamp
-    if existing:
-        existing_last = datetime.fromisoformat(existing["last_message_at"])
-        last_message_at = max(last_message_at, existing_last)
-
-    thread_id = existing["thread_id"] if existing else next_id(db, "THR-")
+    thread_id = next_id(db, "THR-")
     document = {
         "thread_id": thread_id,
-        "source_thread_id": existing.get("source_thread_id") if existing else email.source_thread_id,
-        "normalized_subject": existing["normalized_subject"] if existing else normalize_subject(email.subject),
-        "participant_emails": sorted(participant_emails),
-        "message_ids": sorted(message_ids),
-        "source_message_ids": sorted(source_message_ids),
-        "last_message_at": last_message_at.isoformat(),
+        "source_thread_id": email.source_thread_id,
+        "normalized_subject": normalize_subject(email.subject),
+        "participant_emails": participant_emails,
+        "message_ids": [email.message_id],
+        "source_message_ids": [email.source_message_id],
+        "last_message_at": email.timestamp.isoformat(),
     }
     thread_repo.upsert_by_key({"thread_id": thread_id}, document)
     return thread_id
@@ -170,6 +182,18 @@ def ingest_raw_email(email_repo: EmailRepository, email: Email, db: Database) ->
     system reference `message_id`, never `emails.id`). Not written on new
     documents anymore; existing documents still carrying it are cleaned up by
     `scripts/remove_email_id_record_id_date_fields.py`, not by this function.
+
+    Concurrency-safety audit: the `existing` read above is a plain read, not a
+    lock -- two callers racing on the SAME source_message_id can both see no
+    match. When `existing` IS found, both callers agree on the same
+    message_id (it's read from the same document, never freshly minted), so
+    there's nothing to race on in that branch. Only the genuinely-new branch
+    is race-prone: two callers could otherwise each mint their OWN next_id()
+    and then stomp each other's write via a plain upsert_by_key. The atomic
+    $setOnInsert upsert below closes that gap -- whichever caller's upsert
+    physically creates the document first is the one whose message_id
+    actually sticks; the other reads that same stored value back and adopts
+    it instead of trusting its own candidate.
     """
     email = normalize_email(email)
 
@@ -177,10 +201,19 @@ def ingest_raw_email(email_repo: EmailRepository, email: Email, db: Database) ->
     if existing and existing.get("processing_status", {}).get("stage") == ProcessingStage.COMPLETED.value:
         return email.model_copy(update={"message_id": existing["message_id"]}), True
 
-    email_id = existing["message_id"] if existing else next_id(db, "EML-")
-    email = email.model_copy(update={"message_id": email_id})
+    candidate_email_id = existing["message_id"] if existing else next_id(db, "EML-")
+    email = email.model_copy(update={"message_id": candidate_email_id})
     document = email.model_dump(mode="json", by_alias=True)
-    email_repo.upsert_by_key({"source_message_id": email.source_message_id}, document)
+    message_id_field = document.pop("message_id")
+    stored = email_repo.upsert_preserving_on_insert(
+        {"source_message_id": email.source_message_id},
+        set_fields=document,
+        set_on_insert_fields={"message_id": message_id_field},
+    )
+    if stored["message_id"] != candidate_email_id:
+        # Lost the race: adopt the id the actual winner's insert established,
+        # rather than proceeding under a belief that's now stale.
+        email = email.model_copy(update={"message_id": stored["message_id"]})
     email_repo.set_stage(email.message_id, ProcessingStage.RECEIVED.value)
     email_repo.set_stage(email.message_id, ProcessingStage.VALIDATED.value)
     return email, False
@@ -302,13 +335,23 @@ def _process_person_facts(
     remains available only via the existing thread-scoped requirements/
     pain_points/objections/buying_signals/competitors fields, never guessed
     onto the wrong person.
+
+    Evidence enforcement: before any of the above, every mention must carry
+    an `evidence` field (app.analysis.schemas.PersonFactMention.evidence)
+    that holds up against THIS email's own subject/body -- a mention with no
+    evidence at all is dropped exactly like one with fabricated or blank
+    evidence. See app.entities.evidence_validation for the exact rule and
+    its documented limitations.
     """
     if not analysis.person_facts_mentioned:
+        return
+    person_facts_mentioned = filter_validated_person_facts(analysis.person_facts_mentioned, email, thread_id)
+    if not person_facts_mentioned:
         return
     knowledge_repo = KnowledgeRepository(db)
     items = [KnowledgeItem.model_validate(doc) for doc in knowledge_repo.all_for_thread(thread_id)]
 
-    for mention in analysis.person_facts_mentioned:
+    for mention in person_facts_mentioned:
         target = _resolve_person_fact_target(resolved_people, mention)
         if target is None:
             continue

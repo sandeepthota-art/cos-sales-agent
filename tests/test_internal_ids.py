@@ -160,6 +160,83 @@ def test_second_message_on_the_same_thread_does_not_regenerate_its_thr_id(db):
     assert set(stored_thread["message_ids"]) == {"EML-001", "EML-002"}
 
 
+# --- Concurrency-safety audit: simulated races on atomic id-assignment/merge ------------------
+
+
+def test_concurrent_ingestion_of_the_same_source_message_adopts_a_single_canonical_id(db, monkeypatch):
+    """Simulates two workers racing to ingest the SAME source email: both see
+    no existing document and each mints its own candidate EML- id, but only
+    one physically creates the document first. The atomic $setOnInsert
+    upsert must make the loser detect this (via the readback) and adopt the
+    winner's id rather than proceeding under its own, now-stale candidate --
+    and exactly one email document must exist afterward, never two."""
+    email_repo = EmailRepository(db)
+    email = parse_email(_raw_email("msg_race", "hello"))
+
+    real_upsert = EmailRepository.upsert_preserving_on_insert
+    calls: list[int] = []
+
+    def racing_upsert(self, key, set_fields, set_on_insert_fields):
+        calls.append(1)
+        if len(calls) == 1:
+            # A concurrent second worker's call wins the race first, with its
+            # OWN independently-minted candidate id -- never derived from
+            # this call's own candidate, simulating true independence.
+            real_upsert(self, key, set_fields, {**set_on_insert_fields, "message_id": "EML-COMPETITOR"})
+        return real_upsert(self, key, set_fields, set_on_insert_fields)
+
+    monkeypatch.setattr(EmailRepository, "upsert_preserving_on_insert", racing_upsert)
+
+    result_email, already_completed = ingest_raw_email(email_repo, email, db)
+
+    assert already_completed is False
+    assert result_email.message_id == "EML-COMPETITOR"  # adopted the winner's id, not its own candidate
+    assert db.emails.count_documents({"source_message_id": "msg_race"}) == 1  # never two documents
+
+
+def test_concurrent_messages_in_the_same_thread_do_not_lose_each_others_contribution(db, monkeypatch):
+    """Simulates a competing worker's message landing in the SAME existing
+    thread between this call's read of it and its own merge. With the old
+    read-modify-write-the-whole-array pattern, whichever write landed second
+    would have silently overwritten the first's contribution. The atomic
+    $addToSet merge (ThreadRepository.merge_message_atomic) must preserve
+    both messages."""
+    email_repo = EmailRepository(db)
+    thread_repo = ThreadRepository(db)
+
+    first = parse_email(_raw_email("msg_001", "hello"))
+    first, _ = ingest_raw_email(email_repo, first, db)
+    thread_id = resolve_and_persist_thread(thread_repo, email_repo, first, db)
+
+    real_find_one = ThreadRepository.find_one
+    calls: list[int] = []
+
+    def find_one_with_concurrent_write(self, key):
+        result = real_find_one(self, key)
+        calls.append(1)
+        if len(calls) == 1 and result is not None:
+            # A concurrent second worker's message is merged in right after
+            # this call's own read of the existing thread, before this
+            # call's own merge has run.
+            ThreadRepository(db).merge_message_atomic(
+                thread_id=thread_id, participant_emails=["competitor@example.com"],
+                message_id="EML-COMPETITOR", source_message_id="msg-competitor",
+                last_message_at_iso="2026-09-13T11:00:00+00:00",
+            )
+        return result
+
+    monkeypatch.setattr(ThreadRepository, "find_one", find_one_with_concurrent_write)
+
+    reply = parse_email(_raw_email("msg_002", "reply", in_reply_to="msg_001", references=["msg_001"]))
+    reply, _ = ingest_raw_email(email_repo, reply, db)
+    second_thread_id = resolve_and_persist_thread(thread_repo, email_repo, reply, db)
+
+    assert second_thread_id == thread_id
+    stored = ThreadRepository(db).find_one({"thread_id": thread_id})
+    assert set(stored["message_ids"]) == {"EML-001", "EML-002", "EML-COMPETITOR"}  # nothing lost
+    assert "competitor@example.com" in stored["participant_emails"]
+
+
 def test_two_independent_threads_get_sequential_thr_ids(db):
     email_repo = EmailRepository(db)
     thread_repo = ThreadRepository(db)

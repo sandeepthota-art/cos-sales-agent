@@ -22,6 +22,47 @@ class _BaseRepository:
         self._collection.update_one(key, {"$set": document}, upsert=True)
         return self._collection.find_one(key, {"_id": 0})
 
+    def update_existing(self, key: dict[str, Any], document: dict[str, Any]) -> dict[str, Any] | None:
+        """Finding #7 (Priority E): like upsert_by_key but never creates a
+        new document. A single atomic update_one(upsert=False) call -- no
+        separate existence check before the write, so there is no
+        check-then-act gap for a concurrent deletion to land in between.
+        Returns the updated document, or None (having written nothing) if
+        no document currently matches `key`. Used where a caller already
+        holds a possibly-stale snapshot of the document and silently
+        recreating it from that snapshot -- masking a legitimate concurrent
+        deletion -- would be actively harmful, unlike upsert_by_key's
+        ordinary and still-unchanged create-or-update semantics."""
+        result = self._collection.update_one(key, {"$set": document}, upsert=False)
+        if result.matched_count == 0:
+            return None
+        return self._collection.find_one(key, {"_id": 0})
+
+    def upsert_preserving_on_insert(
+        self, key: dict[str, Any], set_fields: dict[str, Any], set_on_insert_fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Concurrency-safety audit: a single atomic update_one(upsert=True)
+        using $setOnInsert for `set_on_insert_fields` -- those fields are
+        written ONLY when this call is the one that actually creates the
+        document; if a concurrent caller's upsert already created it first,
+        this call's own values for those fields are silently discarded by
+        MongoDB itself (never applied, never compared), and the pre-existing
+        ones are left exactly as the winner set them. `set_fields` is always
+        applied via a plain $set, every time, regardless of insert vs update
+        -- safe only for fields whose value doesn't depend on which caller
+        won the race (e.g. normalized content derived from the same source).
+
+        Returns the document as it actually exists after this call -- read
+        back fresh, not assumed from the caller's own inputs -- so a caller
+        that lost the race can detect it by comparing the returned value of
+        a `set_on_insert_fields` key against what it tried to set, and adopt
+        the winner's value instead of silently trusting its own.
+        """
+        self._collection.update_one(
+            key, {"$set": set_fields, "$setOnInsert": set_on_insert_fields}, upsert=True
+        )
+        return self._collection.find_one(key, {"_id": 0})
+
     def find_one(self, key: dict[str, Any]) -> dict[str, Any] | None:
         return self._collection.find_one(key, {"_id": 0})
 
@@ -134,6 +175,43 @@ class EmailRepository(_BaseRepository):
 
 class ThreadRepository(_BaseRepository):
     collection_name = "threads"
+
+    def merge_message_atomic(
+        self,
+        thread_id: str,
+        participant_emails: list[str],
+        message_id: str,
+        source_message_id: str,
+        last_message_at_iso: str,
+    ) -> None:
+        """Concurrency-safety audit: atomically merges one message's
+        contribution into an ALREADY-RESOLVED, existing thread document --
+        two different emails in the same thread, processed concurrently,
+        must never lose each other's contribution the way a
+        read-then-merge-then-$set-the-whole-document pattern would (the
+        second writer's full-document overwrite would silently drop
+        whatever the first writer just added). $addToSet (not $push)
+        preserves the set-not-list semantics these three array fields have
+        always had -- a resubmitted/retried message_id is a safe no-op, not
+        a duplicate entry. $max never regresses last_message_at if messages
+        are processed out of chronological order. Requires the document to
+        already exist (upsert=False) -- creating a brand-new thread is a
+        separate, non-racy path (see app.pipeline._upsert_thread) since a
+        freshly minted thread_id can never collide with a concurrent
+        caller's.
+        """
+        self._collection.update_one(
+            {"thread_id": thread_id},
+            {
+                "$addToSet": {
+                    "participant_emails": {"$each": participant_emails},
+                    "message_ids": message_id,
+                    "source_message_ids": source_message_id,
+                },
+                "$max": {"last_message_at": last_message_at_iso},
+            },
+            upsert=False,
+        )
 
 
 class ContextSnapshotRepository(_BaseRepository):

@@ -65,6 +65,14 @@ class PersonFactMention(BaseModel):
     ]
     value: str
     basis: Literal["stated", "inferred"] = "stated"
+    # Optional at the SCHEMA level only -- app.entities.evidence_validation now
+    # enforces evidence as mandatory before persistence: a mention with
+    # evidence=None is rejected exactly like one with blank evidence, so
+    # `EmailAnalysis` parsing itself never fails just because one fact lacks
+    # evidence (see that module's docstring for why strictness lives at the
+    # filter boundary, not here, as a required Pydantic field would instead
+    # fail the whole email's analysis over a single unsupported fact).
+    evidence: str | None = None
 
 
 class EmailAnalysis(BaseModel):

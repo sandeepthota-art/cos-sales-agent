@@ -132,6 +132,17 @@ For each message, in order (oldest to newest within a batch):
      deduplicated automatically by email, and the mention is what actually
      supplies the name. Only ever use a name/org/role genuinely stated or
      clearly signed in the email -- never guess one.
+   - **Every `person_facts_mentioned` entry needs an `evidence` field**: a
+     short excerpt copied VERBATIM from this specific email's own subject or
+     body -- the exact words that support `value`, never a paraphrase or
+     summary, and never a quote from a different email, a different thread,
+     general knowledge, or inferred context. If you cannot point to real,
+     word-for-word text in THIS email supporting the fact, leave that entry
+     out of `person_facts_mentioned` entirely rather than submitting it
+     without genuine evidence. `persist_email_analysis` silently drops any
+     entry whose evidence doesn't check out against this email, so an
+     invented or borrowed quote just means the fact is lost, not that it's
+     accepted.
    - Produce the full `EmailAnalysis` reflecting only what's actually in the
      message, then call `persist_email_analysis`. **If the result's
      `possible_missed_commitment` field is non-null**, re-read the email

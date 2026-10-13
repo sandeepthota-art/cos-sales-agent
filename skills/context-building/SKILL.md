@@ -33,6 +33,16 @@ retry.
 - Do not invent entities or relationships -- if nothing in a field applies,
   leave it empty. Evidence-gate `person_facts_mentioned` (real, resolvable
   names only, never guessed).
+- **Every `person_facts_mentioned` entry needs an `evidence` field**: a
+  short excerpt copied VERBATIM from this specific email's own subject or
+  body -- the exact words that support `value`, never a paraphrase or
+  summary, and never a quote from a different email or an earlier message
+  in the thread. If you cannot point to real, word-for-word text in this
+  email supporting the fact, leave that entry out of `person_facts_mentioned`
+  entirely rather than submitting it without genuine evidence.
+  `persist_email_analysis` silently drops any entry whose evidence doesn't
+  check out against this email, so an invented or borrowed quote just
+  means the fact is lost, not that it's accepted.
 - **Keep the `EmailAnalysis` object you build.** `email-labelling` (stage 3)
   needs to re-supply these same fields when it adds `label_applied`, to
   avoid overwriting the `entities_referenced` this stage just recorded (see

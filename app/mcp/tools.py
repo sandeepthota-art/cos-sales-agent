@@ -1403,12 +1403,38 @@ def persist_person_profile(
     module) whether this represents meaningful new evidence and, if so,
     writes a new person_story_versions row. people.profile_summary is only
     ever updated AFTER that write has fully committed -- it can never point
-    at an uncommitted version. The returned dict gains
-    story_version_created/story_version/story_version_change_reason;
-    nothing is written onto the Person document for these -- they are
-    call-result metadata only, not a new field on Person.
+    at an uncommitted version, AND (audit finding #1 fix) it is only ever
+    moved to the new text when a version was actually created: a
+    version_created=False result (insufficient evidence for a new version,
+    or a byte-identical resubmission) leaves the existing stored
+    profile_summary exactly as it was, even though a different
+    profile_summary argument was supplied. profile_source_email_ids is
+    gated the same way (final-verification-pass fix): it only ever advances
+    to a newly-supplied list when version_created is True, so the persisted
+    evidence can never claim to justify narrative text that was never
+    actually stored. profile_story_attempt_id (Finding #5 fix) is gated
+    identically: it only ever advances to the new version's attempt_id when
+    version_created is True, giving app.entities.person_story's
+    _reconcile_stale_pending a causally-proven link between a pending
+    version row and the Person state it actually produced, instead of a
+    coincidence-prone summary-text comparison. Likewise (audit finding #2
+    fix),
+    profile_status/profile_status_reason/profile_checked_at only move to
+    "generated" when a profile summary genuinely exists after this call --
+    a role-only update on a person with no existing profile leaves these
+    three fields untouched rather than falsely claiming "generated". The
+    returned dict gains story_version_created/story_version/
+    story_version_change_reason; nothing is written onto the Person
+    document for these -- they are call-result metadata only, not a new
+    field on Person.
 
-    Raises ValueError if person_id doesn't exist.
+    Raises ValueError if person_id doesn't exist at the start of this call.
+    Finding #7 (Priority E): the final write uses PersonRepository.
+    update_existing (never an upserting write) -- if this person_id was
+    deleted by some other process during this call (after the initial
+    existence check, e.g. while persist_story_version was running), this
+    raises RuntimeError instead of silently recreating the person from a
+    stale snapshot.
     """
     repo = PersonRepository(db)
     person = repo.find_one({"id": person_id})
@@ -1416,9 +1442,56 @@ def persist_person_profile(
         raise ValueError(f"no person found for person_id={person_id!r}")
 
     resolved_summary = profile_summary if profile_summary is not None else person.get("profile_summary")
-    story_result: dict[str, Any] = {"version_created": False, "version": None, "change_reason": None}
+    story_result: dict[str, Any] = {
+        "version_created": False, "version": None, "change_reason": None, "attempt_id": None,
+    }
     if resolved_summary is not None:
         story_result = persist_story_version(db, person_id, resolved_summary, source_email_ids)
+
+    # Audit finding #1 (Critical): profile_summary must only ever move to the
+    # new text when persist_story_version actually committed a new version --
+    # never merely because a new profile_summary argument was supplied. When
+    # version_created is False (insufficient evidence for a new version, or a
+    # byte-identical resubmission), the EXISTING stored value is kept exactly
+    # as this call found it -- resolved_summary is discarded for persistence
+    # purposes even though it was used to make the eligibility decision.
+    # Audit finding #2 (High): profile_status/profile_status_reason/
+    # profile_checked_at must only move to "generated" when a profile summary
+    # genuinely exists after this call (resolved_summary is not None) -- a
+    # role-only update on a person with no existing profile must not claim
+    # "generated" for content that was never produced. When that condition
+    # doesn't hold, these three fields are left exactly as they already were
+    # (same "if X is not None else person.get(...)" idiom as every other
+    # field below), never reset to some other invented value.
+    # Final-verification-pass fix: profile_source_email_ids must be gated on
+    # version_created exactly like profile_summary above -- a call whose new
+    # (summary, evidence) pair was judged not meaningful must leave the
+    # EXISTING evidence list untouched, never advance it to emails that the
+    # (unchanged) stored summary never actually incorporated. When a version
+    # genuinely was created, the normal "new value or existing" idiom applies
+    # unchanged (so an omitted source_email_ids argument still falls back to
+    # the person's current value, exactly as before this fix).
+    final_profile_summary = resolved_summary if story_result["version_created"] else person.get("profile_summary")
+    final_profile_source_email_ids = (
+        (source_email_ids if source_email_ids is not None else person.get("profile_source_email_ids", []))
+        if story_result["version_created"]
+        else person.get("profile_source_email_ids", [])
+    )
+    # Finding #5 fix: mirrors the just-created version's attempt_id onto the
+    # Person document under the exact same gating as profile_summary above --
+    # only ever advances when THIS call actually produced the version it's
+    # pointing at, never merely because persist_story_version was invoked.
+    final_profile_story_attempt_id = (
+        story_result["attempt_id"] if story_result["version_created"] else person.get("profile_story_attempt_id")
+    )
+    if resolved_summary is not None:
+        final_profile_status = "generated"
+        final_profile_status_reason = "Profile generated and persisted."
+        final_profile_checked_at = datetime.now(timezone.utc)
+    else:
+        final_profile_status = person.get("profile_status")
+        final_profile_status_reason = person.get("profile_status_reason")
+        final_profile_checked_at = person.get("profile_checked_at")
 
     # Every field is written explicitly (even when left unchanged), not just
     # the ones that got a new value -- so the returned/stored document always
@@ -1426,21 +1499,35 @@ def persist_person_profile(
     # silently omitting a key a pre-existing document never had.
     update: dict[str, Any] = {
         "role": role if role is not None else person.get("role"),
-        "profile_summary": profile_summary if profile_summary is not None else person.get("profile_summary"),
+        "profile_summary": final_profile_summary,
         "recent_context": recent_context if recent_context is not None else person.get("recent_context"),
         "key_topics": key_topics if key_topics is not None else person.get("key_topics", []),
         "profile_updated_at": datetime.now(timezone.utc),
-        "profile_source_email_ids": (
-            source_email_ids if source_email_ids is not None else person.get("profile_source_email_ids", [])
-        ),
-        "profile_status": "generated",
-        "profile_status_reason": "Profile generated and persisted.",
-        "profile_checked_at": datetime.now(timezone.utc),
+        "profile_source_email_ids": final_profile_source_email_ids,
+        "profile_story_attempt_id": final_profile_story_attempt_id,
+        "profile_status": final_profile_status,
+        "profile_status_reason": final_profile_status_reason,
+        "profile_checked_at": final_profile_checked_at,
     }
 
-    repo.upsert_by_key({"id": person_id}, {**person, **update})
+    # Finding #7 (Priority E): update_existing (never upsert=True) here --
+    # `person` is a snapshot read at the top of this call, before
+    # persist_story_version made several of its own round-trips. If this
+    # person_id was deleted by some other process in that window (e.g. an
+    # entity-merge/dedup), writing {**person, **update} via an upserting
+    # write would silently resurrect it from that stale snapshot, masking
+    # whatever legitimately deleted it. A single atomic update_one(upsert=
+    # False) either updates the still-existing document or writes nothing
+    # at all -- there is no separate check-then-write gap for a deletion to
+    # land in between.
+    updated = repo.update_existing({"id": person_id}, {**person, **update})
+    if updated is None:
+        raise RuntimeError(
+            f"person_id={person_id!r} no longer exists -- it was deleted during this profile "
+            "update; refusing to recreate it from a stale snapshot"
+        )
     return {
-        **person, **update,
+        **updated,
         "story_version_created": story_result["version_created"],
         "story_version": story_result["version"],
         "story_version_change_reason": story_result["change_reason"],

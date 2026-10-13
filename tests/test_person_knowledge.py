@@ -22,9 +22,12 @@ from app.database.repositories import (
     PersonContextSnapshotRepository,
     PersonRepository,
 )
+from app.analysis.schemas import EmailAnalysis, MentionedPerson, PersonFactMention
+from app.email.models import parse_email
 from app.entities.person_context import get_bounded_person_context_for_llm
 from app.entities.thread_events import get_thread_event_trail
 from app.interfaces.llm_provider import LLMProvider
+from app.mcp.tools import ingest_email, persist_email_analysis
 from app.pipeline import run_pipeline
 from app.providers.calendar.mock import MockCalendarProvider
 from app.providers.email.mock import MockEmailProvider
@@ -127,7 +130,10 @@ def _ashok_id(db):
 
 def test_explicit_role_statement_becomes_person_attributed_knowledge(db, settings):
     llm = _PersonFactsLLM(person_facts_mentioned=[
-        {"person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering", "basis": "stated"}
+        {
+            "person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering",
+            "basis": "stated", "evidence": "Ashok is VP Engineering",
+        }
     ])
     email = _raw_email(_RAW_1, "Ashok is VP Engineering.", thread_id=_RAW_THREAD)
     run_pipeline(db, MockEmailProvider(payloads=[email]), llm, MockCalendarProvider(), settings)
@@ -152,10 +158,16 @@ def test_subsequent_email_adds_preference_fact_to_same_person_context_snapshot(d
         _RAW_2, "Ashok prefers Tuesday meetings.", thread_id=_RAW_THREAD, timestamp="2026-09-14T10:00:00Z",
     )
     llm_1 = _PersonFactsLLM(person_facts_mentioned=[
-        {"person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering"}
+        {
+            "person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering",
+            "evidence": "Ashok is VP Engineering",
+        }
     ])
     llm_2 = _PersonFactsLLM(person_facts_mentioned=[
-        {"person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "Tuesday meetings"}
+        {
+            "person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "Tuesday meetings",
+            "evidence": "Ashok prefers Tuesday meetings",
+        }
     ])
     run_pipeline(db, MockEmailProvider(payloads=[email_1]), llm_1, MockCalendarProvider(), settings)
     run_pipeline(db, MockEmailProvider(payloads=[email_2]), llm_2, MockCalendarProvider(), settings)
@@ -183,8 +195,14 @@ def test_concern_attributed_to_explicit_person_not_automatically_to_sender(db, s
             {"name": "Vijender", "email": "vijender@acme.example", "org": None, "role_hint": None},
         ],
         person_facts_mentioned=[
-            {"person_name": "Ashok", "person_email": _SENDER, "category": "concern", "value": "the security review"},
-            {"person_name": "Vijender", "person_email": "vijender@acme.example", "category": "responsibility", "value": "handles procurement"},
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "concern", "value": "the security review",
+                "evidence": "Ashok is concerned about the security review",
+            },
+            {
+                "person_name": "Vijender", "person_email": "vijender@acme.example", "category": "responsibility",
+                "value": "handles procurement", "evidence": "Vijender handles procurement",
+            },
         ],
     )
     email = _raw_email(_RAW_1, "Ashok is concerned about the security review. Vijender handles procurement.")
@@ -230,7 +248,12 @@ def test_subsequent_llm_call_receives_person_attributed_facts_in_bounded_context
         _RAW_2, "Following up.", thread_id=_RAW_THREAD, timestamp="2026-09-14T10:00:00Z",
     )
     llm_1 = _PersonFactsLLM(
-        person_facts_mentioned=[{"person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering"}],
+        person_facts_mentioned=[
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering",
+                "evidence": "Ashok is VP Engineering",
+            }
+        ],
         capture=capture,
     )
     llm_2 = _PersonFactsLLM(capture=capture)  # no new facts -- proves the role fact PERSISTS, not just echoed back
@@ -260,10 +283,16 @@ def test_changing_a_person_fact_updates_history_via_existing_mechanism(db, setti
         _RAW_2, "Ashok now prefers Wednesday meetings.", thread_id=_RAW_THREAD, timestamp="2026-09-14T10:00:00Z",
     )
     llm_1 = _PersonFactsLLM(person_facts_mentioned=[
-        {"person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "Tuesday meetings"}
+        {
+            "person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "Tuesday meetings",
+            "evidence": "Ashok prefers Tuesday meetings",
+        }
     ])
     llm_2 = _PersonFactsLLM(person_facts_mentioned=[
-        {"person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "Wednesday meetings"}
+        {
+            "person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "Wednesday meetings",
+            "evidence": "Ashok now prefers Wednesday meetings",
+        }
     ])
     run_pipeline(db, MockEmailProvider(payloads=[email_1]), llm_1, MockCalendarProvider(), settings)
     run_pipeline(db, MockEmailProvider(payloads=[email_2]), llm_2, MockCalendarProvider(), settings)
@@ -283,7 +312,12 @@ def test_changing_a_person_fact_updates_history_via_existing_mechanism(db, setti
 
 def test_existing_structural_context_continues_to_work_alongside_semantic_knowledge(db, settings):
     llm = _PersonFactsLLM(
-        person_facts_mentioned=[{"person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering"}],
+        person_facts_mentioned=[
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering",
+                "evidence": "Ashok is VP Engineering",
+            }
+        ],
     )
     email = _raw_email(_RAW_1, "Ashok is VP Engineering.")
     run_pipeline(db, MockEmailProvider(payloads=[email]), llm, MockCalendarProvider(), settings)
@@ -343,7 +377,10 @@ def test_person_updated_event_reports_a_real_field_level_delta(db, settings):
 
 def test_retry_does_not_duplicate_person_fact_knowledge(db, settings):
     llm = _PersonFactsLLM(person_facts_mentioned=[
-        {"person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering"}
+        {
+            "person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering",
+            "evidence": "Ashok is VP Engineering",
+        }
     ])
     email = _raw_email(_RAW_1, "Ashok is VP Engineering.")
 
@@ -351,12 +388,52 @@ def test_retry_does_not_duplicate_person_fact_knowledge(db, settings):
     before_knowledge = db.knowledge_items.count_documents({})
     before_snapshots = db.person_context_snapshots.count_documents({})
     before_events = db.thread_events.count_documents({})
+    # The fact must have actually been created in the first place -- otherwise
+    # "retry doesn't duplicate" would trivially hold for a fact that was
+    # silently dropped on both runs, proving nothing about retry behavior.
+    assert before_knowledge > 0
 
     run_pipeline(db, MockEmailProvider(payloads=[email]), llm, MockCalendarProvider(), settings)  # retry
 
     assert db.knowledge_items.count_documents({}) == before_knowledge
     assert db.person_context_snapshots.count_documents({}) == before_snapshots
     assert db.thread_events.count_documents({}) == before_events
+
+
+def test_retrying_persist_email_analysis_directly_after_an_interruption_does_not_duplicate(db, settings):
+    """Concurrency-safety audit: the granular path (ingest_email ->
+    persist_email_analysis), not run_pipeline, is how this product's actual
+    Claude-driven skills call this -- a process interrupted mid-analysis and
+    then retried calls persist_email_analysis again with the SAME analysis.
+    Every write inside it (KnowledgeItem upsert by natural key,
+    PersonContextSnapshot upsert by (person_id, source_email_id)) must be
+    idempotent, so a second call must change nothing beyond the stage
+    transitions it re-applies."""
+    ingest_result = ingest_email(db, parse_email(_raw_email(_RAW_1, "Ashok is VP Engineering.")))
+    analysis = EmailAnalysis(
+        email_id=ingest_result["message_id"], summary="s", intent="i",
+        people_mentioned=[MentionedPerson(name="Ashok", email=_SENDER, org=None, role_hint=None)],
+        person_facts_mentioned=[
+            PersonFactMention(
+                person_name="Ashok", person_email=_SENDER, category="role", value="VP Engineering",
+                evidence="Ashok is VP Engineering",
+            )
+        ],
+    )
+
+    persist_email_analysis(db, ingest_result["message_id"], analysis, settings)
+    before_knowledge = db.knowledge_items.count_documents({})
+    before_snapshots = db.person_context_snapshots.count_documents({})
+    assert before_knowledge > 0  # the fact must have actually been created the first time
+
+    persist_email_analysis(db, ingest_result["message_id"], analysis, settings)  # retry, same input
+
+    assert db.knowledge_items.count_documents({}) == before_knowledge
+    assert db.person_context_snapshots.count_documents({}) == before_snapshots
+    ashok_id = _ashok_id(db)
+    role_item = KnowledgeRepository(db).find_one({"person_id": ashok_id, "predicate": "role"})
+    assert role_item["current_value"] == "VP Engineering"
+    assert len(role_item["history"]) == 1  # not re-appended as a second history entry
 
 
 # --- Phase 11: critical quality end-to-end scenario -------------------------------------------
@@ -377,20 +454,34 @@ def test_critical_quality_scenario_semantic_profile_reaches_llm_before_email_4(d
 
     llm_1 = _PersonFactsLLM(
         person_facts_mentioned=[
-            {"person_name": "Ashok", "person_email": _SENDER, "category": "responsibility", "value": "leading the analytics initiative at Acme"},
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "responsibility",
+                "value": "leading the analytics initiative at Acme",
+                "evidence": "Ashok is leading the analytics initiative at Acme",
+            },
         ],
         capture=capture,
     )
     llm_2 = _PersonFactsLLM(
         person_facts_mentioned=[
-            {"person_name": "Ashok", "person_email": _SENDER, "category": "goal", "value": "pilot completed before October"},
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "goal",
+                "value": "pilot completed before October",
+                "evidence": "Ashok wants the pilot completed before October",
+            },
         ],
         capture=capture,
     )
     llm_3 = _PersonFactsLLM(
         person_facts_mentioned=[
-            {"person_name": "Ashok", "person_email": _SENDER, "category": "preference", "value": "weekly calls on Tuesday"},
-            {"person_name": "Ashok", "person_email": _SENDER, "category": "concern", "value": "the security review"},
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "preference",
+                "value": "weekly calls on Tuesday", "evidence": "Ashok prefers weekly calls on Tuesday",
+            },
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "concern",
+                "value": "the security review", "evidence": "is concerned about the security review",
+            },
         ],
         capture=capture,
     )
@@ -432,7 +523,12 @@ def test_critical_quality_scenario_semantic_profile_reaches_llm_before_email_4(d
 
 def test_thread_trail_reconstructs_the_full_ingestion_story(db, settings):
     llm = _PersonFactsLLM(
-        person_facts_mentioned=[{"person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering"}],
+        person_facts_mentioned=[
+            {
+                "person_name": "Ashok", "person_email": _SENDER, "category": "role", "value": "VP Engineering",
+                "evidence": "Ashok is VP Engineering",
+            }
+        ],
         requirements=["pilot completed before October"],
     )
     email = _raw_email(_RAW_1, "Ashok is VP Engineering. We need the pilot completed before October.")

@@ -7,6 +7,7 @@ from app.database.repositories import (
     ContextSnapshotRepository,
     EmailRepository,
     KnowledgeRepository,
+    ThreadRepository,
 )
 
 
@@ -203,3 +204,134 @@ def test_calendar_action_repository_dedupes_on_fingerprint(db):
     assert db.calendar_actions.count_documents({}) == 1
     stored = repo.find_one(key)
     assert stored["status"] == "approved"
+
+
+# --- update_existing (Finding #7, Priority E: never creates a document) -----------------------
+
+
+def test_update_existing_updates_a_present_document(db):
+    repo = EmailRepository(db)
+    repo.upsert_by_key({"message_id": "msg_001"}, {"message_id": "msg_001", "subject": "Original"})
+
+    result = repo.update_existing({"message_id": "msg_001"}, {"message_id": "msg_001", "subject": "Updated"})
+
+    assert result == {"message_id": "msg_001", "subject": "Updated"}
+    stored = repo.find_one({"message_id": "msg_001"})
+    assert stored["subject"] == "Updated"
+
+
+def test_update_existing_matching_but_unchanged_values_is_still_a_successful_match(db):
+    """modified_count can be 0 when the written values are byte-identical to
+    what's already stored -- that must still count as a successful match
+    (matched_count == 1), not be confused with the target being absent."""
+    repo = EmailRepository(db)
+    document = {"message_id": "msg_001", "subject": "Same"}
+    repo.upsert_by_key({"message_id": "msg_001"}, document)
+
+    raw_result = db.emails.update_one({"message_id": "msg_001"}, {"$set": document}, upsert=False)
+    assert raw_result.matched_count == 1
+    assert raw_result.modified_count == 0  # confirms this scenario actually exercises the distinction
+
+    result = repo.update_existing({"message_id": "msg_001"}, document)
+
+    assert result == document  # reported as a successful match, not as missing
+
+
+def test_update_existing_returns_none_and_writes_nothing_for_a_missing_target(db):
+    repo = EmailRepository(db)
+
+    result = repo.update_existing({"message_id": "does-not-exist"}, {"message_id": "does-not-exist", "subject": "X"})
+
+    assert result is None
+    assert db.emails.count_documents({}) == 0  # never created a document
+
+
+# --- upsert_preserving_on_insert (concurrency-safety audit) -----------------------------------
+
+
+def test_upsert_preserving_on_insert_sets_both_field_groups_on_first_insert(db):
+    repo = EmailRepository(db)
+
+    result = repo.upsert_preserving_on_insert(
+        {"message_id": "msg_001"}, set_fields={"subject": "Hi"}, set_on_insert_fields={"created_by": "worker-a"},
+    )
+
+    assert result == {"message_id": "msg_001", "subject": "Hi", "created_by": "worker-a"}
+
+
+def test_upsert_preserving_on_insert_never_overwrites_the_on_insert_fields_on_update(db):
+    repo = EmailRepository(db)
+    repo.upsert_preserving_on_insert(
+        {"message_id": "msg_001"}, set_fields={"subject": "Hi"}, set_on_insert_fields={"created_by": "worker-a"},
+    )
+
+    result = repo.upsert_preserving_on_insert(
+        {"message_id": "msg_001"}, set_fields={"subject": "Updated"}, set_on_insert_fields={"created_by": "worker-b"},
+    )
+
+    assert result["subject"] == "Updated"  # plain $set fields always apply
+    assert result["created_by"] == "worker-a"  # $setOnInsert fields never overwritten by a later caller
+
+
+# --- ThreadRepository.merge_message_atomic (concurrency-safety audit) -------------------------
+
+
+def test_merge_message_atomic_adds_a_message_without_dropping_existing_ones(db):
+    repo = ThreadRepository(db)
+    repo.upsert_by_key(
+        {"thread_id": "THR-001"},
+        {
+            "thread_id": "THR-001", "source_thread_id": "g1", "normalized_subject": "hello",
+            "participant_emails": ["a@x.com"], "message_ids": ["EML-001"], "source_message_ids": ["s1"],
+            "last_message_at": "2026-01-01T00:00:00",
+        },
+    )
+
+    repo.merge_message_atomic(
+        thread_id="THR-001", participant_emails=["b@x.com"], message_id="EML-002",
+        source_message_id="s2", last_message_at_iso="2026-01-02T00:00:00",
+    )
+
+    stored = repo.find_one({"thread_id": "THR-001"})
+    assert set(stored["message_ids"]) == {"EML-001", "EML-002"}
+    assert set(stored["participant_emails"]) == {"a@x.com", "b@x.com"}
+    assert stored["last_message_at"] == "2026-01-02T00:00:00"
+
+
+def test_merge_message_atomic_never_regresses_last_message_at(db):
+    repo = ThreadRepository(db)
+    repo.upsert_by_key(
+        {"thread_id": "THR-001"},
+        {
+            "thread_id": "THR-001", "source_thread_id": "g1", "normalized_subject": "hello",
+            "participant_emails": ["a@x.com"], "message_ids": ["EML-001"], "source_message_ids": ["s1"],
+            "last_message_at": "2026-01-05T00:00:00",
+        },
+    )
+
+    repo.merge_message_atomic(
+        thread_id="THR-001", participant_emails=["a@x.com"], message_id="EML-002",
+        source_message_id="s2", last_message_at_iso="2026-01-01T00:00:00",  # earlier than what's stored
+    )
+
+    assert repo.find_one({"thread_id": "THR-001"})["last_message_at"] == "2026-01-05T00:00:00"
+
+
+def test_merge_message_atomic_is_idempotent_for_the_same_message(db):
+    repo = ThreadRepository(db)
+    repo.upsert_by_key(
+        {"thread_id": "THR-001"},
+        {
+            "thread_id": "THR-001", "source_thread_id": "g1", "normalized_subject": "hello",
+            "participant_emails": ["a@x.com"], "message_ids": ["EML-001"], "source_message_ids": ["s1"],
+            "last_message_at": "2026-01-01T00:00:00",
+        },
+    )
+
+    repo.merge_message_atomic(
+        thread_id="THR-001", participant_emails=["a@x.com"], message_id="EML-001",
+        source_message_id="s1", last_message_at_iso="2026-01-01T00:00:00",
+    )
+
+    stored = repo.find_one({"thread_id": "THR-001"})
+    assert stored["message_ids"] == ["EML-001"]  # no duplicate entry from a resubmitted/retried message
