@@ -60,12 +60,18 @@ PERSON_ATTRIBUTE_WHITELIST: set[str] = {
 }
 
 ORGANIZATION_ATTRIBUTE_WHITELIST: set[str] = {
+    "name",
     "industry",
     "description",
     "website",
     "size_hint",
     "relationship_to_owner",
 }
+
+# "name" observations accumulate into organizations.names[] (deduplicated,
+# oldest-first) instead of overwriting a single profile field -- a company
+# can legitimately be referred to by more than one name across emails.
+ORGANIZATION_NAMES_MAX_COUNT = 5
 
 VALUE_MAX_LENGTH = 300
 EVIDENCE_MAX_LENGTH = 300

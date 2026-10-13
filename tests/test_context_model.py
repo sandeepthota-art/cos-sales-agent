@@ -8,7 +8,8 @@ import pytest
 
 from app import context, tools
 from app.config import Settings
-from app.context_db import ObservationRepository, PersonOrgLinkRepository
+from app.context_config import ORGANIZATION_NAMES_MAX_COUNT
+from app.context_db import ObservationRepository, OrganizationRepository, PersonOrgLinkRepository, PersonRepository
 from app.db import initialize_indexes
 from app.models import parse_email
 
@@ -239,3 +240,137 @@ def test_thread_status_and_open_items_persist_and_history_capped_at_20(db):
 
     history_doc = db.threads_history.find_one({"_id": "T-1"})
     assert len(history_doc["snapshots"]) == 20
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B (a): people/organizations derived from claimed-message
+# participation, not only from observations.
+# ---------------------------------------------------------------------------
+
+
+def test_participant_with_no_extracted_facts_still_gets_people_doc(db):
+    settings = _settings()
+    _ingest(
+        db,
+        settings,
+        "MSG-1",
+        thread_id="T-1",
+        cc=[{"name": "Charlie", "email": "charlie@customerco.example"}],
+    )
+    claimed = context.claim_next_thread_for_context(db)
+
+    result = context.persist_context_delta(db, claimed["claim_id"], claimed["thread_id"], {})
+
+    assert result["ok"] is True
+    person = PersonRepository(db).find("charlie@customerco.example")
+    assert person is not None
+    assert person["profile"] == {}
+    assert person["message_count"] == 1
+    sort_key = db.raw_emails_dump.find_one({"message_id": "MSG-1"})["sort_key"]
+    assert person["first_seen_at"] == sort_key
+    assert person["last_seen_at"] == sort_key
+
+
+def test_role_address_participant_gets_people_doc_flagged(db):
+    settings = _settings()
+    _ingest(
+        db,
+        settings,
+        "MSG-1",
+        thread_id="T-1",
+        cc=[{"name": "Support", "email": "support@customerco.example"}],
+    )
+    claimed = context.claim_next_thread_for_context(db)
+
+    context.persist_context_delta(db, claimed["claim_id"], claimed["thread_id"], {})
+
+    person = PersonRepository(db).find("support@customerco.example")
+    assert person is not None
+    assert person["is_role_address"] is True
+    assert person["profile"] == {}
+
+
+def test_free_mail_participant_gets_person_but_no_organization(db):
+    settings = _settings()
+    _ingest(
+        db,
+        settings,
+        "MSG-1",
+        thread_id="T-1",
+        cc=[{"name": "Jane Personal", "email": "jane@gmail.com"}],
+    )
+    claimed = context.claim_next_thread_for_context(db)
+
+    context.persist_context_delta(db, claimed["claim_id"], claimed["thread_id"], {})
+
+    assert PersonRepository(db).find("jane@gmail.com") is not None
+    assert OrganizationRepository(db).find("gmail.com") is None
+
+
+def test_non_free_mail_participant_domain_gets_organization_from_participation(db):
+    settings = _settings()
+    _ingest(db, settings, "MSG-1", thread_id="T-1")  # jane@customerco.example, agent@ourcompany.example
+    claimed = context.claim_next_thread_for_context(db)
+
+    context.persist_context_delta(db, claimed["claim_id"], claimed["thread_id"], {})
+
+    org = OrganizationRepository(db).find("customerco.example")
+    assert org is not None
+    assert org["profile"] == {}
+    assert org["message_count"] == 1
+
+
+def test_people_and_org_recount_is_idempotent_after_reprocess(db):
+    """Simulated crash-then-reprocess (same pattern as the Phase 4A safety
+    test): reprocessing the SAME claimed message must not double-count
+    message_count for either the participant person or the participant's
+    organization."""
+    settings = _settings()
+    _ingest(db, settings, "MSG-1", thread_id="T-1")
+    claimed = context.claim_next_thread_for_context(db)
+    context.persist_context_delta(db, claimed["claim_id"], claimed["thread_id"], {})
+
+    person_before = PersonRepository(db).find("jane@customerco.example")
+    org_before = OrganizationRepository(db).find("customerco.example")
+
+    db.raw_emails_dump.update_many(
+        {"message_id": "MSG-1"}, {"$set": {"context_version": 0, "context_claimed_at": "2000-01-01T00:00:00+00:00"}}
+    )
+    reclaimed = context.claim_next_thread_for_context(db)
+    context.persist_context_delta(db, reclaimed["claim_id"], reclaimed["thread_id"], {})
+
+    person_after = PersonRepository(db).find("jane@customerco.example")
+    org_after = OrganizationRepository(db).find("customerco.example")
+    assert person_after["message_count"] == person_before["message_count"] == 1
+    assert org_after["message_count"] == org_before["message_count"] == 1
+    assert person_after["participant_message_ids"] == person_before["participant_message_ids"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B (b): organization "name" observations accumulate into names[].
+# ---------------------------------------------------------------------------
+
+
+def test_organization_name_observations_populate_names_deduplicated_and_capped(db):
+    obs_repo = ObservationRepository(db)
+    names = ["Acme Corp", "Acme Corporation", "Acme Corp", "Acme Inc", "Acme LLC", "Acme Holdings", "Acme Group"]
+    for i, name in enumerate(names):
+        obs_repo.append(
+            {
+                "entity_type": "organization",
+                "entity_key": "customerco.example",
+                "attribute": "name",
+                "value": name,
+                "evidence": f"evidence-{i}",
+                "source_message_id": f"MSG-{i}",
+                "source_thread_id": "T-1",
+                "observed_at": f"2026-08-{i + 1:02d}T00:00:00+00:00",
+                "recorded_at": f"2026-08-{i + 1:02d}T00:00:00+00:00",
+            }
+        )
+
+    org = context.rebuild_organization(db, "customerco.example")
+
+    assert len(org["names"]) == ORGANIZATION_NAMES_MAX_COUNT
+    assert org["names"] == ["Acme Corp", "Acme Corporation", "Acme Inc", "Acme LLC", "Acme Holdings"]
+    assert "name" not in org["profile"]

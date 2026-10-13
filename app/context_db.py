@@ -71,10 +71,14 @@ class PersonRepository:
         first_seen_at: str,
         last_seen_at: str,
         message_count: int,
+        participant_message_ids: list[str],
     ) -> None:
-        """Every field here is derived (rebuilt from observations), never
-        incrementally mutated -- keeps this always reproducible by
-        rebuild_profiles."""
+        """Every field here is derived (rebuilt from observations and
+        message participation), never incrementally mutated -- keeps this
+        always reproducible by rebuild_profiles. participant_message_ids
+        is the set app.context merges new claimed messages into (union,
+        not increment) so message_count stays correct no matter how many
+        times the same claim is (re)persisted."""
         self._collection.update_one(
             {"_id": email},
             {
@@ -85,6 +89,7 @@ class PersonRepository:
                     "first_seen_at": first_seen_at,
                     "last_seen_at": last_seen_at,
                     "message_count": message_count,
+                    "participant_message_ids": participant_message_ids,
                 }
             },
             upsert=True,
@@ -101,11 +106,27 @@ class OrganizationRepository:
         self._collection: Collection = db[self.collection_name]
 
     def replace_computed_fields(
-        self, domain: str, names: list[str], profile: JsonDoc, first_seen_at: str, last_seen_at: str
+        self,
+        domain: str,
+        names: list[str],
+        profile: JsonDoc,
+        first_seen_at: str,
+        last_seen_at: str,
+        message_count: int,
+        participant_message_ids: list[str],
     ) -> None:
         self._collection.update_one(
             {"_id": domain},
-            {"$set": {"names": names, "profile": profile, "first_seen_at": first_seen_at, "last_seen_at": last_seen_at}},
+            {
+                "$set": {
+                    "names": names,
+                    "profile": profile,
+                    "first_seen_at": first_seen_at,
+                    "last_seen_at": last_seen_at,
+                    "message_count": message_count,
+                    "participant_message_ids": participant_message_ids,
+                }
+            },
             upsert=True,
         )
 

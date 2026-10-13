@@ -53,10 +53,43 @@ Scripts (never MCP tools): `scripts/rebuild_profiles.py` (dry-run default,
 | `value_hash` for the unique index | `sha256(value)` truncated to 16 hex chars, not the full 64 | Shorter, still effectively collision-free for this cardinality, smaller index entries |
 | No explicit keying scheme given for `person_org_links` | Deterministic `_id = "{person_email}\|{org_domain}\|{valid_from}"` | Makes re-persisting the identical link idempotent while still allowing multiple concurrent "current" links per person (spec explicitly allows this since domain change alone never closes a prior link) |
 | `threads_history` described as append-only snapshots, keep last 20 | Implemented as one document per thread with a `snapshots[]` array, capped via Mongo's own `$push`+`$slice: -20` | Gets "keep last 20" atomically from Mongo itself; no separate trim/cleanup step needed |
-| `people`/`organizations`' `first_seen_at`/`last_seen_at`/`message_count` | Derived purely from that entity's `observations` (`min`/`max` of `observed_at`, count of distinct `source_message_id`) | Keeps every field on these documents a pure, reproducible function of `observations`, consistent with "profile{} REBUILT from observations" and testable via `rebuild_profiles reproduces incremental profiles exactly` |
-| `organizations.names[]` | Left empty/unpopulated by this phase | The attribute whitelist has no "name" attribute to source it from (industry/description/website/size_hint/relationship_to_owner only); populating it would need a new extraction category not in the spec's whitelist — deferred |
+| `people`/`organizations`' `first_seen_at`/`last_seen_at`/`message_count` | **Superseded by Phase 4B** (see below): originally derived purely from `observations`; now also merges in claimed-message participation | See Phase 4B section |
+| `organizations.names[]` | **Superseded by Phase 4B** (see below): originally left empty/unpopulated | See Phase 4B section |
 | `threads.message_count` | Count of ALL `raw_emails_dump` documents with that `thread_id` (total thread size), not "messages processed so far by context" | Simpler, stable definition; the processed-count is already visible via `context_version`/claim history on the raw documents themselves |
 | Departure evidence for `valid_to` | Code enforces only that the evidence is grounded in the claimed message text (exact quote check) — it cannot semantically verify the quote actually states a departure | Matches the stated principle: Claude's judgment is the quality gate, code's job is structural safety (grounding), not semantic fact-checking |
+
+## Phase 4B follow-up (2026-10-13)
+
+Small code follow-ups, done first with tests before the rest of Phase 4B:
+
+- **Participation-derived people/organizations.** `persist_context_delta`
+  now touches EVERY participant (`from`/`to`/`cc`) of every claimed
+  message, not just entities named in an observation or link — a person
+  with zero extracted facts still gets/updates a `people` doc (role
+  addresses flagged `is_role_address`, still no attributes). Every
+  non-free-mail participant domain gets/updates an `organizations` doc
+  the same way; free-mail domains still never do. `first_seen_at`/
+  `last_seen_at`/`message_count` are a union-merge of the entity's
+  `observations` AND this call's claimed-message participation against
+  the document's own previously-stored `participant_message_ids` —
+  re-persisting the same claimed messages is a no-op merge (set union),
+  so `message_count` cannot be double-counted by a reprocess.
+- **`organizations.names[]` now populated.** Added `"name"` to
+  `ORGANIZATION_ATTRIBUTE_WHITELIST`; `name` observations accumulate into
+  `names[]` (deduplicated, oldest-first, capped at
+  `ORGANIZATION_NAMES_MAX_COUNT = 5`) instead of overwriting a single
+  profile field — a company can legitimately go by more than one name
+  across emails. `name` is excluded from the generic `profile{}` dict
+  (that's for single-valued attributes only).
+
+### Golden-case note for Phase 5
+
+Departure statements (what makes `person_org_links.valid_to` get set) are
+judgment calls this phase can only validate structurally (evidence must
+be grounded in the message text) — it cannot semantically verify the
+quote actually states a departure. **Departure statements must be
+covered in Phase 5 golden cases** so extraction quality on this specific
+judgment is measured, not just assumed.
 
 ## Deferred (not in this phase)
 

@@ -140,40 +140,109 @@ def latest_value_per_attribute(observations: list[JsonDoc]) -> dict[str, JsonDoc
     return latest
 
 
-def compute_person_profile(db: Database, email: str) -> JsonDoc:
+def _participation_entries(claimed_docs: list[JsonDoc], email: str) -> list[tuple[str, str]]:
+    """(message_id, sort_key) for every claimed message this email appears
+    on as a participant (from/to/cc) -- the Phase 4B source of truth for
+    "a person appeared on a message" independent of whether any fact was
+    ever extracted about them."""
+    return [(doc["message_id"], doc["sort_key"]) for doc in claimed_docs if email in _participant_emails([doc])]
+
+
+def _participation_entries_for_domain(claimed_docs: list[JsonDoc], domain: str) -> list[tuple[str, str]]:
+    return [
+        (doc["message_id"], doc["sort_key"])
+        for doc in claimed_docs
+        if any(_domain_of(e) == domain for e in _participant_emails([doc]))
+    ]
+
+
+def _merge_seen_at_and_count(
+    existing: JsonDoc, base_message_ids: set[str], seen_values: list[str]
+) -> tuple[str, str, int, list[str]]:
+    """Union-merge, never increment -- re-merging the SAME claimed_docs
+    twice (e.g. a crash-then-reprocess, or a straight re-persist) leaves
+    participant_message_ids, and therefore message_count, unchanged."""
+    participant_ids = set(existing.get("participant_message_ids") or []) | base_message_ids
+    existing_first = existing.get("first_seen_at")
+    existing_last = existing.get("last_seen_at")
+    first_candidates = ([existing_first] if existing_first else []) + seen_values
+    last_candidates = ([existing_last] if existing_last else []) + seen_values
+    first_seen_at = min(first_candidates) if first_candidates else ""
+    last_seen_at = max(last_candidates) if last_candidates else ""
+    return first_seen_at, last_seen_at, len(participant_ids), sorted(participant_ids)
+
+
+def _organization_names(observations: list[JsonDoc], existing_names: list[str], cap: int) -> list[str]:
+    names = list(existing_names)
+    for obs in observations:
+        if obs["attribute"] == "name" and obs["value"] not in names:
+            names.append(obs["value"])
+    return names[:cap]
+
+
+def compute_person_profile(db: Database, email: str, claimed_docs: list[JsonDoc] | None = None) -> JsonDoc:
     """Pure computation, no write -- what rebuild_person WOULD set.
     scripts/rebuild_profiles.py's dry-run diffs this against the current
-    stored document without touching it."""
+    stored document without touching it. claimed_docs (optional) merges in
+    this call's message participation on top of observations -- a person
+    with zero extracted facts still gets counted/dated from appearing on a
+    claimed message (Phase 4B)."""
     observations = ObservationRepository(db).for_entity("person", email)
     latest = latest_value_per_attribute(observations)
     profile = {attr: obs["value"] for attr, obs in latest.items()}
-    message_ids = {obs["source_message_id"] for obs in observations}
-    observed_ats = [obs["observed_at"] for obs in observations]
     existing = PersonRepository(db).find(email) or {}
-    first_seen_at = min(observed_ats) if observed_ats else existing.get("first_seen_at", "")
-    last_seen_at = max(observed_ats) if observed_ats else existing.get("last_seen_at", "")
+
+    base_message_ids = {obs["source_message_id"] for obs in observations}
+    seen_values = [obs["observed_at"] for obs in observations]
+    if claimed_docs:
+        for message_id, sort_key in _participation_entries(claimed_docs, email):
+            base_message_ids.add(message_id)
+            seen_values.append(sort_key)
+
+    first_seen_at, last_seen_at, message_count, participant_message_ids = _merge_seen_at_and_count(
+        existing, base_message_ids, seen_values
+    )
     return {
         "profile": profile,
         "is_role_address": _is_role_address(email),
         "first_seen_at": first_seen_at,
         "last_seen_at": last_seen_at,
-        "message_count": len(message_ids),
+        "message_count": message_count,
+        "participant_message_ids": participant_message_ids,
     }
 
 
-def compute_organization_profile(db: Database, domain: str) -> JsonDoc:
+def compute_organization_profile(db: Database, domain: str, claimed_docs: list[JsonDoc] | None = None) -> JsonDoc:
     observations = ObservationRepository(db).for_entity("organization", domain)
     latest = latest_value_per_attribute(observations)
-    profile = {attr: obs["value"] for attr, obs in latest.items()}
-    observed_ats = [obs["observed_at"] for obs in observations]
+    profile = {attr: obs["value"] for attr, obs in latest.items() if attr != "name"}
     existing = OrganizationRepository(db).find(domain) or {}
-    first_seen_at = min(observed_ats) if observed_ats else existing.get("first_seen_at", "")
-    last_seen_at = max(observed_ats) if observed_ats else existing.get("last_seen_at", "")
-    return {"profile": profile, "first_seen_at": first_seen_at, "last_seen_at": last_seen_at}
+
+    base_message_ids = {obs["source_message_id"] for obs in observations}
+    seen_values = [obs["observed_at"] for obs in observations]
+    if claimed_docs:
+        for message_id, sort_key in _participation_entries_for_domain(claimed_docs, domain):
+            base_message_ids.add(message_id)
+            seen_values.append(sort_key)
+
+    first_seen_at, last_seen_at, message_count, participant_message_ids = _merge_seen_at_and_count(
+        existing, base_message_ids, seen_values
+    )
+    names = _organization_names(observations, existing.get("names") or [], cfg.ORGANIZATION_NAMES_MAX_COUNT)
+    return {
+        "profile": profile,
+        "names": names,
+        "first_seen_at": first_seen_at,
+        "last_seen_at": last_seen_at,
+        "message_count": message_count,
+        "participant_message_ids": participant_message_ids,
+    }
 
 
-def rebuild_person(db: Database, email: str, display_name_hint: str | None = None) -> JsonDoc:
-    computed = compute_person_profile(db, email)
+def rebuild_person(
+    db: Database, email: str, display_name_hint: str | None = None, claimed_docs: list[JsonDoc] | None = None
+) -> JsonDoc:
+    computed = compute_person_profile(db, email, claimed_docs)
     existing = PersonRepository(db).find(email) or {}
     display_names = set(existing.get("display_names") or [])
     if display_name_hint:
@@ -186,15 +255,21 @@ def rebuild_person(db: Database, email: str, display_name_hint: str | None = Non
         computed["first_seen_at"],
         computed["last_seen_at"],
         computed["message_count"],
+        computed["participant_message_ids"],
     )
     return PersonRepository(db).find(email)
 
 
-def rebuild_organization(db: Database, domain: str) -> JsonDoc:
-    computed = compute_organization_profile(db, domain)
-    existing = OrganizationRepository(db).find(domain) or {}
+def rebuild_organization(db: Database, domain: str, claimed_docs: list[JsonDoc] | None = None) -> JsonDoc:
+    computed = compute_organization_profile(db, domain, claimed_docs)
     OrganizationRepository(db).replace_computed_fields(
-        domain, existing.get("names") or [], computed["profile"], computed["first_seen_at"], computed["last_seen_at"]
+        domain,
+        computed["names"],
+        computed["profile"],
+        computed["first_seen_at"],
+        computed["last_seen_at"],
+        computed["message_count"],
+        computed["participant_message_ids"],
     )
     return OrganizationRepository(db).find(domain)
 
@@ -478,10 +553,19 @@ def persist_context_delta(db: Database, claim_id: str, thread_id: str | None, de
         touched_people.add(person_email)
         touched_orgs.add(org_domain)
 
+    # Phase 4B: every participant of a claimed message gets/updates a
+    # people doc even with zero extracted facts (role addresses flagged
+    # is_role_address, still no attributes -- validation already rejects
+    # any observation naming one). Same for organizations, scoped to
+    # non-free-mail participant domains only.
+    all_participants = _participant_emails(claimed_docs)
+    touched_people |= all_participants
+    touched_orgs |= {_domain_of(e) for e in all_participants if not _is_free_mail(_domain_of(e))}
+
     for email in touched_people:
-        rebuild_person(db, email, _derive_display_name(claimed_docs, email))
+        rebuild_person(db, email, _derive_display_name(claimed_docs, email), claimed_docs=claimed_docs)
     for domain in touched_orgs:
-        rebuild_organization(db, domain)
+        rebuild_organization(db, domain, claimed_docs=claimed_docs)
 
     thread_key = thread_id or claimed_docs[0]["message_id"]
     _apply_thread_delta(db, thread_key, parsed.thread, claimed_docs)
