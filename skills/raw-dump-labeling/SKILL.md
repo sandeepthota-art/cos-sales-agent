@@ -251,16 +251,24 @@ Exactly one per email, re-evaluated fresh each time (every value carries a
 
 ### Procedure (batched -- 10 claimed at a time, up to 20 total)
 
+**Claim order is NEWEST FIRST** (by `sort_key`, with a deterministic
+tie-breaker) -- a deliberate triage decision, see `docs/DECISIONS.md`.
+A large backlog drains newest-first: the most recently ingested emails
+are classified first, and older unclaimed emails only surface once
+everything newer has been claimed. This never changes `thread_context`
+(still oldest-first within a thread) or context-building's own claim
+order (still oldest-first thread-wide).
+
 **Outer loop**, up to 2 iterations (20 emails / 10 per batch), or until a
 batch comes back empty:
 
 1. **Call `get_next_unprocessed_raw_email_batch`** (default `batch_size=10`).
    Atomically claims and returns up to 10 eligible raw-dumped emails in ONE
-   call -- never-classified, classified under an older taxonomy version,
-   whose prior claim lease expired, or just reopened by a new inbound
-   message in their thread (Mode A step 4b). Empty list `[]` -> stop,
-   report "nothing left to label". This is the only step that batches --
-   everything below still happens per email, one at a time.
+   call, NEWEST FIRST -- never-classified, classified under an older
+   taxonomy version, whose prior claim lease expired, or just reopened by
+   a new inbound message in their thread (Mode A step 4b). Empty list `[]`
+   -> stop, report "nothing left to label". This is the only step that
+   batches -- everything below still happens per email, one at a time.
    **Every document in the batch shares ONE `claim_id`** -- read it off
    each document (`doc["claim_id"]`) and pass that exact value to
    `persist_raw_email_label`/`mark_raw_email_label_failed` for that

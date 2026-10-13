@@ -115,6 +115,21 @@ def test_history_only_docs_excluded_from_batch_claim(db):
     assert [d["message_id"] for d in batch] == ["MSG-NEW"]
 
 
+def test_history_only_doc_excluded_even_when_it_is_the_newest(db):
+    """Newest-first claim order must not override the history_only
+    exclusion -- a history_only doc that is the newest by sort_key must
+    still never be claimed; the next-newest non-history_only doc is."""
+    settings = _settings()
+    _ingest(db, settings, "MSG-OLD", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc))
+    _ingest(db, settings, "MSG-NEW", timestamp=datetime(2026, 9, 15, tzinfo=timezone.utc))
+    repo = RawEmailDumpRepository(db)
+    apply_history_only(repo, ["MSG-NEW"])
+
+    claimed = tools.get_next_unprocessed_raw_email(db)
+
+    assert claimed["message_id"] == "MSG-OLD"  # MSG-NEW skipped despite being newest
+
+
 def test_history_only_doc_never_claimable_even_after_a_thread_reopen(db):
     """A history_only doc should stay excluded even if it would otherwise
     become eligible again (e.g. classification_version reset by a reopen)

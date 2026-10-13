@@ -66,6 +66,23 @@ def test_claims_all_unprocessed_messages_of_thread_with_one_shared_claim_id(db):
     assert claimed_docs[0]["context_claim_id"] == result["claim_id"]
 
 
+def test_context_claim_stays_oldest_first_with_tied_sort_key_broken_by_thread_id(db):
+    """Regression: the label-claim newest-first flip (app.db.claim_next_unclassified)
+    must not affect context claiming. Two threads tied on sort_key break the
+    tie on thread_id ascending, and the overall claim order stays oldest
+    (then lowest thread_id) first."""
+    settings = _settings()
+    tied_ts = datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)
+    _ingest(db, settings, "MSG-B", thread_id="T-B", timestamp=tied_ts)
+    _ingest(db, settings, "MSG-A", thread_id="T-A", timestamp=tied_ts)
+
+    first = context.claim_next_thread_for_context(db)
+    second = context.claim_next_thread_for_context(db)
+
+    assert first["thread_id"] == "T-A"
+    assert second["thread_id"] == "T-B"
+
+
 def test_concurrent_claimers_get_disjoint_threads(db):
     settings = _settings()
     _ingest(db, settings, "MSG-A", thread_id="T-A", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc))

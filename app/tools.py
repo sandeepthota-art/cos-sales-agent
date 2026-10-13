@@ -62,14 +62,22 @@ def _require_existing(repo: RawEmailDumpRepository, message_id: str) -> JsonDoc:
 
 
 def _close_open_needs_reply_in_thread(
-    repo: RawEmailDumpRepository, thread_id: str, exclude_message_id: str, now_iso: str
+    repo: RawEmailDumpRepository,
+    thread_id: str,
+    exclude_message_id: str,
+    now_iso: str,
+    closing_sort_key: str,
+    closing_source_message_id: str,
 ) -> list[str]:
     """Deterministically closes every OTHER email in this thread whose
-    current label is one of _NEEDS_REPLY_LABELS -- "a reply from us just
-    landed in this thread, so whatever was pending from us is no longer
-    pending" is a structural fact, not a judgment call, so this never
-    invokes Claude/an LLM, same principle as every other deterministic write
-    in this module.
+    current label is one of _NEEDS_REPLY_LABELS AND is chronologically
+    EARLIER than the closing agent reply (by sort_key, source_message_id
+    tie-breaker) -- "a reply from us just landed in this thread, so whatever
+    was pending from us BEFORE it is no longer pending" is a structural
+    fact, not a judgment call, so this never invokes Claude/an LLM, same
+    principle as every other deterministic write in this module. A sibling
+    sent AFTER the closing reply is never touched: it's still pending on
+    something the agent hasn't seen yet (see docs/DECISIONS.md).
 
     Sets label_applied="1. Read only", appends a label_history entry (never
     overwrites history), and does NOT touch classification_version -- this
@@ -81,7 +89,15 @@ def _close_open_needs_reply_in_thread(
     Returns the message_ids actually closed (for the caller's report).
     """
     candidates = repo.find_many(
-        {"thread_id": thread_id, "message_id": {"$ne": exclude_message_id}, "label_applied": {"$in": _NEEDS_REPLY_LABELS}}
+        {
+            "thread_id": thread_id,
+            "message_id": {"$ne": exclude_message_id},
+            "label_applied": {"$in": _NEEDS_REPLY_LABELS},
+            "$or": [
+                {"sort_key": {"$lt": closing_sort_key}},
+                {"sort_key": closing_sort_key, "source_message_id": {"$lt": closing_source_message_id}},
+            ],
+        }
     )
     closed_ids = []
     for doc in candidates:
@@ -261,7 +277,9 @@ def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> Jso
         _clear_active_claims_in_thread(repo, thread_id, result["message_id"])
         _flag_rebuild_if_out_of_order(db, repo, thread_id, result["sort_key"])
         if is_from_agent:
-            closed_ids = _close_open_needs_reply_in_thread(repo, thread_id, result["message_id"], _now_iso())
+            closed_ids = _close_open_needs_reply_in_thread(
+                repo, thread_id, result["message_id"], _now_iso(), result["sort_key"], result["source_message_id"]
+            )
         else:
             reopened_ids = _reopen_thread_siblings_for_reevaluation(repo, thread_id, result["message_id"])
     # Surfaced so the caller (the skill) knows what else needs attention:
@@ -274,11 +292,12 @@ def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> Jso
 
 
 def get_next_unprocessed_raw_email(db: Database) -> JsonDoc | None:
-    """The oldest (by sort_key) raw-dumped Gmail email eligible for
-    classification -- never-classified, stale-classified, whose prior claim
-    lease expired, or just reopened by a new inbound message in its thread --
-    ATOMICALLY claimed in the same operation. Returns None when nothing is
-    eligible. Never touches Gmail, never calls an LLM.
+    """The newest (by sort_key, source_message_id tie-breaker) raw-dumped
+    Gmail email eligible for classification -- never-classified,
+    stale-classified, whose prior claim lease expired, or just reopened by a
+    new inbound message in its thread -- ATOMICALLY claimed in the same
+    operation. Returns None when nothing is eligible. Never touches Gmail,
+    never calls an LLM. Newest-first; see docs/DECISIONS.md.
 
     Also attaches thread_context -- every OTHER raw-dumped email sharing this
     one's thread_id, oldest first -- so a caller re-evaluating this message

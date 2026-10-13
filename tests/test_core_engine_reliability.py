@@ -52,14 +52,14 @@ def test_get_next_unprocessed_raw_email_returns_none_when_nothing_eligible(db):
     assert tools.get_next_unprocessed_raw_email(db) is None
 
 
-def test_get_next_unprocessed_raw_email_claims_oldest_by_sort_key(db):
+def test_get_next_unprocessed_raw_email_claims_newest_by_sort_key(db):
     settings = _settings()
-    _ingest(db, settings, "MSG-NEW", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc))
     _ingest(db, settings, "MSG-OLD", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
+    _ingest(db, settings, "MSG-NEW", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc))
 
     claimed = tools.get_next_unprocessed_raw_email(db)
 
-    assert claimed["message_id"] == "MSG-OLD"
+    assert claimed["message_id"] == "MSG-NEW"
     assert claimed["label_claimed_at"] != ""
 
 
@@ -80,10 +80,10 @@ def test_thread_context_excludes_self_and_is_sorted_oldest_first(db):
     _ingest(db, settings, "MSG-2", thread_id="T-1", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc))
     _ingest(db, settings, "MSG-3", thread_id="T-1", timestamp=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc))
 
-    claimed = tools.get_next_unprocessed_raw_email(db)  # oldest = MSG-1
+    claimed = tools.get_next_unprocessed_raw_email(db)  # newest = MSG-3
 
-    assert claimed["message_id"] == "MSG-1"
-    assert [d["message_id"] for d in claimed["thread_context"]] == ["MSG-2", "MSG-3"]
+    assert claimed["message_id"] == "MSG-3"
+    assert [d["message_id"] for d in claimed["thread_context"]] == ["MSG-1", "MSG-2"]
 
 
 # --- batch claim --------------------------------------------------------------------
@@ -93,14 +93,14 @@ def test_batch_claim_returns_empty_list_when_nothing_eligible(db):
     assert tools.get_next_unprocessed_raw_email_batch(db) == []
 
 
-def test_batch_claim_claims_oldest_first_up_to_batch_size(db):
+def test_batch_claim_claims_newest_first_up_to_batch_size(db):
     settings = _settings()
     for i in range(5):
         _ingest(db, settings, f"MSG-{i}", timestamp=datetime(2026, 8, 1 + i, 9, 0, tzinfo=timezone.utc))
 
     batch = tools.get_next_unprocessed_raw_email_batch(db, batch_size=3)
 
-    assert [d["message_id"] for d in batch] == ["MSG-0", "MSG-1", "MSG-2"]
+    assert [d["message_id"] for d in batch] == ["MSG-4", "MSG-3", "MSG-2"]
 
 
 def test_batch_claim_does_not_return_already_claimed_docs(db):
@@ -111,8 +111,41 @@ def test_batch_claim_does_not_return_already_claimed_docs(db):
     first_batch = tools.get_next_unprocessed_raw_email_batch(db, batch_size=2)
     second_batch = tools.get_next_unprocessed_raw_email_batch(db, batch_size=2)
 
-    assert [d["message_id"] for d in first_batch] == ["MSG-0", "MSG-1"]
-    assert [d["message_id"] for d in second_batch] == ["MSG-2"]  # not MSG-0/MSG-1 again
+    assert [d["message_id"] for d in first_batch] == ["MSG-2", "MSG-1"]
+    assert [d["message_id"] for d in second_batch] == ["MSG-0"]  # not MSG-2/MSG-1 again
+
+
+def test_label_claim_with_tied_sort_key_is_stable_and_repeatable(db):
+    """Two docs sharing an identical sort_key must break the tie on
+    source_message_id descending, and that same order must reproduce across
+    repeated, independent runs -- never an arbitrary/unordered pick."""
+    settings = _settings()
+    tied_ts = datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)
+    for _ in range(3):
+        fresh_db = mongomock.MongoClient().db
+        _ingest(fresh_db, settings, "MSG-A", timestamp=tied_ts)
+        _ingest(fresh_db, settings, "MSG-B", timestamp=tied_ts)
+
+        batch = tools.get_next_unprocessed_raw_email_batch(fresh_db, batch_size=2)
+
+        assert [d["message_id"] for d in batch] == ["MSG-B", "MSG-A"]
+
+
+def test_batch_claim_orders_strictly_newest_first_across_reopened_and_never_labeled(db):
+    """A mix of a reopened sibling (classification_version reset to 0 by a
+    later inbound message in its thread) and never-labeled messages must
+    still claim in strict newest-by-sort_key order -- reopened status has no
+    bearing on claim order."""
+    settings = _settings()
+    _ingest(db, settings, "MSG-A", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
+    tools.persist_raw_email_label(db, "MSG-A", "1. Read only", claim_id=None, evidence="renewal pricing")
+    _ingest(db, settings, "MSG-B", thread_id="T-1", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc))
+    # MSG-C is inbound (not agent), so it reopens MSG-A (classification_version -> 0) on arrival.
+    _ingest(db, settings, "MSG-C", thread_id="T-1", timestamp=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc))
+
+    batch = tools.get_next_unprocessed_raw_email_batch(db, batch_size=3)
+
+    assert [d["message_id"] for d in batch] == ["MSG-C", "MSG-B", "MSG-A"]
 
 
 def test_batch_claim_attaches_thread_context_per_document(db):
@@ -305,8 +338,12 @@ def test_reopened_sibling_becomes_claimable_again(db):
         db, settings, "MSG-NEW-QUESTION", thread_id="T-1", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc)
     )
 
+    # Claim order is newest-first: MSG-NEW-QUESTION (Aug 2) comes first;
+    # draining a second time reclaims the reopened MSG-OLD.
+    first_claim = tools.get_next_unprocessed_raw_email(db)
+    assert first_claim["message_id"] == "MSG-NEW-QUESTION"
     claimed = tools.get_next_unprocessed_raw_email(db)
-    assert claimed["message_id"] == "MSG-OLD"  # oldest, and newly eligible again
+    assert claimed["message_id"] == "MSG-OLD"  # reopened, and newly eligible again
 
 
 def test_close_and_reopen_never_touch_emails_outside_the_thread(db):
@@ -362,11 +399,12 @@ def test_ingest_is_idempotent_and_never_resets_existing_classification_progress(
 
 def test_sort_key_normalizes_differing_utc_offsets_to_correct_chronological_order(db):
     settings = _settings()
-    # 09:00 IST (UTC+5:30) on Aug 2 is 03:30 UTC Aug 2 -- earlier than 23:00 UTC Aug 1.
+    # 09:00 IST (UTC+5:30) on Aug 2 is 03:30 UTC Aug 2 -- chronologically
+    # AFTER 23:00 UTC Aug 1, despite "EARLY" in its own local-tz name.
     ist = timezone(timedelta(hours=5, minutes=30))
     _ingest(db, settings, "MSG-LATE-UTC-STRING", timestamp=datetime(2026, 8, 1, 23, 0, tzinfo=timezone.utc))
     _ingest(db, settings, "MSG-EARLY-IST", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=ist))
 
     claimed = tools.get_next_unprocessed_raw_email(db)
 
-    assert claimed["message_id"] == "MSG-LATE-UTC-STRING"  # chronologically first despite the later calendar date
+    assert claimed["message_id"] == "MSG-EARLY-IST"  # chronologically last despite the "early" name

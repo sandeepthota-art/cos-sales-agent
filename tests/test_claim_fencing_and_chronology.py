@@ -1,5 +1,4 @@
-"""Phase 2: claim fencing (STEP 3, implemented) and chronology (STEP 3,
-DEFERRED -- see the xfail'd test at the bottom).
+"""Phase 2: claim fencing (STEP 3, implemented) and chronology (implemented).
 
 Implemented: claim_id returned by claim tools, persist_raw_email_label /
 mark_raw_email_label_failed compare-and-swap on it (returns
@@ -8,10 +7,10 @@ overwriting), reopen/auto-close clear a document's claim via the shared
 _cleared_claim_fields helper, batch claim is a loop of atomic
 single-document claims (no more find()-then-update_many TOCTOU window).
 
-Deferred: chronology (auto-close must not close a sibling sent, by
-sort_key, AFTER the closing agent reply) is NOT implemented yet -- its
-test is marked xfail so the suite stays green while the gap stays
-documented and tracked.
+Chronology: auto-close only closes a "Needs reply*" sibling strictly
+EARLIER than the closing agent reply by (sort_key, source_message_id) --
+a sibling sent AFTER the reply (by that same ordering) is never touched,
+regardless of ingestion call order. See docs/DECISIONS.md.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -130,8 +129,12 @@ def test_new_thread_message_clears_the_claim_of_any_actively_claimed_sibling(db)
     result = tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=claim_id, evidence="renewal pricing")
     assert result == {"ok": False, "reason": "claim_lost"}
 
-    # Immediately reclaimable (claim was cleared, not just expired), with
-    # fresh thread_context that now includes the new sibling.
+    # Immediately reclaimable (claim was cleared, not just expired). Claim
+    # order is newest-first, so MSG-NEW (the newer sibling) comes first;
+    # draining a second time reclaims MSG-ASK, with fresh thread_context
+    # that now includes the new sibling.
+    first_reclaim = tools.get_next_unprocessed_raw_email(db)
+    assert first_reclaim["message_id"] == "MSG-NEW"
     reclaimed = tools.get_next_unprocessed_raw_email(db)
     assert reclaimed["message_id"] == "MSG-ASK"
     assert [s["message_id"] for s in reclaimed["thread_context"]] == ["MSG-NEW"]
@@ -151,6 +154,10 @@ def test_auto_close_clears_the_claim_of_a_concurrently_claimed_sibling(db):
     tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None, evidence="renewal pricing")
     _ingest(db, settings, "MSG-REOPEN", thread_id="T-1", timestamp=datetime(2026, 8, 2, tzinfo=timezone.utc))
 
+    # Claim order is newest-first: MSG-REOPEN (Aug 2) is claimed before the
+    # reopened MSG-ASK (Aug 1).
+    first_claim = tools.get_next_unprocessed_raw_email(db)
+    assert first_claim["message_id"] == "MSG-REOPEN"
     claimed = tools.get_next_unprocessed_raw_email(db)
     assert claimed["message_id"] == "MSG-ASK"
     claim_id = claimed["claim_id"]
@@ -237,17 +244,38 @@ def test_get_stuck_emails_excludes_documents_below_the_cap(db):
     assert tools.get_stuck_emails(db) == []
 
 
-# --- 7. chronology (DEFERRED -- not implemented this pass) --------------------------
+# --- 7. chronology ---------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="deferred")
+def test_auto_close_closes_a_sibling_sent_before_the_agent_reply(db):
+    """A sibling sent (by sort_key) BEFORE the agent's closing reply is
+    closed, same as always."""
+    settings = _settings()
+    _ingest(db, settings, "MSG-SIBLING-EARLIER", thread_id="T-1", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc))
+    tools.persist_raw_email_label(db, "MSG-SIBLING-EARLIER", "1. Needs reply", claim_id=None, evidence="renewal pricing")
+
+    result = _ingest(
+        db,
+        settings,
+        "MSG-AGENT-REPLY",
+        thread_id="T-1",
+        timestamp=datetime(2026, 8, 3, tzinfo=timezone.utc),
+        **{"from": {"name": "Agent", "email": "agent@ourcompany.example"}},
+    )
+
+    assert result["closed_in_thread"] == ["MSG-SIBLING-EARLIER"]
+    sibling = RawEmailDumpRepository(db).find_one({"message_id": "MSG-SIBLING-EARLIER"})
+    assert sibling["label_applied"] == "1. Read only"
+
+
 def test_auto_close_never_closes_a_sibling_sent_after_the_agent_reply(db):
     """A sibling sent (by sort_key) AFTER the agent's closing reply must
-    NEVER be auto-closed by it. Deferred per Phase 2 STEP 3 scope -- the
-    gap is real (see Phase 2 STEP 1 finding g) but not fixed this pass."""
+    NEVER be auto-closed by it -- label, gmail_label_synced, and claim
+    fields all stay exactly as they were."""
     settings = _settings()
     _ingest(db, settings, "MSG-SIBLING-LATER", thread_id="T-1", timestamp=datetime(2026, 8, 5, tzinfo=timezone.utc))
     tools.persist_raw_email_label(db, "MSG-SIBLING-LATER", "1. Needs reply", claim_id=None, evidence="renewal pricing")
+    before = RawEmailDumpRepository(db).find_one({"message_id": "MSG-SIBLING-LATER"})
 
     result = _ingest(
         db,
@@ -261,3 +289,61 @@ def test_auto_close_never_closes_a_sibling_sent_after_the_agent_reply(db):
     assert result["closed_in_thread"] == []
     sibling = RawEmailDumpRepository(db).find_one({"message_id": "MSG-SIBLING-LATER"})
     assert sibling["label_applied"] == "1. Needs reply"
+    assert sibling["gmail_label_synced"] == before["gmail_label_synced"]
+    assert sibling["claim_id"] == before["claim_id"]
+    assert sibling["label_claimed_at"] == before["label_claimed_at"]
+
+
+def test_auto_close_tie_on_sort_key_resolved_by_source_message_id(db):
+    """Two siblings share the agent reply's exact sort_key -- the tie is
+    resolved on source_message_id: strictly-less closes, strictly-greater-or-
+    equal does not."""
+    settings = _settings()
+    tied_ts = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    _ingest(
+        db, settings, "MSG-SIB-EARLY", thread_id="T-1", timestamp=tied_ts, source_message_id="AAA-EARLY"
+    )
+    tools.persist_raw_email_label(db, "MSG-SIB-EARLY", "1. Needs reply", claim_id=None, evidence="renewal pricing")
+    _ingest(
+        db, settings, "MSG-SIB-LATE", thread_id="T-1", timestamp=tied_ts, source_message_id="ZZZ-LATE"
+    )
+    tools.persist_raw_email_label(db, "MSG-SIB-LATE", "1. Needs reply", claim_id=None, evidence="renewal pricing")
+
+    result = _ingest(
+        db,
+        settings,
+        "MSG-AGENT-REPLY",
+        thread_id="T-1",
+        timestamp=tied_ts,
+        source_message_id="MMM-AGENT",
+        **{"from": {"name": "Agent", "email": "agent@ourcompany.example"}},
+    )
+
+    assert result["closed_in_thread"] == ["MSG-SIB-EARLY"]
+    early = RawEmailDumpRepository(db).find_one({"message_id": "MSG-SIB-EARLY"})
+    late = RawEmailDumpRepository(db).find_one({"message_id": "MSG-SIB-LATE"})
+    assert early["label_applied"] == "1. Read only"
+    assert late["label_applied"] == "1. Needs reply"
+
+
+def test_agent_reply_ingested_out_of_order_does_not_close_a_later_question(db):
+    """An inbound question with a LATER sort_key is already labeled "Needs
+    reply". The agent's reply, carrying an EARLIER sort_key, is only
+    ingested afterward (e.g. a delayed webhook) -- ingestion call order
+    must not matter, only sort_key. The later question stays untouched."""
+    settings = _settings()
+    _ingest(db, settings, "MSG-LATER-QUESTION", thread_id="T-1", timestamp=datetime(2026, 8, 10, tzinfo=timezone.utc))
+    tools.persist_raw_email_label(db, "MSG-LATER-QUESTION", "1. Needs reply", claim_id=None, evidence="renewal pricing")
+
+    result = _ingest(
+        db,
+        settings,
+        "MSG-AGENT-REPLY-OUT-OF-ORDER",
+        thread_id="T-1",
+        timestamp=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        **{"from": {"name": "Agent", "email": "agent@ourcompany.example"}},
+    )
+
+    assert result["closed_in_thread"] == []
+    question = RawEmailDumpRepository(db).find_one({"message_id": "MSG-LATER-QUESTION"})
+    assert question["label_applied"] == "1. Needs reply"

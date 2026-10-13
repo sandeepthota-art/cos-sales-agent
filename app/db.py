@@ -18,9 +18,11 @@ def get_client(uri: str) -> MongoClient:
 def initialize_indexes(db: Database) -> None:
     db.raw_emails_dump.create_index("source_message_id", unique=True)
     # Backs RawEmailDumpRepository.claim_next_unclassified's exact filter+sort
-    # shape -- classification_version is the most selective field, sort_key is
-    # the normalized-UTC sort for oldest-eligible-first order.
-    db.raw_emails_dump.create_index([("classification_version", 1), ("sort_key", 1)])
+    # shape -- classification_version is the most selective field; sort_key
+    # descending + source_message_id descending is the newest-eligible-first
+    # order with a deterministic tie-breaker (docs/DECISIONS.md: labeling
+    # claims newest first, the opposite of context claiming).
+    db.raw_emails_dump.create_index([("classification_version", 1), ("sort_key", -1), ("source_message_id", -1)])
     # Backs the skill's end-of-run label breakdown.
     db.raw_emails_dump.create_index("label_applied")
     # Backs claim_next_context_candidate's filter+sort shape, same reasoning
@@ -83,9 +85,11 @@ class RawEmailDumpRepository(_BaseRepository):
     def claim_next_unclassified(
         self, max_classification_version: int, claim_cutoff_iso: str, max_attempts: int, claim_id: str, now_iso: str
     ) -> JsonDoc | None:
-        """Atomically finds AND claims the oldest (by sort_key) email eligible for
-        classification, in one find_one_and_update -- so two concurrent callers
-        can never be handed the same email.
+        """Atomically finds AND claims the newest (by sort_key, source_message_id
+        descending tie-breaker) email eligible for classification, in one
+        find_one_and_update -- so two concurrent callers can never be handed
+        the same email. Newest-first is a deliberate triage decision (see
+        docs/DECISIONS.md); context claiming stays oldest-first.
 
         Eligible: classification_version < max_classification_version (never
         classified, or classified under an older taxonomy version -- bumping
@@ -106,32 +110,67 @@ class RawEmailDumpRepository(_BaseRepository):
         (lease expired and reclaimed, or cleared by a concurrent
         reopen/auto-close) can never silently overwrite newer work.
 
-        Uses return_document=ReturnDocument.BEFORE, not AFTER, and manually
-        patches label_claimed_at/claim_id onto the returned dict -- a
-        deliberate workaround for a confirmed mongomock 4.3.0 bug (tested
-        against both mongomock and real Atlas): find_one_and_update fails to
-        match when a multi-condition query + sort + projection + an update
-        that $sets the SAME field one condition filters on are combined with
-        return_document=AFTER. BEFORE sidesteps it with no change in actual
-        write behavior.
+        Claims via _claim_sorted_one -- see that method's docstring for why a
+        plain single-call find_one_and_update(sort=...) is not safe to use
+        here (a confirmed mongomock bug, independent of the documented
+        BEFORE/AFTER one: it can apply the write to the wrong document
+        whenever natural insertion order differs from sort order).
         """
-        before = self._collection.find_one_and_update(
+        return self._claim_sorted_one(
             {
                 "classification_version": {"$lt": max_classification_version},
                 "label_attempts": {"$lt": max_attempts},
                 "label_claimed_at": {"$lt": claim_cutoff_iso},
                 "history_only": {"$ne": True},
             },
-            {"$set": {"label_claimed_at": now_iso, "claim_id": claim_id}},
-            sort=[("sort_key", 1)],
+            {"label_claimed_at": now_iso, "claim_id": claim_id},
+            sort=[("sort_key", -1), ("source_message_id", -1)],
+        )
+
+    def _claim_sorted_one(self, filter_: JsonDoc, set_fields: JsonDoc, sort: list[tuple[str, int]]) -> JsonDoc | None:
+        """Shared two-phase claim used by claim_next_unclassified and
+        claim_next_context_candidate: find_one(sort=...) picks the right
+        candidate by _id, then find_one_and_update scopes the write to that
+        exact _id (re-checking filter_ too, so a concurrent claimer winning
+        the race in between makes this return None, same "lost the race"
+        outcome as a single atomic call would have given).
+
+        This two-step shape -- rather than one find_one_and_update(sort=...)
+        -- is a deliberate workaround for a confirmed mongomock bug (tested
+        against mongomock; the single-call form is correct against real
+        Atlas): find_one_and_update's `sort` only affects which document is
+        chosen for the BEFORE/AFTER return value, NOT which document the
+        update is actually applied to -- the write silently lands on the
+        first match in natural (insertion) order instead. This stayed
+        invisible for the oldest-first queries this project started with
+        (insertion order happened to match sort order in every test and in
+        practice), but surfaced for real once label-claiming flipped to
+        newest-first (see docs/DECISIONS.md): insertion order is oldest
+        first, so a naive single-call claim would silently keep claiming
+        the OLDEST document while reporting the newest one as claimed.
+
+        Scoping the update to the candidate's own _id sidesteps the bug
+        entirely (there's only one document that can possibly match an _id
+        filter, so there's no "wrong document in natural order" for
+        mongomock to pick), and is exactly as atomic as the single-call form
+        against real Atlas, where this workaround is a no-op in behavior.
+
+        Uses return_document=ReturnDocument.BEFORE, not AFTER, and manually
+        merges set_fields onto the returned dict -- the same documented
+        mongomock 4.3.0 AFTER-bug workaround used elsewhere in this class.
+        """
+        candidate = self._collection.find_one(filter_, sort=sort, projection={"_id": 1})
+        if candidate is None:
+            return None
+        before = self._collection.find_one_and_update(
+            {**filter_, "_id": candidate["_id"]},
+            {"$set": set_fields},
             return_document=ReturnDocument.BEFORE,
             projection={"_id": 0},
         )
         if before is None:
             return None
-        before["label_claimed_at"] = now_iso
-        before["claim_id"] = claim_id
-        return before
+        return {**before, **set_fields}
 
     def claim_batch_unclassified(
         self,
@@ -142,7 +181,7 @@ class RawEmailDumpRepository(_BaseRepository):
         now_iso: str,
         batch_size: int,
     ) -> list[JsonDoc]:
-        """Claims up to batch_size oldest-eligible emails as a LOOP of
+        """Claims up to batch_size newest-eligible emails as a LOOP of
         individually atomic claim_next_unclassified calls, all sharing the
         same claim_id -- not a find() + one update_many (that had a real
         TOCTOU window: two concurrent batch callers could both read the same
@@ -152,7 +191,7 @@ class RawEmailDumpRepository(_BaseRepository):
         claim_next_unclassified already had.
 
         Same eligibility rule as claim_next_unclassified. Returns [] if
-        nothing is eligible, otherwise up to batch_size documents, oldest
+        nothing is eligible, otherwise up to batch_size documents, newest
         first, each already claimed with the shared claim_id.
         """
         claimed: list[JsonDoc] = []
@@ -230,13 +269,14 @@ class RawEmailDumpRepository(_BaseRepository):
     def claim_next_context_candidate(
         self, claim_cutoff_iso: str, max_attempts: int, claim_id: str, now_iso: str, thread_id: str | None = None
     ) -> JsonDoc | None:
-        """Atomically finds AND claims the oldest (by sort_key) message
-        eligible for context extraction -- same BEFORE-workaround and same
-        fencing-token shape as claim_next_unclassified, but against the
-        context_* fields, which are fully independent of the label_*
-        claim lifecycle (a message can be label-claimed and
-        context-claimed at the same time; neither path reads the other's
-        fields).
+        """Atomically finds AND claims the oldest (by sort_key, thread_id
+        ascending tie-breaker) message eligible for context extraction --
+        same BEFORE-workaround and same fencing-token shape as
+        claim_next_unclassified, but against the context_* fields, which are
+        fully independent of the label_* claim lifecycle (a message can be
+        label-claimed and context-claimed at the same time; neither path
+        reads the other's fields). Oldest-first here is unchanged by the
+        label-claim newest-first flip (see docs/DECISIONS.md).
 
         Eligible: context_version == 0, context_attempts < max_attempts,
         context_claimed_at < claim_cutoff_iso (unclaimed sorts before any
@@ -260,18 +300,11 @@ class RawEmailDumpRepository(_BaseRepository):
         }
         if thread_id is not None:
             query["thread_id"] = thread_id
-        before = self._collection.find_one_and_update(
+        return self._claim_sorted_one(
             query,
-            {"$set": {"context_claimed_at": now_iso, "context_claim_id": claim_id}},
-            sort=[("sort_key", 1)],
-            return_document=ReturnDocument.BEFORE,
-            projection={"_id": 0},
+            {"context_claimed_at": now_iso, "context_claim_id": claim_id},
+            sort=[("sort_key", 1), ("thread_id", 1)],
         )
-        if before is None:
-            return None
-        before["context_claimed_at"] = now_iso
-        before["context_claim_id"] = claim_id
-        return before
 
     def claim_thread_for_context(
         self, claim_cutoff_iso: str, max_attempts: int, claim_id: str, now_iso: str, max_messages: int
