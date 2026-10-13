@@ -460,11 +460,16 @@ def test_get_person_context_never_copies_related_content_into_the_person_documen
     # Intelligence Profile fields (see docs/superpowers/specs/
     # 2026-10-05-customer-intelligence-profile-design.md) -- a legitimate, intentional
     # addition to the Person schema, not content copied in by get_person_context.
+    # profile_status/profile_status_reason/profile_source_email_ids/profile_checked_at
+    # are Milestone 1's reliable-profile-generation fields (app.entities.
+    # profile_eligibility) -- also a legitimate, intentional addition, never written
+    # by get_person_context itself.
     assert set(stored.keys()) == {
         "id", "name", "email", "aliases", "org", "org_id", "role", "goal_pillar",
         "last_inbound", "last_outbound", "open_threads",
         "status", "merged_into",
         "profile_summary", "recent_context", "key_topics", "profile_updated_at",
+        "profile_status", "profile_status_reason", "profile_source_email_ids", "profile_checked_at",
     }
 
 

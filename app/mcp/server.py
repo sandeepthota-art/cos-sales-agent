@@ -656,23 +656,57 @@ def merge_organization_records(source_org_id: str, target_org_id: str) -> dict[s
 
 
 @mcp.tool()
+def check_profile_eligibility(person_id: str) -> dict[str, Any]:
+    """Deterministic, LLM-free gate -- call this FIRST, before deciding
+    whether to compose a profile for this person. Never calls an LLM; it
+    only counts existing evidence (email interactions, distinct threads,
+    knowledge facts, commitments, meetings) and returns
+    {eligible, reason, evidence}. Also stamps the Person with
+    profile_checked_at and profile_status ("pending_generation" if eligible,
+    "insufficient_evidence" otherwise) -- so every check is recorded even if
+    you decide not to proceed. Never touches profile_summary/recent_context/
+    key_topics -- an ineligible result never clears or overwrites an
+    existing profile. Raises ValueError if person_id doesn't exist.
+    """
+    return tools.check_profile_eligibility(_get_db(), person_id)
+
+
+@mcp.tool()
+def mark_profile_generation_failed(person_id: str, reason: str) -> dict[str, Any]:
+    """Call this if check_profile_eligibility said eligible=True but you were
+    unable to actually compose and persist a profile (ambiguous/conflicting
+    evidence you chose not to resolve, an error, an aborted attempt) --
+    records profile_status="generation_failed" with your reason, so the
+    record is visibly retryable on a later run instead of silently stuck at
+    "pending_generation" forever. Never claims a profile was generated.
+    Raises ValueError if person_id doesn't exist.
+    """
+    return tools.mark_profile_generation_failed(_get_db(), person_id, reason)
+
+
+@mcp.tool()
 def persist_person_profile(
     person_id: str,
     role: str | None = None,
     profile_summary: str | None = None,
     recent_context: str | None = None,
     key_topics: list[str] | None = None,
+    source_email_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Persists a Customer/Contact Intelligence profile update you (Claude)
-    already composed -- call this after seeing people_profile_context in a
-    persist_email_analysis result, when the email adds something substantive
-    about who this person is, their role, or what you've been discussing.
-    Each field is optional -- omit one to leave it unchanged. Raises
-    ValueError if person_id doesn't exist.
+    already composed -- call this after check_profile_eligibility returns
+    eligible=True, using only the evidence it returned (never speculate
+    beyond it). Each field is optional -- omit one to leave it unchanged.
+    source_email_ids should be the evidence list check_profile_eligibility
+    returned, for traceability -- optional, backward-compatible, omitting it
+    leaves the person's existing value unchanged. Sets
+    profile_status="generated" -- this is the only tool that does, and only
+    once this write actually succeeds. Raises ValueError if person_id
+    doesn't exist.
     """
     return tools.persist_person_profile(
         _get_db(), person_id, role=role, profile_summary=profile_summary,
-        recent_context=recent_context, key_topics=key_topics,
+        recent_context=recent_context, key_topics=key_topics, source_email_ids=source_email_ids,
     )
 
 

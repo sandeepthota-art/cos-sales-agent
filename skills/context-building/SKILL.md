@@ -59,8 +59,25 @@ retry.
      call `persist_email_analysis` again (idempotent, dedup is automatic).
    - `new_organizations_needing_research` -- WebSearch each one, then call
      `persist_organization_research`.
-   - `people_profile_context` -- if an entry adds something substantive
-     about who this person is, call `persist_person_profile`.
+   - `people_profile_context` -- for each person_id in this list, call
+     `check_profile_eligibility(person_id)` **first**. This is a
+     deterministic, LLM-free gate -- it never asks you anything, it just
+     tells you whether this person has enough stored evidence for a
+     profile. Never skip it and decide "substantive enough" yourself; it
+     replaces that judgment call.
+     - `eligible: false` -- stop here for this person. Do not call
+       `persist_person_profile`. Nothing further needed -- the tool itself
+       already recorded why.
+     - `eligible: true` -- compose a profile using **only** the evidence in
+       the returned `evidence` (and the `people_profile_context` entry
+       itself) -- never speculate beyond what's actually there. Call
+       `persist_person_profile(person_id, ..., source_email_ids=<the
+       evidence's source_email_ids>)`. If you cannot actually compose one
+       (the evidence is genuinely ambiguous or contradictory and you
+       decline to guess), call
+       `mark_profile_generation_failed(person_id, reason)` instead --
+       never silently move on, and never claim a profile was generated
+       unless `persist_person_profile` actually succeeded.
 3. **Build a `ContextDelta`** for this email: a bounded change to the
    thread's `ThreadContext` -- only what this email adds or changes
    (`summary` if it changed, `participants_added`/`removed`,

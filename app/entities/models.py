@@ -76,6 +76,19 @@ class Person(BaseModel):
     recent_context: str | None = None
     key_topics: list[str] = Field(default_factory=list)
     profile_updated_at: datetime | None = None
+    # Milestone 1 (reliable profile generation): a deterministic record of what
+    # app.entities.profile_eligibility.check_profile_eligibility last decided --
+    # separate from profile_updated_at (which only moves when persist_person_profile
+    # actually writes new prose). None for any Person never run through the
+    # eligibility check (predates this field, or genuinely never checked).
+    profile_status: str | None = None
+    profile_status_reason: str | None = None
+    # The deduplicated source_email_ids the eligibility check's evidence was drawn
+    # from -- distinct from profile_summary's own provenance (Claude may compose
+    # from a subset or a superset of these); this is what the eligibility DECISION
+    # was based on, for traceability independent of whether generation succeeded.
+    profile_source_email_ids: list[str] = Field(default_factory=list)
+    profile_checked_at: datetime | None = None
 
 
 class Project(BaseModel):

@@ -31,6 +31,8 @@ from app.database.repositories import (
 )
 from app.email.models import Email, parse_email
 from app.entities.person_context import enrich_person_context_from_email
+from app.entities.profile_eligibility import check_profile_eligibility as _check_profile_eligibility
+from app.entities.profile_eligibility import mark_profile_generation_failed as _mark_profile_generation_failed
 from app.entities.resolution import resolve_canonical_person_for_email
 from app.entities.thread_events import get_thread_event_trail
 from app.query import retrieval
@@ -1337,6 +1339,17 @@ def get_project_summary(db: Database, project_id: str) -> dict[str, Any] | None:
     }
 
 
+def check_profile_eligibility(db: Database, person_id: str) -> dict[str, Any]:
+    """Thin MCP-boundary wrapper -- see app.entities.profile_eligibility for
+    the actual deterministic, zero-LLM-call logic."""
+    return _check_profile_eligibility(db, person_id)
+
+
+def mark_profile_generation_failed(db: Database, person_id: str, reason: str) -> dict[str, Any]:
+    """Thin MCP-boundary wrapper -- see app.entities.profile_eligibility."""
+    return _mark_profile_generation_failed(db, person_id, reason)
+
+
 def persist_person_profile(
     db: Database,
     person_id: str,
@@ -1344,6 +1357,7 @@ def persist_person_profile(
     profile_summary: str | None = None,
     recent_context: str | None = None,
     key_topics: list[str] | None = None,
+    source_email_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Persists a Customer/Contact Intelligence profile update a reasoning
     caller (Claude, having read the triggering email plus this person's
@@ -1357,6 +1371,15 @@ def persist_person_profile(
     composed, so there is nothing to protect against; the instruction to
     incorporate the existing value (already handed back via
     people_profile_context) is what prevents regression, not a tool guard.
+
+    source_email_ids is additive and backward-compatible: existing callers
+    that omit it are completely unaffected (defaults to the person's current
+    value, or [] if never set) -- pass the evidence list
+    check_profile_eligibility (app.entities.profile_eligibility) returned, so
+    the persisted profile stays traceable to the emails that justified it.
+    Stamps profile_status="generated" -- this is the only place that status
+    is ever set, i.e. "generated" is claimed only once this write actually
+    succeeds, never merely because generation was attempted.
 
     Raises ValueError if person_id doesn't exist.
     """
@@ -1375,6 +1398,12 @@ def persist_person_profile(
         "recent_context": recent_context if recent_context is not None else person.get("recent_context"),
         "key_topics": key_topics if key_topics is not None else person.get("key_topics", []),
         "profile_updated_at": datetime.now(timezone.utc),
+        "profile_source_email_ids": (
+            source_email_ids if source_email_ids is not None else person.get("profile_source_email_ids", [])
+        ),
+        "profile_status": "generated",
+        "profile_status_reason": "Profile generated and persisted.",
+        "profile_checked_at": datetime.now(timezone.utc),
     }
 
     repo.upsert_by_key({"id": person_id}, {**person, **update})

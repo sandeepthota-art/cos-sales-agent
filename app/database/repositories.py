@@ -254,6 +254,12 @@ class PersonContextSnapshotRepository(_BaseRepository):
             .limit(limit)
         )
 
+    def all_for_person(self, person_id: str) -> list[dict[str, Any]]:
+        """Unbounded, unlike recent_for_person -- for eligibility/evidence
+        counting (app.entities.profile_eligibility), which needs the true
+        total, not a capped recent window."""
+        return list(self._collection.find({"person_id": person_id}, {"_id": 0}))
+
 
 class ThreadEventRepository(_BaseRepository):
     collection_name = "thread_events"
