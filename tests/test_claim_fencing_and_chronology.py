@@ -72,10 +72,10 @@ def test_stale_writer_persist_after_lease_expiry_is_rejected(db):
 
     claimed_by_b = tools.get_next_unprocessed_raw_email(db)
     claim_id_b = claimed_by_b["claim_id"]
-    tools.persist_raw_email_label(db, "MSG-1", "1. Read only", claim_id=claim_id_b)
+    tools.persist_raw_email_label(db, "MSG-1", "1. Read only", claim_id=claim_id_b, evidence="renewal pricing")
 
     # Worker A, unaware it was reclaimed, tries to persist its own stale decision.
-    result = tools.persist_raw_email_label(db, "MSG-1", "1. Needs reply: ASAP", claim_id=claim_id_a)
+    result = tools.persist_raw_email_label(db, "MSG-1", "1. Needs reply: ASAP", claim_id=claim_id_a, evidence="renewal pricing")
 
     assert result == {"ok": False, "reason": "claim_lost"}
     final = RawEmailDumpRepository(db).find_one({"message_id": "MSG-1"})
@@ -90,7 +90,7 @@ def test_persist_rejects_an_unknown_claim_id(db):
     _ingest(db, settings, "MSG-1")
     tools.get_next_unprocessed_raw_email(db)
 
-    result = tools.persist_raw_email_label(db, "MSG-1", "1. Read only", claim_id="bogus-claim-id")
+    result = tools.persist_raw_email_label(db, "MSG-1", "1. Read only", claim_id="bogus-claim-id", evidence="renewal pricing")
 
     assert result == {"ok": False, "reason": "claim_lost"}
 
@@ -127,7 +127,7 @@ def test_new_thread_message_clears_the_claim_of_any_actively_claimed_sibling(db)
     # A new inbound message arrives in the same thread while MSG-ASK is claimed.
     _ingest(db, settings, "MSG-NEW", thread_id="T-1", timestamp=datetime(2026, 8, 2, tzinfo=timezone.utc))
 
-    result = tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=claim_id)
+    result = tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=claim_id, evidence="renewal pricing")
     assert result == {"ok": False, "reason": "claim_lost"}
 
     # Immediately reclaimable (claim was cleared, not just expired), with
@@ -148,7 +148,7 @@ def test_auto_close_clears_the_claim_of_a_concurrently_claimed_sibling(db):
     would otherwise clobber the auto-close with stale judgment."""
     settings = _settings()
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None, evidence="renewal pricing")
     _ingest(db, settings, "MSG-REOPEN", thread_id="T-1", timestamp=datetime(2026, 8, 2, tzinfo=timezone.utc))
 
     claimed = tools.get_next_unprocessed_raw_email(db)
@@ -164,7 +164,7 @@ def test_auto_close_clears_the_claim_of_a_concurrently_claimed_sibling(db):
         **{"from": {"name": "Agent", "email": "agent@ourcompany.example"}},
     )
 
-    result = tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply: ASAP", claim_id=claim_id)
+    result = tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply: ASAP", claim_id=claim_id, evidence="renewal pricing")
 
     assert result == {"ok": False, "reason": "claim_lost"}
     final = RawEmailDumpRepository(db).find_one({"message_id": "MSG-ASK"})
@@ -247,7 +247,7 @@ def test_auto_close_never_closes_a_sibling_sent_after_the_agent_reply(db):
     gap is real (see Phase 2 STEP 1 finding g) but not fixed this pass."""
     settings = _settings()
     _ingest(db, settings, "MSG-SIBLING-LATER", thread_id="T-1", timestamp=datetime(2026, 8, 5, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-SIBLING-LATER", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-SIBLING-LATER", "1. Needs reply", claim_id=None, evidence="renewal pricing")
 
     result = _ingest(
         db,

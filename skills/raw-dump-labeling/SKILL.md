@@ -226,18 +226,32 @@ batch comes back empty:
 
 **Inner loop**, for each email in the returned batch:
 
-2. **Read that email's `subject`/`body`/`from`/`to`/`timestamp`, AND its
-   `thread_context`** (every other raw-dumped email in the same thread,
-   oldest first, if any) -- decide exactly one of the six labels based on
-   the WHOLE conversation, not just this one message in isolation. An
-   inbound "Thanks" after an earlier question-laden message means the loop
-   closed; an inbound follow-up question keeps it (or a different one)
-   open. If this email already carries a `label_applied` from a prior run
-   (visible on the returned document, alongside `label_history`),
-   re-evaluate fresh against the current thread_context; only change it if
-   your own reading genuinely disagrees with what's there now.
+2. **Read that email's `subject`/`body_clean`/`from`/`to`/`timestamp`, AND
+   its `thread_context`** (every other raw-dumped email in the same
+   thread, oldest first, if any -- each entry also carries its own
+   `body_clean`) -- decide exactly one of the six labels based on the
+   WHOLE conversation, not just this one message in isolation. Use
+   `body_clean`, not `body`, for your own reading -- it's the same text
+   with quoted-reply tails, Outlook original-message headers, and
+   signature/disclaimer blocks already stripped (deterministically, never
+   altering what's actually stored); `body` is the untouched raw text,
+   kept only for completeness, never what you classify from. An inbound
+   "Thanks" after an earlier question-laden message means the loop closed;
+   an inbound follow-up question keeps it (or a different one) open. If
+   this email already carries a `label_applied` from a prior run (visible
+   on the returned document, alongside `label_history`), re-evaluate fresh
+   against the current thread_context; only change it if your own reading
+   genuinely disagrees with what's there now.
 3. **On a successful decision**, call **`persist_raw_email_label`** with
-   that email's `message_id`, the chosen label, and `claim_id` (step 1).
+   that email's `message_id`, the chosen label, `claim_id` (step 1), and
+   `evidence` -- a short (<= 300 char) EXACT quote from text you actually
+   read (this email's own `subject`/`body_clean`, or any `thread_context`
+   entry's `subject`/`body_clean`). Not a paraphrase, not your reasoning --
+   copy the actual words. **If either `persist_raw_email_label` returns
+   `{"ok": false, "reason": "evidence_not_found"}`**, re-read the text and
+   retry ONCE with a corrected exact quote; if it fails a second time, call
+   `mark_raw_email_label_failed` instead (see below) -- never force a
+   third attempt, never invent a quote that merely sounds plausible.
    **If you genuinely cannot classify it** (unreadable/garbled body,
    content too ambiguous for any of the six -- different from
    `1. Undecided`, which IS a valid decision), call

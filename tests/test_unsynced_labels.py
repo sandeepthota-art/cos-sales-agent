@@ -34,7 +34,7 @@ def _email_doc(message_id: str, **overrides):
 
 def _ingest_and_label(db, settings, message_id: str, label: str = "1. Needs reply") -> None:
     tools.ingest_raw_email_only(db, parse_email(_email_doc(message_id)), settings)
-    tools.persist_raw_email_label(db, message_id, label, claim_id=None)
+    tools.persist_raw_email_label(db, message_id, label, claim_id=None, evidence="renewal pricing")
 
 
 def test_unsynced_label_returned_despite_current_classification_version(db):

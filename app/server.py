@@ -75,12 +75,24 @@ def get_next_unprocessed_raw_email_batch(batch_size: int = 10) -> list[JsonDoc]:
 
 
 @mcp.tool()
-def persist_raw_email_label(message_id: str, label_applied: EmailLabel, claim_id: str | None) -> JsonDoc:
+def persist_raw_email_label(
+    message_id: str, label_applied: EmailLabel, claim_id: str | None, evidence: str
+) -> JsonDoc:
     """Records the classification label YOU already decided for one
     raw-dumped email. Overwrites the current label but appends to
-    label_history for audit. Sets gmail_label_synced=False -- after updating
-    the real Gmail label to match, call mark_gmail_label_synced to confirm
-    it.
+    label_history (now including evidence) for audit. Sets
+    gmail_label_synced=False -- after updating the real Gmail label to
+    match, call mark_gmail_label_synced to confirm it.
+
+    evidence is REQUIRED -- a short (<= 300 char) EXACT quote from text you
+    actually read: the email's own subject/body_clean, or any
+    thread_context entry's subject/body_clean. Checked case/whitespace-
+    insensitively; if not found, returns
+    {"ok": false, "reason": "evidence_not_found"} instead of writing,
+    checked before the claim check. On evidence_not_found: re-read the
+    text and retry ONCE with a correct quote; if it still fails, call
+    mark_raw_email_label_failed instead. Raises if evidence is empty or
+    over 300 characters.
 
     claim_id is REQUIRED -- the claim_id field from whichever claim call
     (get_next_unprocessed_raw_email(_batch)) handed you this message_id.
@@ -92,7 +104,7 @@ def persist_raw_email_label(message_id: str, label_applied: EmailLabel, claim_id
     not call mark_gmail_label_synced. Raises only if message_id doesn't
     exist at all.
     """
-    return tools.persist_raw_email_label(_get_db(), message_id, label_applied, claim_id)
+    return tools.persist_raw_email_label(_get_db(), message_id, label_applied, claim_id, evidence)
 
 
 @mcp.tool()

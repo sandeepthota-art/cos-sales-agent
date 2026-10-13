@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -6,7 +7,10 @@ from pymongo.database import Database
 from app.config import Settings
 from app.db import JsonDoc, RawEmailDumpRepository
 from app.models import Email, EmailLabel
+from app.text_clean import strip_quotes_and_signature
 from app.threading import build_thread_candidates, resolve_thread_id_fallback
+
+_EVIDENCE_MAX_LENGTH = 300
 
 # _CURRENT_LABEL_CLASSIFICATION_VERSION -- bump this when the six-label
 # taxonomy or classification instructions change meaningfully. Every
@@ -303,19 +307,58 @@ def _attach_thread_context(repo: RawEmailDumpRepository, claimed: JsonDoc) -> No
     """Mutates `claimed` in place, adding thread_context -- every OTHER
     raw-dumped email sharing its thread_id, oldest first, or [] when
     thread_id is unset. Shared by both the single and batch claim paths so
-    the two can never drift on what "context" means."""
-    claimed["thread_context"] = (
+    the two can never drift on what "context" means.
+
+    Also adds body_clean (claimed and every thread_context entry) --
+    quote/signature-stripped, computed fresh here, NEVER written back to
+    raw_emails_dump (Mode A's raw-preservation rule: stored subject/body
+    are never altered). Purely a derived read-time view for the classifier."""
+    claimed["body_clean"] = strip_quotes_and_signature(claimed.get("body") or "")
+    siblings = (
         repo.siblings_in_thread(claimed["thread_id"], exclude_message_id=claimed["message_id"])
         if claimed.get("thread_id")
         else []
     )
+    for sibling in siblings:
+        sibling["body_clean"] = strip_quotes_and_signature(sibling.get("body") or "")
+    claimed["thread_context"] = siblings
 
 
-def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailLabel, claim_id: str | None) -> JsonDoc:
+def _normalize_for_match(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _thread_searchable_text(repo: RawEmailDumpRepository, doc: JsonDoc) -> str:
+    """Subject + body_clean of doc itself, plus subject + body_clean of
+    every thread sibling -- the full text evidence is allowed to be quoted
+    from. Recomputes body_clean fresh (never stored) rather than trusting
+    anything the caller might have cached."""
+    parts = [doc.get("subject") or "", strip_quotes_and_signature(doc.get("body") or "")]
+    if doc.get("thread_id"):
+        for sibling in repo.siblings_in_thread(doc["thread_id"], exclude_message_id=doc["message_id"]):
+            parts.append(sibling.get("subject") or "")
+            parts.append(strip_quotes_and_signature(sibling.get("body") or ""))
+    return "\n".join(parts)
+
+
+def persist_raw_email_label(
+    db: Database, message_id: str, label_applied: EmailLabel, claim_id: str | None, evidence: str
+) -> JsonDoc:
     """Records the classification label YOU already decided for one raw-dumped
     email. Overwrites label_applied/labelled_at outright but APPENDS to
-    label_history, so a relabel is never lossy. Advances
-    classification_version, releases the claim, resets the failure counter.
+    label_history (now including evidence), so a relabel is never lossy.
+    Advances classification_version, releases the claim, resets the failure
+    counter.
+
+    evidence is REQUIRED: a short (<= 300 char) exact quote from text you
+    actually read -- the email's own subject/body_clean, or any thread
+    sibling's subject/body_clean. Checked case/whitespace-insensitively
+    against that combined text; if it's not found anywhere in it, returns
+    {"ok": False, "reason": "evidence_not_found"} instead of writing --
+    checked BEFORE the claim_id compare-and-swap, so a bad quote never
+    consumes or risks the claim. Raises ValueError if evidence is empty or
+    over 300 characters -- a caller contract violation, not a normal
+    rejection.
 
     claim_id is REQUIRED and MUST be the exact value returned by whichever
     claim call handed you this message_id (get_next_unprocessed_raw_email(
@@ -335,12 +378,26 @@ def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailL
     Raises ValueError if message_id doesn't exist in raw_emails_dump at all
     (a genuinely different failure mode from a lost claim).
     """
+    if not evidence or not evidence.strip():
+        raise ValueError("evidence is required and must be non-empty")
+    if len(evidence) > _EVIDENCE_MAX_LENGTH:
+        raise ValueError(f"evidence must be <= {_EVIDENCE_MAX_LENGTH} characters")
+
     repo = RawEmailDumpRepository(db)
+    existing = repo.find_one({"message_id": message_id})
+    if existing is None:
+        raise ValueError(f"no raw-dumped email found for message_id={message_id!r}")
+
+    searchable = _thread_searchable_text(repo, existing)
+    if _normalize_for_match(evidence) not in _normalize_for_match(searchable):
+        return {"ok": False, "reason": "evidence_not_found"}
+
     now_iso = _now_iso()
     history_entry = {
         "label_applied": label_applied,
         "labelled_at": now_iso,
         "classification_version": _CURRENT_LABEL_CLASSIFICATION_VERSION,
+        "evidence": evidence,
     }
     set_fields = {
         "label_applied": label_applied,
@@ -355,8 +412,6 @@ def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailL
     updated = repo.update_if_claim_matches(message_id, claim_id, set_fields, push_fields={"label_history": history_entry})
     if updated is not None:
         return updated
-    if repo.find_one({"message_id": message_id}) is None:
-        raise ValueError(f"no raw-dumped email found for message_id={message_id!r}")
     return {"ok": False, "reason": "claim_lost"}
 
 

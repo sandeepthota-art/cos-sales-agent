@@ -40,10 +40,10 @@ Phase tracker. Checkboxes reflect verified state as of 2026-10-13 (see `docs/BAS
 
 ## Phase 3 — Input hygiene and validation
 
-- [ ] Quote/signature stripping before classification — **MISSING in this repo, and confirmed MISSING in cos-sales-agent too** (`docs/CARRYOVER.md` #8) — nothing to import, must be written fresh.
-- [ ] Sender-type gate (human/automated/newsletter/cold-outreach) before classification — not implemented here; cos-sales-agent also leaves this to LLM judgment at label time, not a separate gate (per `cos-sales-agent/docs/AUDIT_REPORT.md` §4).
-- [ ] Evidence check (classification claims traceable to visible text) — not implemented; currently relies entirely on the Claude Desktop classifier's own judgment, per locked decision #3.
-- [ ] Sent-time ordering guarantees for out-of-order/backfilled mail — `sort_key` (UTC-normalized at ingestion, `app/tools.py:126-130`) already gives correct chronological claim order; verify this holds for backfilled mail specifically before marking done.
+- [x] Quote/signature stripping before classification — `app/text_clean.py::strip_quotes_and_signature`, deterministic, conservative (keeps text when a boundary isn't clearly recognizable, never returns empty). Returned as `body_clean` in claim results (single + batch) and thread_context entries, never written over raw `body` (Mode A's raw-preservation rule untouched). 12 table-driven tests, `tests/test_text_clean.py`.
+- [x] Evidence check — `persist_raw_email_label` now requires `evidence` (<=300 chars, non-empty), checked case/whitespace-insensitively against the email's own `subject`/`body_clean` plus every thread sibling's — rejects with `{"ok": false, "reason": "evidence_not_found"}` instead of writing, checked before the `claim_id` compare-and-swap. Stored in `label_history`. 8 tests, `tests/test_evidence_check.py`.
+- [ ] Sender-type gate (human/automated/newsletter/cold-outreach) — **SKIPPED.** Checked `app/models.py`'s `Email` model: no `List-Unsubscribe`/`Precedence`/`Auto-Submitted` header fields are captured anywhere in this project's schema, so there's nothing to derive `sender_hints` from. Per the task's own instruction, skipped rather than fabricated. Revisit if/when header capture is ever added to `ingest_raw_email_only`'s field mapping.
+- [x] Sent-time ordering guarantees for out-of-order/backfilled mail — already confirmed correct and tested in Phase 0/1 (`test_get_next_unprocessed_raw_email_claims_oldest_by_sort_key`); no change needed this phase.
 
 ## Phase 4 — Complete the context model
 

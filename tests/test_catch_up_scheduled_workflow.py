@@ -138,7 +138,7 @@ def test_stale_sync_confirmation_does_not_clobber_a_newer_relabel(db):
     assert stale_read["label_applied"] == "1. Needs reply"
 
     # Concurrent relabel races ahead, between the stale read and the confirm.
-    tools.persist_raw_email_label(db, "MSG-RACE", "1. Read only", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-RACE", "1. Read only", claim_id=None, evidence="renewal pricing")
 
     # Catch-up confirms sync using the label it actually (stale-ly) applied.
     result = tools.mark_gmail_label_synced(db, "MSG-RACE", stale_read["label_applied"])

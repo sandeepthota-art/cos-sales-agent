@@ -189,7 +189,7 @@ def test_persist_label_resets_the_attempts_counter(db):
     tools.mark_raw_email_label_failed(db, "MSG-RECOVERED", "first attempt failed", claim_id=first_claim["claim_id"])
 
     claimed = tools.get_next_unprocessed_raw_email(db)
-    result = tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only", claim_id=claimed["claim_id"])
+    result = tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only", claim_id=claimed["claim_id"], evidence="renewal pricing")
 
     assert result["label_attempts"] == 0
 
@@ -201,7 +201,7 @@ def test_persist_label_makes_the_email_no_longer_claimable(db):
     settings = _settings()
     _ingest(db, settings, "MSG-DONE")
     claimed = tools.get_next_unprocessed_raw_email(db)
-    tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only", claim_id=claimed["claim_id"])
+    tools.persist_raw_email_label(db, claimed["message_id"], "1. Read only", claim_id=claimed["claim_id"], evidence="renewal pricing")
 
     assert tools.get_next_unprocessed_raw_email(db) is None
 
@@ -212,7 +212,7 @@ def test_persist_label_makes_the_email_no_longer_claimable(db):
 def test_agent_reply_closes_open_needs_reply_siblings_to_read_only(db):
     settings = _settings()
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None, evidence="renewal pricing")
 
     result = _ingest(
         db,
@@ -233,7 +233,7 @@ def test_agent_reply_closes_open_needs_reply_siblings_to_read_only(db):
 def test_closed_sibling_classification_version_is_untouched_so_it_is_not_reclaimed(db):
     settings = _settings()
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None, evidence="renewal pricing")
     version_before = RawEmailDumpRepository(db).find_one({"message_id": "MSG-ASK"})["classification_version"]
 
     _ingest(
@@ -262,7 +262,7 @@ def test_empty_agent_email_takes_reopen_path_never_auto_closes(db):
     configured goes through the reopen path, never the auto-close path."""
     settings = _settings(agent_email="")
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None, evidence="renewal pricing")
 
     result = _ingest(
         db,
@@ -283,7 +283,7 @@ def test_empty_agent_email_takes_reopen_path_never_auto_closes(db):
 def test_inbound_reply_reopens_already_classified_siblings_for_reevaluation(db):
     settings = _settings()
     _ingest(db, settings, "MSG-OLD", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only", claim_id=None, evidence="renewal pricing")
 
     result = _ingest(
         db, settings, "MSG-NEW-QUESTION", thread_id="T-1", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc)
@@ -298,7 +298,7 @@ def test_inbound_reply_reopens_already_classified_siblings_for_reevaluation(db):
 def test_reopened_sibling_becomes_claimable_again(db):
     settings = _settings()
     _ingest(db, settings, "MSG-OLD", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only", claim_id=None, evidence="renewal pricing")
     assert tools.get_next_unprocessed_raw_email(db) is None  # confirm it's NOT claimable yet
 
     _ingest(
@@ -318,9 +318,9 @@ def test_close_and_reopen_never_touch_emails_outside_the_thread(db):
         thread_id="T-UNRELATED",
         timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
     )
-    tools.persist_raw_email_label(db, "MSG-OTHER-THREAD", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-OTHER-THREAD", "1. Needs reply", claim_id=None, evidence="renewal pricing")
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None, evidence="renewal pricing")
 
     _ingest(
         db,
@@ -351,7 +351,7 @@ def test_ingest_is_idempotent_and_never_resets_existing_classification_progress(
     settings = _settings()
     _ingest(db, settings, "MSG-DUP")
     claimed = tools.get_next_unprocessed_raw_email(db)
-    tools.persist_raw_email_label(db, claimed["message_id"], "1. Delete", claim_id=claimed["claim_id"])
+    tools.persist_raw_email_label(db, claimed["message_id"], "1. Delete", claim_id=claimed["claim_id"], evidence="renewal pricing")
 
     # Re-ingesting the SAME Gmail message (e.g. a sliding-window overlap re-read).
     result = _ingest(db, settings, "MSG-DUP")
