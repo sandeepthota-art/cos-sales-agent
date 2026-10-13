@@ -80,12 +80,13 @@ For each message you've been asked to dump:
 4b. **Check `reopened_in_thread` on the return value.** If this message is
    an inbound message (not from the agent) and landed in a thread with
    already-classified siblings, those siblings just became eligible for
-   re-evaluation again, SUBJECT to the normal claim/lease rule -- if one of
-   them happens to be mid-claim from a concurrent or still-running pass, it
-   won't surface until that lease expires (same TTL as any other claim, see
-   Mode B step 1). No action needed from you here either way; the claim
-   tool is the source of truth for what's actually claimable right now.
-   Just note the reopened count in your report.
+   re-evaluation again. If one of them happened to be mid-claim from a
+   concurrent or still-running pass, that claim was cleared UNCONDITIONALLY
+   and IMMEDIATELY as part of this same ingest call (not after a lease TTL
+   wait) -- it surfaces on the very next claim call. No action needed from
+   you here either way; the claim tool is the source of truth for what's
+   actually claimable right now. Just note the reopened count in your
+   report.
 5. **STOP.** Do not call `get_next_unprocessed_raw_email`,
    `persist_raw_email_label`, or `mark_raw_email_label_failed` for this
    message in the same breath -- labeling is a separate, later run (Mode B).
