@@ -82,7 +82,10 @@ class RawEmailDumpRepository(_BaseRepository):
         label_attempts < max_attempts (circuit breaker) AND label_claimed_at <
         claim_cutoff_iso (an unclaimed document's label_claimed_at is "",
         which sorts before any real ISO timestamp -- this single comparison
-        covers "never claimed" and "claim expired" with no $or needed).
+        covers "never claimed" and "claim expired" with no $or needed) AND
+        history_only is not True (scripts/mark_history_only.py marks old
+        backfilled mail history_only=true; such documents are permanently
+        excluded from classification, never surfaced by either claim path).
 
         claim_id is caller-generated (one per single claim, or one SHARED
         across an entire batch -- see claim_batch_unclassified) and stamped
@@ -106,6 +109,7 @@ class RawEmailDumpRepository(_BaseRepository):
                 "classification_version": {"$lt": max_classification_version},
                 "label_attempts": {"$lt": max_attempts},
                 "label_claimed_at": {"$lt": claim_cutoff_iso},
+                "history_only": {"$ne": True},
             },
             {"$set": {"label_claimed_at": now_iso, "claim_id": claim_id}},
             sort=[("sort_key", 1)],

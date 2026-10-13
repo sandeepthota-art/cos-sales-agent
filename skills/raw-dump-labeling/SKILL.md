@@ -14,6 +14,7 @@ independent modes, picked from the request -- never mix them in one run.
 | Request sounds like | Mode |
 |---|---|
 | "dump my last N emails", "ingest these emails for testing" | **A: Dump (explicit)** |
+| "backfill emails from X to Y", a multi-day/multi-week date range | **A: Backfill** (see below -- day-by-day, capped) |
 | "run the scheduled dump", "scheduled task", no explicit count/date range given | **A: Dump (scheduled window)** |
 | "label the ingested data", "classify the raw dump", "run raw-dump-labeling" with no dump request | **B: Label** |
 | "retry Gmail sync", "fix unsynced labels", "catch up gmail_label_synced" | **Sync catch-up** (see end of Mode B) |
@@ -111,6 +112,34 @@ Report in plain English: how many messages were dumped, any that failed
 Gmail sync happens in the next labeling run's catch-up, not here), and
 how many siblings became eligible for re-evaluation (step 4b). Do not
 dump raw JSON/tool output.
+
+## Mode A: Backfill (large date-range requests)
+
+The explicit sub-mode above has no per-run cap -- a request naming a date
+range (e.g. "emails from Sep 15 to Sep 16", or a multi-week backfill) would
+otherwise try to dump everything matching in one breath. Use this
+procedure instead whenever the named range could plausibly be more than a
+day's worth of mail, or the request itself says "backfill":
+
+1. **Split the requested range into single-day chunks**, oldest day first.
+2. **For each day, in order**: read/map/ingest that day's messages (Mode A
+   steps 1-4b above, unchanged), **oldest message first within the day**,
+   up to a hard cap of **100 messages for that day**. If the day has more
+   than 100, ingest the oldest 100 and STOP the whole backfill run --
+   report this day as **truncated, needs a narrower follow-up** (e.g. a
+   half-day range), never silently drop the rest.
+3. **Move to the next day** only after the current day is fully ingested
+   (under the cap) -- never skip ahead. If the day's ingest fails outright
+   (not truncated -- an actual error), stop and report which day, rather
+   than silently continuing to the next one with a gap behind it.
+4. **Report, per day processed**: date, messages ingested, any failures by
+   Gmail id, whether the 100-cap was hit. At the end, report the full
+   range covered, how many days remain if the run was stopped early
+   (cap hit or error), and the exact next day to resume from.
+
+This never replaces the scheduled sliding-window mode below, and never
+guesses a boundary date on its own -- the day-by-day range comes entirely
+from what the request named, same as explicit Mode A's own hard rule.
 
 ## Mode A: Scheduled incremental dump (sliding window)
 
