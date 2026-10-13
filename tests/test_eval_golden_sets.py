@@ -111,6 +111,52 @@ def test_eval_database_guard_refuses_non_eval_database_name():
         require_eval_database("cos_sales")
 
 
+def test_eval_database_guard_accepts_local_uri_with_eval_database():
+    from _common import require_eval_database
+
+    require_eval_database("raw_dump_eval", uri="mongodb://localhost:27017")  # must not raise
+    require_eval_database("raw_dump_eval", uri="mongodb://127.0.0.1:27017")  # must not raise
+    require_eval_database("raw_dump_eval", uri="mongodb://[::1]:27017")  # must not raise
+
+
+def test_eval_database_guard_refuses_non_local_host():
+    from _common import require_eval_database
+
+    with pytest.raises(RuntimeError, match="non-local host refused"):
+        require_eval_database("raw_dump_eval", uri="mongodb+srv://user:secretpass@cluster0.example.net/?appName=x")
+
+
+def test_eval_database_guard_accepts_non_local_host_with_flag():
+    from _common import require_eval_database
+
+    require_eval_database(
+        "raw_dump_eval", uri="mongodb+srv://user:secretpass@cluster0.example.net/?appName=x", allow_remote=True
+    )  # must not raise
+
+
+def test_eval_database_guard_refuses_non_eval_database_regardless_of_host():
+    from _common import require_eval_database
+
+    with pytest.raises(RuntimeError):
+        require_eval_database("cos_sales", uri="mongodb://localhost:27017")
+    with pytest.raises(RuntimeError):
+        require_eval_database("cos_sales", uri="mongodb://localhost:27017", allow_remote=True)
+
+
+def test_eval_database_guard_never_prints_uri_or_credentials_on_refusal():
+    from _common import require_eval_database
+
+    secret_uri = "mongodb+srv://topsecretuser:topsecretpass@cluster0.example.net/?appName=x"
+    with pytest.raises(RuntimeError) as excinfo:
+        require_eval_database("raw_dump_eval", uri=secret_uri)
+
+    message = str(excinfo.value)
+    assert message == "non-local host refused"
+    assert "topsecretuser" not in message
+    assert "topsecretpass" not in message
+    assert "cluster0.example.net" not in message
+
+
 def test_eval_database_guard_accepts_eval_suffixed_name():
     from _common import require_eval_database
 

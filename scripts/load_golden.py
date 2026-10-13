@@ -46,10 +46,15 @@ def load_messages(db, settings, messages: list[tuple[str, GoldenMessage]]) -> in
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Actually load. Default is dry-run.")
+    parser.add_argument(
+        "--allow-remote-eval",
+        action="store_true",
+        help="Allow a non-local MONGODB_URI host. Off by default -- eval runs are local-only.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
-    require_eval_database(settings.mongodb_database)
+    require_eval_database(settings.mongodb_database, uri=settings.mongodb_uri, allow_remote=args.allow_remote_eval)
 
     labeling_cases = load_labeling_cases(LABELING_PATH)
     context_cases = load_context_cases(CONTEXT_PATH)

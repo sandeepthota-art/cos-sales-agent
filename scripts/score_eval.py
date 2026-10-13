@@ -209,10 +209,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="YYYY-MM-DD, the date this eval run happened.")
     parser.add_argument("--skill-version", required=True, help="Short git commit hash of the skills/ at run time.")
+    parser.add_argument(
+        "--allow-remote-eval",
+        action="store_true",
+        help="Allow a non-local MONGODB_URI host. Off by default -- eval runs are local-only.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
-    require_eval_database(settings.mongodb_database)
+    require_eval_database(settings.mongodb_database, uri=settings.mongodb_uri, allow_remote=args.allow_remote_eval)
     db = initialize_database(get_client(settings.mongodb_uri), settings.mongodb_database)
 
     labeling_cases = load_labeling_cases(LABELING_PATH)
