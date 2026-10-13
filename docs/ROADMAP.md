@@ -32,10 +32,11 @@ Phase tracker. Checkboxes reflect verified state as of 2026-10-13 (see `docs/BAS
 
 ## Phase 2 — Safe independence
 
-- [ ] Status fields beyond `classification_version`/`label_claimed_at`/`label_attempts` if a richer run-state model is needed.
-- [ ] Claim/lease — **already implemented**: `app/db.py::claim_next_unclassified`/`claim_batch_unclassified`, TTL-based (`_LABEL_CLAIM_TTL_MINUTES`, `app/tools.py:18`). Verify this box only after confirming no further hardening is needed.
-- [ ] Retry cap — **already implemented**: `_MAX_LABEL_ATTEMPTS = 3` (`app/tools.py:22`), circuit breaker tested (`tests/test_core_engine_reliability.py`). Mark done after explicit review.
-- [ ] Run log — **MISSING today.** No `runs`/`processing_runs`-style collection exists in this repo (only `raw_emails_dump`). Needed before this phase can be marked complete.
+- [x] Status fields — `classification_version`/`label_claimed_at`/`label_attempts`/`claim_id` judged sufficient; no richer run-state model needed for this phase's scope.
+- [x] Claim/lease, hardened with fencing — `claim_id` (uuid4 hex) returned by `get_next_unprocessed_raw_email(_batch)`, required by `persist_raw_email_label`/`mark_raw_email_label_failed`, compare-and-swap (`app/db.py::update_if_claim_matches`) rejects a stale/unknown claim_id with `{"ok": false, "reason": "claim_lost"}` instead of silently overwriting. Any ingestion write to a document (reopen, auto-close, or any new thread message via `_clear_active_claims_in_thread`) clears its claim. `claim_batch_unclassified` rewritten as a loop of individually atomic single-document claims sharing one `claim_id`, closing the old find()-then-update_many TOCTOU window. Regression-tested in `tests/test_claim_fencing_and_chronology.py`.
+- [x] Retry cap, now visible and recoverable — `get_stuck_emails` (read-only MCP tool, label_attempts >= cap) closes the gap where `SKILL.md` promised human-reviewability with no tool to find them. Recovery is `scripts/reset_stuck.py` (local-only, dry-run by default, never an MCP tool).
+- [ ] Run log — **DEFERRED.** Two options proposed (new `start_run`/`finish_run` tools vs. a `processing_runs` collection written by existing tools), not decided or implemented this pass.
+- [ ] Chronology — **DEFERRED.** Auto-close doesn't check whether a sibling was sent (by `sort_key`) after the closing agent reply; real gap, test exists and is marked `xfail(reason="deferred")` (`tests/test_claim_fencing_and_chronology.py`), not fixed this pass.
 
 ## Phase 3 — Input hygiene and validation
 

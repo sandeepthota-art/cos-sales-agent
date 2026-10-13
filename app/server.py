@@ -75,32 +75,35 @@ def get_next_unprocessed_raw_email_batch(batch_size: int = 10) -> list[JsonDoc]:
 
 
 @mcp.tool()
-def persist_raw_email_label(message_id: str, label_applied: EmailLabel, claim_id: str | None = None) -> JsonDoc:
+def persist_raw_email_label(message_id: str, label_applied: EmailLabel, claim_id: str | None) -> JsonDoc:
     """Records the classification label YOU already decided for one
     raw-dumped email. Overwrites the current label but appends to
     label_history for audit. Sets gmail_label_synced=False -- after updating
     the real Gmail label to match, call mark_gmail_label_synced to confirm
     it.
 
-    claim_id must be the claim_id field from whichever claim call (
-    get_next_unprocessed_raw_email(_batch)) handed you this message_id --
-    compare-and-swap, not an unconditional write. Returns
+    claim_id is REQUIRED -- the claim_id field from whichever claim call
+    (get_next_unprocessed_raw_email(_batch)) handed you this message_id.
+    Compare-and-swap, not an unconditional write. Returns
     {"ok": false, "reason": "claim_lost"} instead of writing if claim_id no
-    longer matches (lease expired and reclaimed, or invalidated by a
-    concurrent reopen/auto-close). Raises only if message_id doesn't exist
-    at all.
+    longer matches (lease expired and reclaimed, or invalidated by any new
+    message landing in this email's thread). On claim_lost: SKIP this
+    email -- do not retry it in this run, do not apply any Gmail label, do
+    not call mark_gmail_label_synced. Raises only if message_id doesn't
+    exist at all.
     """
     return tools.persist_raw_email_label(_get_db(), message_id, label_applied, claim_id)
 
 
 @mcp.tool()
-def mark_raw_email_label_failed(message_id: str, reason: str, claim_id: str | None = None) -> JsonDoc:
+def mark_raw_email_label_failed(message_id: str, reason: str, claim_id: str | None) -> JsonDoc:
     """Records that classification was attempted but could not be completed.
     Releases the claim for retry, up to 3 attempts.
 
-    claim_id compare-and-swap, same contract as persist_raw_email_label --
-    returns {"ok": false, "reason": "claim_lost"} if claim_id no longer
-    matches. Raises only if message_id doesn't exist at all.
+    claim_id is REQUIRED, same compare-and-swap contract as
+    persist_raw_email_label -- returns {"ok": false, "reason": "claim_lost"}
+    if claim_id no longer matches. On claim_lost: skip this email, same as
+    persist_raw_email_label. Raises only if message_id doesn't exist at all.
     """
     return tools.mark_raw_email_label_failed(_get_db(), message_id, reason, claim_id)
 

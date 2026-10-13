@@ -133,6 +133,24 @@ def _reopen_thread_siblings_for_reevaluation(
     return reopened_ids
 
 
+def _clear_active_claims_in_thread(repo: RawEmailDumpRepository, thread_id: str, exclude_message_id: str) -> None:
+    """Any new message landing in a thread makes every OTHER actively-claimed
+    sibling's in-flight classification stale -- its thread_context snapshot
+    (taken at claim time) doesn't include this new message. Clears claims
+    UNCONDITIONALLY on every sibling currently claimed (claim_id set),
+    regardless of label_applied/classification_version -- broader than
+    _close_open_needs_reply_in_thread/_reopen_thread_siblings_for_reevaluation,
+    which only clear claims on the subset of siblings THEIR OWN matching
+    criteria touch. Without this, a sibling claimed for its first-ever
+    classification (classification_version=0, label_applied=None) matches
+    neither of those two functions' criteria, so nothing invalidated its
+    claim even though a new thread message just made its context stale."""
+    repo.update_many_by_key(
+        {"thread_id": thread_id, "message_id": {"$ne": exclude_message_id}, "claim_id": {"$ne": None}},
+        _cleared_claim_fields(),
+    )
+
+
 def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> JsonDoc:
     """Pure persistence, zero analysis. Stores the raw Gmail email exactly as
     received into its own `raw_emails_dump` collection. Idempotent: upserts by
@@ -210,6 +228,7 @@ def ingest_raw_email_only(db: Database, email: Email, settings: Settings) -> Jso
     reopened_ids: list[str] = []
     thread_id = result.get("thread_id")
     if thread_id:
+        _clear_active_claims_in_thread(repo, thread_id, result["message_id"])
         if is_from_agent:
             closed_ids = _close_open_needs_reply_in_thread(repo, thread_id, result["message_id"], _now_iso())
         else:
@@ -292,24 +311,22 @@ def _attach_thread_context(repo: RawEmailDumpRepository, claimed: JsonDoc) -> No
     )
 
 
-def persist_raw_email_label(
-    db: Database, message_id: str, label_applied: EmailLabel, claim_id: str | None = None
-) -> JsonDoc:
+def persist_raw_email_label(db: Database, message_id: str, label_applied: EmailLabel, claim_id: str | None) -> JsonDoc:
     """Records the classification label YOU already decided for one raw-dumped
     email. Overwrites label_applied/labelled_at outright but APPENDS to
     label_history, so a relabel is never lossy. Advances
     classification_version, releases the claim, resets the failure counter.
 
-    claim_id MUST be the exact value returned by whichever claim call handed
-    you this message_id (get_next_unprocessed_raw_email(_batch)'s
-    claim_id field). This is a compare-and-swap: if the document's current
+    claim_id is REQUIRED and MUST be the exact value returned by whichever
+    claim call handed you this message_id (get_next_unprocessed_raw_email(
+    _batch)'s claim_id field) -- pass claim_id=None explicitly only for a
+    document you know was never claimed at all (its own claim_id is also
+    None by default). This is a compare-and-swap: if the document's current
     claim_id no longer matches (your lease expired and someone else
-    reclaimed it, or an ingestion-driven reopen/auto-close invalidated your
-    claim because the thread changed mid-classification), the write is
+    reclaimed it, or any new message landing in its thread invalidated your
+    claim because the context you read is now stale), the write is
     REJECTED -- you get back {"ok": False, "reason": "claim_lost"} instead
-    of silently overwriting newer or more-correct work. Omitting claim_id
-    (None) only succeeds against a document that was never claimed at all
-    (its own claim_id is also None by default).
+    of silently overwriting newer or more-correct work.
 
     Sets gmail_label_synced=False -- this call only ever touches MongoDB;
     the caller must confirm the real Gmail label was also updated and call
@@ -372,9 +389,7 @@ def mark_gmail_label_synced(db: Database, message_id: str, label_applied: str | 
     return updated if updated is not None else repo.find_one({"message_id": message_id})
 
 
-def mark_raw_email_label_failed(
-    db: Database, message_id: str, reason: str, claim_id: str | None = None
-) -> JsonDoc:
+def mark_raw_email_label_failed(db: Database, message_id: str, reason: str, claim_id: str | None) -> JsonDoc:
     """Records that classification was attempted but could not be completed.
     Increments label_attempts and releases the claim so a later run can
     retry it, up to _MAX_LABEL_ATTEMPTS. Never sets label_applied -- a

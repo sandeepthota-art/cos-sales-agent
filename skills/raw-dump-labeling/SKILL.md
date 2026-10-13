@@ -1,15 +1,15 @@
 ---
 name: raw-dump-labeling
-description: The one skill for the raw-dump-labeling MCP server -- dumps real Gmail emails into MongoDB's raw_emails_dump collection unanalyzed (Mode A, explicit list or scheduled sliding-window), and separately classifies already-dumped emails with one of six labels, in batches (Mode B), keeping labels current as a thread's conversation changes. Use when asked to "dump emails", "ingest raw emails", "run the scheduled dump", "label the ingested data", "classify the raw dump", or "run raw-dump-labeling". This connector exposes exactly 7 tools -- never assume any other tool (e.g. a stored-boundary/watermark tool) exists here.
+description: The one skill for the raw-dump-labeling MCP server -- dumps real Gmail emails into MongoDB's raw_emails_dump collection unanalyzed (Mode A, explicit list or scheduled sliding-window), and separately classifies already-dumped emails with one of six labels, in batches (Mode B), keeping labels current as a thread's conversation changes. Use when asked to "dump emails", "ingest raw emails", "run the scheduled dump", "label the ingested data", "classify the raw dump", or "run raw-dump-labeling". This connector exposes exactly 8 tools -- never assume any other tool (e.g. a stored-boundary/watermark tool) exists here.
 ---
 
 # Raw Dump + Labeling (the only skill for this connector)
 
-This connector exposes exactly 7 tools, nothing else: `ingest_raw_email_only`,
+This connector exposes exactly 8 tools, nothing else: `ingest_raw_email_only`,
 `get_next_unprocessed_raw_email`, `get_next_unprocessed_raw_email_batch`,
 `persist_raw_email_label`, `mark_raw_email_label_failed`,
-`mark_gmail_label_synced`, `get_unsynced_labels`. Two independent modes,
-picked from the request -- never mix them in one run.
+`mark_gmail_label_synced`, `get_unsynced_labels`, `get_stuck_emails`. Two
+independent modes, picked from the request -- never mix them in one run.
 
 | Request sounds like | Mode |
 |---|---|
@@ -218,6 +218,11 @@ batch comes back empty:
    message in their thread (Mode A step 4b). Empty list `[]` -> stop,
    report "nothing left to label". This is the only step that batches --
    everything below still happens per email, one at a time.
+   **Every document in the batch shares ONE `claim_id`** -- read it off
+   each document (`doc["claim_id"]`) and pass that exact value to
+   `persist_raw_email_label`/`mark_raw_email_label_failed` for that
+   document in step 3. Required on every call, no default -- this is a
+   fencing token, not an optional extra.
 
 **Inner loop**, for each email in the returned batch:
 
@@ -232,15 +237,25 @@ batch comes back empty:
    re-evaluate fresh against the current thread_context; only change it if
    your own reading genuinely disagrees with what's there now.
 3. **On a successful decision**, call **`persist_raw_email_label`** with
-   that email's `message_id` and the chosen label.
+   that email's `message_id`, the chosen label, and `claim_id` (step 1).
    **If you genuinely cannot classify it** (unreadable/garbled body,
    content too ambiguous for any of the six -- different from
    `1. Undecided`, which IS a valid decision), call
-   **`mark_raw_email_label_failed`** with a concise, specific reason
-   instead, skip steps 3a-3b below for this email, and move to the next
-   email in the batch.
+   **`mark_raw_email_label_failed`** with a concise, specific reason and
+   `claim_id` instead, skip steps 3a-3b below for this email, and move to
+   the next email in the batch.
    Never call both `persist_raw_email_label` and
    `mark_raw_email_label_failed` for the same email.
+3c. **If either call returns `{"ok": false, "reason": "claim_lost"}`**,
+   something else (a new message landing in this email's thread, or
+   another worker reclaiming it after your lease expired) invalidated your
+   claim between step 1 and now -- your classification was made from
+   context that's no longer current. **SKIP this email entirely**: do not
+   retry it in this run, do not call step 3a/3b for it, do not apply or
+   remove any Gmail label, do not call `mark_gmail_label_synced`. Note it
+   in your report (count only -- it's genuinely eligible again and will
+   naturally resurface on a future claim with fresh context; no action of
+   yours makes that happen faster or more correctly).
 3a. **Apply the matching Gmail label.** Build the name -> label id map ONCE
    per run (not per batch, not per email): call the Gmail connector's
    `list_labels`. **Never call `create_label`** -- the six labels are
@@ -298,13 +313,24 @@ small handful -- batching is for the "dump 100, label them all" case.
   never to read email content (that comes from MongoDB, see step 2), and
   never `create_label`. Never send, reply, forward, trash, or mark spam.
 
+**End of run, before reporting:** call **`get_stuck_emails`** (default
+`limit=20`). Read-only -- this surfaces every email that has tripped the
+3-attempt circuit breaker. **Report them in the end-of-run summary by
+message_id and attempt count. Never try to fix them** -- no retry, no
+forced guess, no direct `persist_raw_email_label` call to work around the
+circuit breaker. Recovery is a human decision made via
+`scripts/reset_stuck.py` (a local script, not a tool you have access to),
+never something this skill does on its own.
+
 Report in plain English when the loop ends: how many were newly labelled
 vs. corrected (relabelled after a reopen) vs. failed this run, the label
 breakdown (e.g. "3x Needs reply: ASAP, 5x Read only, ..."), any failures by
-message id and reason, any Gmail-sync failures separately from MongoDB
+message id and reason, how many were skipped due to `claim_lost` (count
+only -- see step 3a-skip), any Gmail-sync failures separately from MongoDB
 successes (these are retryable -- note which message_ids), newly created
-Gmail label names (if any), and how many remain eligible beyond the 20 cap,
-if any. Do not dump raw JSON/tool output.
+Gmail label names (if any), how many remain eligible beyond the 20 cap, if
+any, and the `get_stuck_emails` results from the step above. Do not dump
+raw JSON/tool output.
 
 ### Sync catch-up (closing a gap neither claim tool can see)
 

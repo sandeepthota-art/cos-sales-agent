@@ -212,7 +212,7 @@ def test_persist_label_makes_the_email_no_longer_claimable(db):
 def test_agent_reply_closes_open_needs_reply_siblings_to_read_only(db):
     settings = _settings()
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
 
     result = _ingest(
         db,
@@ -233,7 +233,7 @@ def test_agent_reply_closes_open_needs_reply_siblings_to_read_only(db):
 def test_closed_sibling_classification_version_is_untouched_so_it_is_not_reclaimed(db):
     settings = _settings()
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
     version_before = RawEmailDumpRepository(db).find_one({"message_id": "MSG-ASK"})["classification_version"]
 
     _ingest(
@@ -262,7 +262,7 @@ def test_empty_agent_email_takes_reopen_path_never_auto_closes(db):
     configured goes through the reopen path, never the auto-close path."""
     settings = _settings(agent_email="")
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
 
     result = _ingest(
         db,
@@ -283,7 +283,7 @@ def test_empty_agent_email_takes_reopen_path_never_auto_closes(db):
 def test_inbound_reply_reopens_already_classified_siblings_for_reevaluation(db):
     settings = _settings()
     _ingest(db, settings, "MSG-OLD", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only")
+    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only", claim_id=None)
 
     result = _ingest(
         db, settings, "MSG-NEW-QUESTION", thread_id="T-1", timestamp=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc)
@@ -298,7 +298,7 @@ def test_inbound_reply_reopens_already_classified_siblings_for_reevaluation(db):
 def test_reopened_sibling_becomes_claimable_again(db):
     settings = _settings()
     _ingest(db, settings, "MSG-OLD", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only")
+    tools.persist_raw_email_label(db, "MSG-OLD", "1. Read only", claim_id=None)
     assert tools.get_next_unprocessed_raw_email(db) is None  # confirm it's NOT claimable yet
 
     _ingest(
@@ -318,9 +318,9 @@ def test_close_and_reopen_never_touch_emails_outside_the_thread(db):
         thread_id="T-UNRELATED",
         timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
     )
-    tools.persist_raw_email_label(db, "MSG-OTHER-THREAD", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-OTHER-THREAD", "1. Needs reply", claim_id=None)
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
 
     _ingest(
         db,

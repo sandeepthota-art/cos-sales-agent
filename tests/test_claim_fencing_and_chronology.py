@@ -105,14 +105,36 @@ def test_mark_failed_rejects_an_unknown_claim_id(db):
     assert result == {"ok": False, "reason": "claim_lost"}
 
 
-# --- 3. reopen clears claim fields (defensive; reopen can't actually race a ----------
-#        claimed doc today, since claim requires classification_version=0 and
-#        reopen only matches version>=1 -- the two states are mutually
-#        exclusive by construction. Corrected from the original STEP 1
-#        finding (b), which assumed this overlap was reachable; it isn't.
-#        _cleared_claim_fields is still merged into reopen's write as
-#        defense-in-depth, just not exercised by a "claimed doc gets
-#        reopened" test since that state can't occur.) -------------------------------
+# --- 3. ANY new thread message clears every actively-claimed sibling's claim --------
+# Corrected from the original STEP 1 finding (b): reopen specifically can't
+# race a claimed doc (claim requires classification_version=0, reopen only
+# matches version>=1 -- mutually exclusive by construction). The REAL gap
+# was narrower than first described: a sibling claimed for its FIRST-EVER
+# classification (version=0, label_applied=None) matches neither
+# _close_open_needs_reply_in_thread's nor _reopen_thread_siblings_for_reevaluation's
+# own criteria, so nothing invalidated its claim when a new thread message
+# arrived. _clear_active_claims_in_thread (app/tools.py) now runs
+# unconditionally on every threaded ingest to close that gap.
+
+
+def test_new_thread_message_clears_the_claim_of_any_actively_claimed_sibling(db):
+    settings = _settings()
+    _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc))
+    claimed = tools.get_next_unprocessed_raw_email(db)  # first-ever classification, version=0
+    assert claimed["message_id"] == "MSG-ASK"
+    claim_id = claimed["claim_id"]
+
+    # A new inbound message arrives in the same thread while MSG-ASK is claimed.
+    _ingest(db, settings, "MSG-NEW", thread_id="T-1", timestamp=datetime(2026, 8, 2, tzinfo=timezone.utc))
+
+    result = tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=claim_id)
+    assert result == {"ok": False, "reason": "claim_lost"}
+
+    # Immediately reclaimable (claim was cleared, not just expired), with
+    # fresh thread_context that now includes the new sibling.
+    reclaimed = tools.get_next_unprocessed_raw_email(db)
+    assert reclaimed["message_id"] == "MSG-ASK"
+    assert [s["message_id"] for s in reclaimed["thread_context"]] == ["MSG-NEW"]
 
 
 # --- 4. auto-close invalidates the claim of a claimed sibling ------------------------
@@ -126,7 +148,7 @@ def test_auto_close_clears_the_claim_of_a_concurrently_claimed_sibling(db):
     would otherwise clobber the auto-close with stale judgment."""
     settings = _settings()
     _ingest(db, settings, "MSG-ASK", thread_id="T-1", timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-ASK", "1. Needs reply", claim_id=None)
     _ingest(db, settings, "MSG-REOPEN", thread_id="T-1", timestamp=datetime(2026, 8, 2, tzinfo=timezone.utc))
 
     claimed = tools.get_next_unprocessed_raw_email(db)
@@ -225,7 +247,7 @@ def test_auto_close_never_closes_a_sibling_sent_after_the_agent_reply(db):
     gap is real (see Phase 2 STEP 1 finding g) but not fixed this pass."""
     settings = _settings()
     _ingest(db, settings, "MSG-SIBLING-LATER", thread_id="T-1", timestamp=datetime(2026, 8, 5, tzinfo=timezone.utc))
-    tools.persist_raw_email_label(db, "MSG-SIBLING-LATER", "1. Needs reply")
+    tools.persist_raw_email_label(db, "MSG-SIBLING-LATER", "1. Needs reply", claim_id=None)
 
     result = _ingest(
         db,
