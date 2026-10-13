@@ -103,3 +103,22 @@ in the top half of the table — block them account-wide, don't rely on the
 prompt. For `label_message`/`unlabel_message`/Gmail read, the prompt IS
 currently the only enforcement available, which is a materially weaker
 guarantee — know the difference.
+
+### The same gap applies across all three scheduled tasks now
+
+The raw-dump-labeling MCP server exposes all 12 tools (8 labeling/
+ingestion + 4 context-building) to every connected session — there is no
+per-scheduled-task tool scoping at the server or connector level today.
+Keeping ingestion off the labeling/context tools, labeling off the
+ingestion/context tools, and context-building off the labeling/ingestion
+tools (each task's own `ops/scheduled-tasks/*.md` "Forbidden" section and
+`skills/*/SKILL.md`'s own-tools-only wording) is **prompt-level only, not
+a technical guarantee**, same caveat as the Gmail `label_message`/
+`unlabel_message` split above. **What IS a real guarantee**: each tool's
+own claim-fencing (`claim_id` vs. `context_claim_id` compare-and-swap) and
+field separation (`label_*`/`classification_version` vs. `context_*`) —
+even if a task's prompt somehow called the wrong tool, it cannot corrupt
+the other lifecycle's state, because the two never share a field or a
+claim token. The blast radius of this gap is therefore "a task could call
+a tool it has no business calling," never "a task's run could silently
+corrupt another task's data."
