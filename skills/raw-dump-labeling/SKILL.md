@@ -124,18 +124,27 @@ day's worth of mail, or the request itself says "backfill":
 1. **Split the requested range into single-day chunks**, oldest day first.
 2. **For each day, in order**: read/map/ingest that day's messages (Mode A
    steps 1-4b above, unchanged), **oldest message first within the day**,
-   up to a hard cap of **100 messages for that day**. If the day has more
-   than 100, ingest the oldest 100 and STOP the whole backfill run --
-   report this day as **truncated, needs a narrower follow-up** (e.g. a
-   half-day range), never silently drop the rest.
-3. **Move to the next day** only after the current day is fully ingested
-   (under the cap) -- never skip ahead. If the day's ingest fails outright
-   (not truncated -- an actual error), stop and report which day, rather
-   than silently continuing to the next one with a gap behind it.
-4. **Report, per day processed**: date, messages ingested, any failures by
-   Gmail id, whether the 100-cap was hit. At the end, report the full
-   range covered, how many days remain if the run was stopped early
-   (cap hit or error), and the exact next day to resume from.
+   up to a hard cap of **25 messages ingested per run**. If a day has more
+   than 25, ingest the oldest 25 and STOP -- do NOT move to the next day
+   yet. This is not a failure or a truncation needing a narrower range:
+   **the same day is simply finished across multiple runs**. Re-running
+   this procedure for the same range re-reads the day from the start,
+   oldest first, same as before -- `ingest_raw_email_only` is idempotent,
+   so every already-ingested message from a prior run is a safe no-op, and
+   the run naturally picks up wherever the previous one left off (the next
+   25 not-yet-ingested messages, still oldest first). Only move to the
+   next day once a full pass over the current day ingests zero new
+   messages (everything in it is already dumped).
+3. **Move to the next day** only once the current day is fully caught up
+   (per step 2) -- never skip ahead. If a day's ingest fails outright (not
+   the 25-cap, an actual error), stop and report which day, rather than
+   silently continuing to the next one with a gap behind it.
+4. **Report, per day processed this run**: date, how many were newly
+   ingested vs. already-present (dedup no-oped), any failures by Gmail id,
+   and whether the 25-cap was hit (day not yet complete, needs another
+   run) or the day finished. At the end, report the full range covered,
+   which day (if any) is still mid-progress, and that re-running the same
+   request continues it safely.
 
 This never replaces the scheduled sliding-window mode below, and never
 guesses a boundary date on its own -- the day-by-day range comes entirely
