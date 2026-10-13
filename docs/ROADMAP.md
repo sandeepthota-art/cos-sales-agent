@@ -59,7 +59,38 @@ tools, rules, deviations) and `docs/DECISIONS.md`'s decision log entry.
 
 ## Phase 5 — Evaluation (golden set)
 
-- [ ] Automated golden-set label-accuracy harness. Today: two non-automated, judgment-graded eval sets exist (`eval/rule_boundary_cases.py` — 16 synthetic cases, 15/16 match last run; `eval/label_eval_set.xlsx` — 14/14 match last run, requires a live mailbox). Neither is a pytest-style automated pass/fail gate.
+Done 2026-10-13. See `docs/EVAL_RUNBOOK.md` for how to run it and
+`eval/README.md` for what's synthetic vs. local-only real-data.
+
+- [x] Golden set for labeling: `eval/golden/labeling_cases.jsonl` (40
+      cases, all six labels present >=3 times each, all 16 required
+      categories covered) — includes the original `eval/rule_boundary_cases.py`
+      cases converted into this format (that file is kept as-is, now a
+      source the golden set was derived from, not replaced).
+- [x] Golden set for context extraction: `eval/golden/context_cases.jsonl`
+      (18 threads, each with required/forbidden facts).
+- [x] Isolation guard (`scripts/_common.py::require_eval_database`) --
+      every eval script refuses to run against a database not ending in
+      `_eval`.
+- [x] `scripts/load_golden.py` -- loads both golden sets through
+      `ingest_raw_email_only`, the same function the real pipeline uses.
+      Dry-run default, `--apply` to write.
+- [x] `scripts/score_eval.py` -- accuracy, per-label precision/recall,
+      confusion matrix, critical-error detection (Needs-reply*
+      downgraded, injection obeyed), evidence_not_found/stuck cases,
+      context precision/recall, forbidden-fact detection. Writes
+      `eval/reports/<date>_<skill_version>.md`.
+- [x] Eval-mode section added to `skills/raw-dump-labeling/SKILL.md`
+      (skips all Gmail calls when the prompt says `EVAL MODE`).
+      `skills/context-building/SKILL.md` needed no change -- it never
+      calls Gmail regardless of mode.
+- [x] 24 new deterministic pytest tests (golden-file validation, eval-db
+      guard, load/score logic) -- no LLM, no network.
+- [ ] Still not automated end-to-end: a REAL Claude Desktop run is
+      required to produce `label_applied`/observations to score against
+      -- this phase built the harness and golden data, not a way to run
+      Claude Desktop from pytest. That's by design (`docs/EVAL_RUNBOOK.md`),
+      not a gap.
 
 ## Phase 6 — BRD features
 

@@ -432,3 +432,28 @@ this one bounds Gmail re-write attempts on already-classified documents.
 
 Report how many were found, how many were successfully synced this run,
 any still failing by message id, and whether the 5-page cap was hit.
+
+## Eval mode (Phase 5 golden-set runs only)
+
+When the task prompt starts with the literal words **EVAL MODE**, this
+changes ONE thing about Mode B: **never call any Gmail tool, and never
+call `mark_gmail_label_synced`.** Run step 3a/3b's Gmail-apply/confirm
+as if they don't exist -- only `persist_raw_email_label`/
+`mark_raw_email_label_failed` run; labels are persisted to MongoDB
+only, nothing is ever written to a real mailbox. This mirrors
+`skills/context-building/SKILL.md`, which never calls Gmail at all,
+eval mode or not.
+
+Still: evidence is still required and still checked exactly the same
+way, `claim_id` is still required and still a real compare-and-swap, the
+circuit breaker and `get_stuck_emails` still work the same. The ONLY
+difference is Gmail never gets touched. Sync catch-up (the section
+above) does not apply in eval mode at all -- skip it entirely, there is
+nothing to catch up on Gmail-side.
+
+Before starting, confirm you're pointed at an eval database (see
+`docs/EVAL_RUNBOOK.md`) -- if `MONGODB_DATABASE` doesn't end in `_eval`,
+stop and say so rather than running eval mode against the real database.
+
+Report the same end-of-run summary as normal Mode B, with Gmail-sync
+sections omitted (nothing to report there in eval mode).
