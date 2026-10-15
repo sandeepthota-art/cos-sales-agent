@@ -92,12 +92,14 @@ export function PersonDetailPage() {
         {context.other_people_at_org.data.length > 0 && (
           <p>
             Also at {companyName ?? 'this organization'}:{' '}
-            {context.other_people_at_org.data.map((p, index) => (
+            {context.other_people_at_org.data.slice(0, 2).map((p, index, shown) => (
               <span key={p.id}>
                 <IdLink id={p.id} label={p.name ?? p.id} />
-                {index < context.other_people_at_org.data.length - 1 && ', '}
+                {index < shown.length - 1 && ', '}
               </span>
             ))}
+            {context.other_people_at_org.data.length > 2 &&
+              ` and ${context.other_people_at_org.data.length - 2} more`}
           </p>
         )}
 
